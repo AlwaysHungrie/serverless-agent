@@ -74,23 +74,31 @@ export class SessionAgent extends Agent<Env> {
         // Column already present.
       }
     }
-    this.exec(`CREATE TABLE IF NOT EXISTS usage (k TEXT PRIMARY KEY, v REAL NOT NULL DEFAULT 0)`);
+    // One row, one UPDATE per request. An earlier key/value shape cost six row
+    // writes per request, which made the meter more expensive than the work it
+    // was measuring.
+    this.exec(
+      `CREATE TABLE IF NOT EXISTS usage_totals (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         requests REAL NOT NULL DEFAULT 0,
+         active_ms REAL NOT NULL DEFAULT 0,
+         wall_clock_ms REAL NOT NULL DEFAULT 0,
+         rows_read REAL NOT NULL DEFAULT 0,
+         rows_written REAL NOT NULL DEFAULT 0,
+         prompt_tokens REAL NOT NULL DEFAULT 0,
+         completion_tokens REAL NOT NULL DEFAULT 0,
+         llm_cost_usd REAL NOT NULL DEFAULT 0
+       )`
+    );
+    this.exec(`INSERT OR IGNORE INTO usage_totals (id) VALUES (1)`);
     this.schemaReady = true;
   }
 
-  private bump(key: string, delta: number) {
-    if (delta === 0) return;
-    this.exec(
-      `INSERT INTO usage (k, v) VALUES (?, ?)
-       ON CONFLICT(k) DO UPDATE SET v = v + excluded.v`,
-      key,
-      delta
-    );
-  }
+  /** Token and cost deltas for the current request, flushed with the counters. */
+  private pending = { promptTokens: 0, completionTokens: 0, llmCostUsd: 0 };
 
   private counters(): Record<string, number> {
-    const rows = this.exec<{ k: string; v: number }>(`SELECT k, v FROM usage`);
-    return Object.fromEntries(rows.map((r) => [r.k, r.v]));
+    return this.exec<Record<string, number>>(`SELECT * FROM usage_totals WHERE id = 1`)[0] ?? {};
   }
 
   private totals(): UsageTotals {
@@ -117,16 +125,29 @@ export class SessionAgent extends Agent<Env> {
     const instanceWallClock = Date.now() - this.instanceWokeAt;
     this.wallClockCheckpoint = instanceWallClock;
 
-    const readsBefore = this.rowsRead;
-    const writesBefore = this.rowsWritten;
-    this.bump("requests", 1);
-    this.bump("active_ms", billableMs);
-    this.bump("wall_clock_ms", billableMs);
-    this.bump("rows_read", readsBefore);
-    this.bump("rows_written", writesBefore);
-    // Account for the metering writes themselves on the next request.
-    this.bump("rows_read", this.rowsRead - readsBefore);
-    this.bump("rows_written", this.rowsWritten - writesBefore);
+    // A single UPDATE, so metering costs one row write per request. That row cannot
+    // count itself while it is being written, so the +1s below add the read and the
+    // write this statement is about to perform.
+    this.exec(
+      `UPDATE usage_totals SET
+         requests = requests + 1,
+         active_ms = active_ms + ?,
+         wall_clock_ms = wall_clock_ms + ?,
+         rows_read = rows_read + ?,
+         rows_written = rows_written + ?,
+         prompt_tokens = prompt_tokens + ?,
+         completion_tokens = completion_tokens + ?,
+         llm_cost_usd = llm_cost_usd + ?
+       WHERE id = 1`,
+      billableMs,
+      billableMs,
+      this.rowsRead + 1,
+      this.rowsWritten + 1,
+      this.pending.promptTokens,
+      this.pending.completionTokens,
+      this.pending.llmCostUsd
+    );
+    this.pending = { promptTokens: 0, completionTokens: 0, llmCostUsd: 0 };
   }
 
   async onRequest(request: Request): Promise<Response> {
@@ -160,7 +181,9 @@ export class SessionAgent extends Agent<Env> {
         body = this.metrics();
       } else if (request.method === "POST" && path === "reset") {
         this.exec(`DELETE FROM messages`);
-        this.exec(`DELETE FROM usage`);
+        this.exec(`UPDATE usage_totals SET requests = 0, active_ms = 0, wall_clock_ms = 0,
+                     rows_read = 0, rows_written = 0, prompt_tokens = 0,
+                     completion_tokens = 0, llm_cost_usd = 0 WHERE id = 1`);
         body = { ok: true };
       } else {
         status = 404;
@@ -224,9 +247,9 @@ export class SessionAgent extends Agent<Env> {
       cost,
       ms
     );
-    this.bump("prompt_tokens", promptTokens);
-    this.bump("completion_tokens", completionTokens);
-    this.bump("llm_cost_usd", cost);
+    this.pending.promptTokens += promptTokens;
+    this.pending.completionTokens += completionTokens;
+    this.pending.llmCostUsd += cost;
   }
 
   private openrouter(messages: Msg[], stream: boolean, signal?: AbortSignal) {
