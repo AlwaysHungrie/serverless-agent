@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "serverless-agent",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-09-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SessionAgent", "class_name": "SessionAgent" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SessionAgent"] }
+  ],
+  "vars": {
+    "MODEL": "deepseek/deepseek-v4-flash"
+  }
+}
