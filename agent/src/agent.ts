@@ -1,13 +1,26 @@
 import { Agent } from "agents";
 import { estimateCost, sessionsIncludedPerMonth, MODEL_FALLBACK_PRICE, type UsageTotals } from "./pricing";
+import type { SessionRegistry } from "./registry";
 
 export type Env = {
   SessionAgent: DurableObjectNamespace;
+  SessionRegistry: DurableObjectNamespace<SessionRegistry>;
   OPENROUTER_API_KEY: string;
   MODEL: string;
 };
 
 type Msg = { role: "user" | "assistant" | "system"; content: string };
+
+export type StoredMessage = {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  ts: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  ms: number;
+};
 
 const SYSTEM_PROMPT = "You are a concise assistant running inside a Cloudflare Durable Object.";
 
@@ -41,15 +54,27 @@ export class SessionAgent extends Agent<Env> {
          id INTEGER PRIMARY KEY AUTOINCREMENT,
          role TEXT NOT NULL,
          content TEXT NOT NULL,
-         ts INTEGER NOT NULL
+         ts INTEGER NOT NULL,
+         prompt_tokens INTEGER NOT NULL DEFAULT 0,
+         completion_tokens INTEGER NOT NULL DEFAULT 0,
+         cost_usd REAL NOT NULL DEFAULT 0,
+         ms INTEGER NOT NULL DEFAULT 0
        )`
     );
-    this.exec(
-      `CREATE TABLE IF NOT EXISTS usage (
-         k TEXT PRIMARY KEY,
-         v REAL NOT NULL DEFAULT 0
-       )`
-    );
+    // Bring forward databases created before the per-message usage columns existed.
+    for (const col of [
+      "prompt_tokens INTEGER NOT NULL DEFAULT 0",
+      "completion_tokens INTEGER NOT NULL DEFAULT 0",
+      "cost_usd REAL NOT NULL DEFAULT 0",
+      "ms INTEGER NOT NULL DEFAULT 0",
+    ]) {
+      try {
+        this.exec(`ALTER TABLE messages ADD COLUMN ${col}`);
+      } catch {
+        // Column already present.
+      }
+    }
+    this.exec(`CREATE TABLE IF NOT EXISTS usage (k TEXT PRIMARY KEY, v REAL NOT NULL DEFAULT 0)`);
     this.schemaReady = true;
   }
 
@@ -83,6 +108,27 @@ export class SessionAgent extends Agent<Env> {
     };
   }
 
+  /**
+   * Fold one request's resource use into the persisted counters.
+   * `billableMs` is the wall clock Cloudflare would charge duration for, which for a
+   * stream is the whole time the object stayed resident producing it.
+   */
+  private recordRequest(billableMs: number) {
+    const instanceWallClock = Date.now() - this.instanceWokeAt;
+    this.wallClockCheckpoint = instanceWallClock;
+
+    const readsBefore = this.rowsRead;
+    const writesBefore = this.rowsWritten;
+    this.bump("requests", 1);
+    this.bump("active_ms", billableMs);
+    this.bump("wall_clock_ms", billableMs);
+    this.bump("rows_read", readsBefore);
+    this.bump("rows_written", writesBefore);
+    // Account for the metering writes themselves on the next request.
+    this.bump("rows_read", this.rowsRead - readsBefore);
+    this.bump("rows_written", this.rowsWritten - writesBefore);
+  }
+
   async onRequest(request: Request): Promise<Response> {
     const startedAt = Date.now();
     this.rowsRead = 0;
@@ -92,21 +138,24 @@ export class SessionAgent extends Agent<Env> {
     const url = new URL(request.url);
     const path = url.pathname.split("/").filter(Boolean).pop() ?? "";
 
+    // Streaming owns its own metering: the object stays billable until the last token.
+    if (request.method === "POST" && path === "stream") {
+      const { message } = (await request.json()) as { message?: string };
+      if (!message) return Response.json({ error: "body must be { message: string }" }, { status: 400 });
+      return this.streamChat(message, startedAt);
+    }
+
     let body: unknown;
     let status = 200;
     let turn: Record<string, unknown> | undefined;
 
     try {
       if (request.method === "POST" && path === "chat") {
-        const { message } = (await request.json()) as { message?: string };
-        if (!message) {
-          return Response.json({ error: "body must be { message: string }" }, { status: 400 });
-        }
-        const result = await this.chat(message);
+        const result = await this.chat(((await request.json()) as { message: string }).message);
         body = result.body;
         turn = result.turn;
-      } else if (request.method === "GET" && path === "history") {
-        body = { messages: this.history() };
+      } else if (request.method === "GET" && path === "messages") {
+        body = { messages: this.messages() };
       } else if (request.method === "GET" && path === "metrics") {
         body = this.metrics();
       } else if (request.method === "POST" && path === "reset") {
@@ -122,66 +171,83 @@ export class SessionAgent extends Agent<Env> {
       body = { error: err instanceof Error ? err.message : String(err) };
     }
 
-    // Fold this request's resource use into the persisted counters. The write
-    // itself is counted too, so the numbers are self-inclusive rather than low.
     const activeMs = Date.now() - startedAt;
-    const instanceWallClock = Date.now() - this.instanceWokeAt;
-    const wallClockDelta = instanceWallClock - this.wallClockCheckpoint;
-    this.wallClockCheckpoint = instanceWallClock;
+    this.recordRequest(activeMs);
 
-    const readsBefore = this.rowsRead;
-    const writesBefore = this.rowsWritten;
-    this.bump("requests", 1);
-    this.bump("active_ms", activeMs);
-    this.bump("wall_clock_ms", wallClockDelta);
-    this.bump("rows_read", readsBefore);
-    this.bump("rows_written", writesBefore);
-    // Account for the metering writes themselves on the next request.
-    this.bump("rows_read", this.rowsRead - readsBefore);
-    this.bump("rows_written", this.rowsWritten - writesBefore);
-
-    const meta = {
-      session: this.name,
-      request: {
-        active_ms: activeMs,
-        instance_wall_clock_ms: instanceWallClock,
-        rows_read: this.rowsRead,
-        rows_written: this.rowsWritten,
-        storage_bytes: this.ctx.storage.sql.databaseSize,
-        ...turn,
+    return Response.json(
+      {
+        ...(body as object),
+        _meta: {
+          session: this.name,
+          request: {
+            active_ms: activeMs,
+            rows_read: this.rowsRead,
+            rows_written: this.rowsWritten,
+            storage_bytes: this.ctx.storage.sql.databaseSize,
+            ...turn,
+          },
+        },
       },
-    };
+      { status }
+    );
+  }
 
-    return Response.json({ ...(body as object), _meta: meta }, { status });
+  private messages(): StoredMessage[] {
+    return this.exec<StoredMessage>(
+      `SELECT id, role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms
+       FROM messages ORDER BY id ASC`
+    );
   }
 
   private history(): Msg[] {
     return this.exec<Msg>(`SELECT role, content FROM messages ORDER BY id ASC`);
   }
 
-  private async chat(message: string) {
-    const history = this.history();
-    this.exec(`INSERT INTO messages (role, content, ts) VALUES (?, ?, ?)`, "user", message, Date.now());
+  private modelMessages(message: string): Msg[] {
+    return [{ role: "system", content: SYSTEM_PROMPT }, ...this.history(), { role: "user", content: message }];
+  }
 
-    const messages: Msg[] = [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...history,
-      { role: "user", content: message },
-    ];
+  private priceOf(promptTokens: number, completionTokens: number, reported?: number) {
+    if (typeof reported === "number") return reported;
+    const p = MODEL_FALLBACK_PRICE[this.env.MODEL as keyof typeof MODEL_FALLBACK_PRICE];
+    return p ? promptTokens * p.prompt + completionTokens * p.completion : 0;
+  }
 
-    const llmStart = Date.now();
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  private saveAssistant(content: string, promptTokens: number, completionTokens: number, cost: number, ms: number) {
+    this.exec(
+      `INSERT INTO messages (role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms)
+       VALUES ('assistant', ?, ?, ?, ?, ?, ?)`,
+      content,
+      Date.now(),
+      promptTokens,
+      completionTokens,
+      cost,
+      ms
+    );
+    this.bump("prompt_tokens", promptTokens);
+    this.bump("completion_tokens", completionTokens);
+    this.bump("llm_cost_usd", cost);
+  }
+
+  private openrouter(messages: Msg[], stream: boolean, signal?: AbortSignal) {
+    return fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model: this.env.MODEL, messages, usage: { include: true } }),
+      body: JSON.stringify({ model: this.env.MODEL, messages, stream, usage: { include: true } }),
+      signal,
     });
+  }
 
-    if (!res.ok) {
-      throw new Error(`openrouter ${res.status}: ${await res.text()}`);
-    }
+  private async chat(message: string) {
+    const messages = this.modelMessages(message);
+    this.exec(`INSERT INTO messages (role, content, ts) VALUES ('user', ?, ?)`, message, Date.now());
+
+    const llmStart = Date.now();
+    const res = await this.openrouter(messages, false);
+    if (!res.ok) throw new Error(`openrouter ${res.status}: ${await res.text()}`);
 
     const json = (await res.json()) as {
       choices: { message: { content: string } }[];
@@ -189,29 +255,136 @@ export class SessionAgent extends Agent<Env> {
     };
     const llmMs = Date.now() - llmStart;
     const reply = json.choices[0]?.message?.content ?? "";
-
-    this.exec(`INSERT INTO messages (role, content, ts) VALUES (?, ?, ?)`, "assistant", reply, Date.now());
-
     const promptTokens = json.usage?.prompt_tokens ?? 0;
     const completionTokens = json.usage?.completion_tokens ?? 0;
-    const fallback = MODEL_FALLBACK_PRICE[this.env.MODEL as keyof typeof MODEL_FALLBACK_PRICE];
-    const llmCost =
-      json.usage?.cost ??
-      (fallback ? promptTokens * fallback.prompt + completionTokens * fallback.completion : 0);
+    const cost = this.priceOf(promptTokens, completionTokens, json.usage?.cost);
 
-    this.bump("prompt_tokens", promptTokens);
-    this.bump("completion_tokens", completionTokens);
-    this.bump("llm_cost_usd", llmCost);
+    this.saveAssistant(reply, promptTokens, completionTokens, cost, llmMs);
 
     return {
       body: { reply },
-      turn: {
-        llm_ms: llmMs,
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        llm_cost_usd: llmCost,
-      },
+      turn: { llm_ms: llmMs, prompt_tokens: promptTokens, completion_tokens: completionTokens, llm_cost_usd: cost },
     };
+  }
+
+  /**
+   * Stream a reply as SSE. The object stays resident — and billable — for the whole
+   * stream, so duration is metered when the stream ends, whether it completed or the
+   * client stopped it. A stopped reply keeps its partial text and its token cost,
+   * because OpenRouter has already generated (and charged for) what arrived.
+   */
+  private streamChat(message: string, startedAt: number): Response {
+    const messages = this.modelMessages(message);
+    this.exec(`INSERT INTO messages (role, content, ts) VALUES ('user', ?, ?)`, message, Date.now());
+    const userMessageRowsWritten = this.rowsWritten;
+    const userMessageRowsRead = this.rowsRead;
+
+    const encoder = new TextEncoder();
+    const upstream = new AbortController();
+    const llmStart = Date.now();
+
+    let text = "";
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let reportedCost: number | undefined;
+    let finished = false;
+
+    const finish = (aborted: boolean) => {
+      if (finished) return;
+      finished = true;
+      const llmMs = Date.now() - llmStart;
+      const cost = this.priceOf(promptTokens, completionTokens, reportedCost);
+      this.saveAssistant(text + (aborted ? "\n\n_(stopped)_" : ""), promptTokens, completionTokens, cost, llmMs);
+      this.recordRequest(Date.now() - startedAt);
+      return { cost, llmMs };
+    };
+
+    const self = this;
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (event: Record<string, unknown>) =>
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+
+        try {
+          const res = await self.openrouter(messages, true, upstream.signal);
+          if (!res.ok || !res.body) {
+            send({ type: "error", error: `openrouter ${res.status}: ${await res.text()}` });
+            finish(false);
+            controller.close();
+            return;
+          }
+
+          const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+          let buffer = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += value;
+
+            // OpenRouter sends SSE frames separated by a blank line.
+            let cut: number;
+            while ((cut = buffer.indexOf("\n\n")) !== -1) {
+              const frame = buffer.slice(0, cut);
+              buffer = buffer.slice(cut + 2);
+              const line = frame.split("\n").find((l) => l.startsWith("data: "));
+              if (!line) continue;
+              const payload = line.slice(6).trim();
+              if (payload === "[DONE]") continue;
+
+              const chunk = JSON.parse(payload) as {
+                choices?: { delta?: { content?: string } }[];
+                usage?: { prompt_tokens: number; completion_tokens: number; cost?: number };
+              };
+              const delta = chunk.choices?.[0]?.delta?.content;
+              if (delta) {
+                text += delta;
+                send({ type: "delta", text: delta });
+              }
+              if (chunk.usage) {
+                promptTokens = chunk.usage.prompt_tokens;
+                completionTokens = chunk.usage.completion_tokens;
+                reportedCost = chunk.usage.cost;
+              }
+            }
+          }
+
+          const result = finish(false);
+          send({
+            type: "usage",
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            cost_usd: result?.cost ?? 0,
+            llm_ms: result?.llmMs ?? 0,
+            do_active_ms: Date.now() - startedAt,
+            rows_read: self.rowsRead + userMessageRowsRead,
+            rows_written: self.rowsWritten + userMessageRowsWritten,
+            storage_bytes: self.ctx.storage.sql.databaseSize,
+          });
+          send({ type: "done" });
+          controller.close();
+        } catch (err) {
+          if (!finished) {
+            send({ type: "error", error: err instanceof Error ? err.message : String(err) });
+            finish(false);
+          }
+          controller.close();
+        }
+      },
+      // The client hit stop: drop the upstream call and bank what we already have.
+      cancel() {
+        upstream.abort();
+        finish(true);
+      },
+    });
+
+    return new Response(body, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
+    });
   }
 
   private metrics() {

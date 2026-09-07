@@ -10,7 +10,10 @@ export const PRICING = {
   doRowsReadPerMillion: 0.001,
   doRowsWrittenPerMillion: 1.0,
   doStorageGbMonth: 0.2,
-  // A Durable Object is billed at a fixed 128 MB of memory while active.
+  // A Durable Object is billed for a fixed 128 MB of memory while it is active,
+  // regardless of what it actually uses. It is active while it runs JavaScript or
+  // waits on a subrequest, and while any non-hibernatable WebSocket is open. An idle
+  // object that qualifies for hibernation stops accruing duration immediately.
   doMemoryGb: 128 / 1024,
 
   // Worker in front of the DO

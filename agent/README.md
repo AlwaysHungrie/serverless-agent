@@ -38,9 +38,16 @@ Other routes, all scoped to one session:
 | Route | What it does |
 |---|---|
 | `POST /agents/session-agent/:id/chat` | Send a message, get a reply |
-| `GET  /agents/session-agent/:id/history` | Full conversation from the DO's SQLite |
+| `POST /agents/session-agent/:id/stream` | Send a message, get an SSE token stream |
+| `GET  /agents/session-agent/:id/messages` | Full conversation with per-message tokens and cost |
 | `GET  /agents/session-agent/:id/metrics` | Resource usage + cost estimate |
 | `POST /agents/session-agent/:id/reset` | Wipe the session |
+| `GET|POST /api/sessions` | List / create sessions |
+| `PATCH|DELETE /api/sessions/:id` | Rename / delete a session |
+
+Durable Object namespaces cannot be enumerated — you can address an instance by name but
+not ask which instances exist — so the session list lives in one well-known
+`SessionRegistry` object while each session's transcript lives in its own `SessionAgent`.
 
 If port 8787 is taken, run `pnpm dev --port 8799` and point the CLI at it with
 `AGENT_URL=http://localhost:8799`.
@@ -74,15 +81,32 @@ Every response carries a `_meta.request` block with that turn's numbers, and
 | Stored data | 5 GB | $0.20 / GB-month |
 | Worker requests | 10,000,000 | $0.30 / million |
 
-Two caveats on the numbers:
+### How Durable Object duration actually works
 
-1. They are **marginal** rates. On the $5/month Paid plan the included allowances above
-   come first, so a handful of sessions genuinely costs $0 on top of the base plan. The
-   `capacity` field says how many sessions of this size fit inside the allowances and
-   which limit binds first.
-2. Duration measured locally is a **lower bound**. In production a DO stays resident for
-   a short grace period after a request, and stays alive continuously while a WebSocket
-   is open, so real billed GB-s will be higher than a request-only measurement.
+This is the part that decides the bill, and it is easy to get wrong:
 
-At these rates the LLM tokens dominate: one short DeepSeek Flash turn costs on the order
-of $10⁻⁵, while the Durable Object time and storage behind it cost on the order of $10⁻⁸.
+- A DO is billed for **128 MB of memory regardless of what it uses**, for as long as it
+  is *active*. Active means running JavaScript **or waiting on a subrequest** — so the
+  seconds spent waiting for OpenRouter to produce tokens are billed duration, even
+  though the object is doing nothing.
+- An idle object that qualifies for hibernation **stops accruing duration immediately**,
+  before the runtime actually hibernates it. There is no billed grace period.
+- Calling `accept()` on a WebSocket bills duration for the **entire** time that socket is
+  connected. The WebSocket Hibernation API avoids this; this project uses plain HTTP and
+  SSE, so an idle session costs nothing but storage.
+- An outbound `connect()` or outbound WebSocket keeps the object resident, and billed,
+  for up to 15 minutes.
+- "Requests" means HTTP requests, RPC sessions, WebSocket messages, and alarm
+  invocations. Incoming WebSocket messages are billed at a 20:1 ratio.
+
+The practical consequence: **streaming is the expensive part**. A 3-second reply is
+3 seconds x 128 MB = 0.375 GB-s of billed duration, whether the tokens arrive fast or
+slow. Everything else is noise, and an idle session costs only its stored bytes.
+
+One more caveat: the prices reported are **marginal** rates. On the $5/month Paid plan
+the included allowances above come first, so a handful of sessions genuinely costs $0 on
+top of the base plan. The `capacity` field says how many sessions of this size fit inside
+the allowances and which limit binds first.
+
+At these rates the LLM tokens still dominate: one short DeepSeek Flash turn costs on the
+order of $10⁻⁵, while the Durable Object time behind it costs on the order of $10⁻⁶.
