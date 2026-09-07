@@ -13,18 +13,32 @@ export default function Home() {
   // session's transcript, without having to null it out on every selection change.
   const [loaded, setLoaded] = useState<{ sessionId: string; messages: StoredMessage[] } | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  /** Reads a proxy response, surfacing the Worker-unreachable message as an error. */
+  const readJson = useCallback(async <T,>(res: Response): Promise<T | null> => {
+    const payload = (await res.json().catch(() => null)) as (T & { error?: string }) | null;
+    if (!res.ok || !payload) {
+      setError(payload?.error ?? `Request failed with ${res.status}.`);
+      return null;
+    }
+    setError(null);
+    return payload;
+  }, []);
 
   const loadSessions = useCallback(async () => {
-    const res = await fetch("/api/sessions");
-    const { sessions } = (await res.json()) as { sessions: SessionRow[] };
-    setSessions(sessions);
-    return sessions;
-  }, []);
+    const payload = await readJson<{ sessions: SessionRow[] }>(await fetch("/api/sessions"));
+    setSessions(payload?.sessions ?? []);
+    return payload?.sessions ?? [];
+  }, [readJson]);
 
-  const loadMetrics = useCallback(async (id: string) => {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/metrics`);
-    setMetrics((await res.json()) as Metrics);
-  }, []);
+  const loadMetrics = useCallback(
+    async (id: string) => {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/metrics`);
+      setMetrics(await readJson<Metrics>(res));
+    },
+    [readJson]
+  );
 
   useEffect(() => {
     void (async () => {
@@ -38,11 +52,12 @@ export default function Home() {
     if (!selected) return;
     void (async () => {
       const res = await fetch(`/api/sessions/${encodeURIComponent(selected)}/messages`);
-      const { messages } = (await res.json()) as { messages: StoredMessage[] };
-      setLoaded({ sessionId: selected, messages });
+      const payload = await readJson<{ messages: StoredMessage[] }>(res);
+      if (!payload) return;
+      setLoaded({ sessionId: selected, messages: payload.messages });
       await loadMetrics(selected);
     })();
-  }, [selected, loadMetrics]);
+  }, [selected, loadMetrics, readJson]);
 
   const createSession = async () => {
     const res = await fetch("/api/sessions", {
@@ -50,7 +65,8 @@ export default function Home() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: `Session ${sessions.length + 1}` }),
     });
-    const row = (await res.json()) as SessionRow;
+    const row = await readJson<SessionRow>(res);
+    if (!row) return;
     await loadSessions();
     setSelected(row.id);
   };
@@ -77,6 +93,11 @@ export default function Home() {
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
+        {error && (
+          <div className="border-b border-amber-900 bg-amber-950/60 px-6 py-3 text-xs text-amber-200">
+            {error}
+          </div>
+        )}
         {selected ? (
           <>
             <CostHeader sessionId={selected} metrics={metrics} />

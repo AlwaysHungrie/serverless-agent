@@ -5,6 +5,7 @@
   "compatibility_date": "2026-09-07",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  "dev": { "port": 8787 },
   "durable_objects": {
     "bindings": [
       { "name": "SessionAgent", "class_name": "SessionAgent" },

@@ -1,17 +1,15 @@
-import { AGENT_URL } from "@/lib/agent";
+import { proxy } from "@/lib/proxy";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const res = await fetch(`${AGENT_URL}/api/sessions`, { cache: "no-store" });
-  return new Response(await res.text(), { status: res.status, headers: { "content-type": "application/json" } });
+  return proxy("/api/sessions");
 }
 
 export async function POST(request: Request) {
-  const res = await fetch(`${AGENT_URL}/api/sessions`, {
+  return proxy("/api/sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: await request.text(),
   });
-  return new Response(await res.text(), { status: res.status, headers: { "content-type": "application/json" } });
 }
