@@ -2,7 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { Workspace } from "@cloudflare/shell";
 import { Think, type StepContext, type TurnConfig, type TurnContext } from "@cloudflare/think";
 import type { Schedule } from "agents";
-import { convertToModelMessages, jsonSchema, tool, type ToolSet, type UIMessage } from "ai";
+import { jsonSchema, tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import {
   CAPABILITIES,
   enabled,
@@ -282,9 +282,6 @@ export class SessionAgent extends Think<Env> {
     const config = this.config();
     this.turnUsage = { prompt: 0, completion: 0, cost: 0, started: Date.now() };
 
-    const limit = config.context_messages;
-    const recent =
-      limit > 0 ? await convertToModelMessages((await this.getMessages()).slice(-limit)) : [];
     return {
       model: this.openrouter()(config.model),
       instructions: this.systemPrompt(),
@@ -294,9 +291,70 @@ export class SessionAgent extends Think<Env> {
       ...(config.reasoning_effort !== "off"
         ? { providerOptions: { openai: { reasoningEffort: config.reasoning_effort } } }
         : {}),
-      // A long session stops growing its prompt without limit; 0 keeps everything.
-      ...(limit > 0 ? { messages: recent } : {}),
+      messages: await this.modelMessages(config),
     };
+  }
+
+  /**
+   * The conversation as the model receives it. Think stores the words; the pictures
+   * are put back here, read from the workspace at turn time rather than carried in
+   * the transcript, so a session holding an 8MB PDF does not carry it in every row.
+   *
+   * A context window of N keeps only the last N messages, so a long session stops
+   * growing its prompt — and its per-turn cost — without limit. 0 keeps everything.
+   */
+  private async modelMessages(config: Config): Promise<ModelMessage[]> {
+    const all = (await this.getMessages()).filter(
+      (m) => m.role === "user" || m.role === "assistant"
+    );
+    const limit = config.context_messages;
+    const kept = limit > 0 ? all.slice(-limit) : all;
+
+    const messages: ModelMessage[] = [];
+    for (const message of kept) {
+      const text = textOf(message);
+      if (message.role === "assistant") {
+        if (text.trim()) messages.push({ role: "assistant", content: text });
+        continue;
+      }
+      const parts = await this.fileParts(this.attachmentsOf(message.id));
+      messages.push(
+        parts.length === 0
+          ? { role: "user", content: text }
+          : { role: "user", content: [{ type: "text", text }, ...parts] }
+      );
+    }
+    return messages;
+  }
+
+  /**
+   * Images and PDFs as model content parts. They are sent with the message rather
+   * than read through a tool: a tool result has to be text, so handing a page back
+   * that way is not something an OpenAI-shaped API will accept.
+   */
+  private async fileParts(attachments: Attachment[]): Promise<
+    ({ type: "image"; image: string } | { type: "file"; data: string; mediaType: string; filename: string })[]
+  > {
+    const parts: (
+      | { type: "image"; image: string }
+      | { type: "file"; data: string; mediaType: string; filename: string }
+    )[] = [];
+    for (const a of attachments) {
+      if (a.kind !== "image" && a.kind !== "pdf") continue;
+      const base64 = await this.readBase64(a.path);
+      if (!base64) continue;
+      parts.push(
+        a.kind === "image"
+          ? { type: "image", image: `data:${a.mime};base64,${base64}` }
+          : {
+              type: "file",
+              data: `data:application/pdf;base64,${base64}`,
+              mediaType: "application/pdf",
+              filename: a.name,
+            }
+      );
+    }
+    return parts;
   }
 
   /**
@@ -784,8 +842,11 @@ export class SessionAgent extends Think<Env> {
           ? `--- attached audio: ${a.name} (id ${a.id}), already transcribed ---\n${a.text}`
           : `--- attached audio: ${a.name} (id ${a.id}), not transcribed. Call transcribe_audio with attachment_id "${a.id}" if you need the words. ---`;
       }
-      const kind = a.kind === "pdf" ? "PDF" : a.kind === "image" ? "image" : "file";
-      return `--- attached ${kind}: ${a.name}, in the workspace at ${a.path} ---`;
+      // Images and PDFs ride along as content parts, so naming them is enough. A text
+      // file is not sent: the model opens it from the workspace when it needs to.
+      if (a.kind === "image") return `--- attached image: ${a.name} ---`;
+      if (a.kind === "pdf") return `--- attached PDF: ${a.name} ---`;
+      return `--- attached file: ${a.name}, in the workspace at ${a.path} ---`;
     });
     return [message, ...notes].filter((part) => part.trim() !== "").join("\n\n");
   }
@@ -827,6 +888,10 @@ export class SessionAgent extends Think<Env> {
     const question = cut > 0 && messages[cut - 1].role === "user" ? messages[cut - 1] : null;
     if (question) cut--;
 
+    // Read the links before the rows go: the question's own row is among the ones
+    // about to be deleted, and its files are exactly what the retry needs back.
+    const attachments = question ? this.attachmentsOf(question.id) : [];
+
     const dropped = messages.slice(cut);
     if (dropped.length > 0) await this.session.deleteMessages(dropped.map((m) => m.id));
     for (const message of dropped) {
@@ -834,10 +899,7 @@ export class SessionAgent extends Think<Env> {
       this.exec(`DELETE FROM message_files WHERE message_id = ?`, message.id);
       this.exec(`DELETE FROM message_text WHERE message_id = ?`, message.id);
     }
-    if (!question) return [];
-
     // They are already marked used, so `pendingAttachments` would never find them.
-    const attachments = this.attachmentsOf(question.id);
     for (const a of attachments) this.exec(`UPDATE attachments SET used = 0 WHERE id = ?`, a.id);
     return attachments;
   }

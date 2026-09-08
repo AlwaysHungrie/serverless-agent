@@ -43,7 +43,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto px-4 pb-6">
+      <div className="flex-1 space-y-2 overflow-y-auto px-4 pb-20">
         {sessions.length === 0 && (
           <p className="text-muted px-2 py-10 text-center text-[14px] leading-[1.43]">
             No sessions yet.
