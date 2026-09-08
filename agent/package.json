@@ -9,12 +9,15 @@
     "chat": "node scripts/chat.mjs"
   },
   "dependencies": {
-    "agents": "^0.2.19",
+    "@ai-sdk/openai": "^4.0.60",
+    "@chat-adapter/telegram": "^4.40.0",
+    "@cloudflare/think": "^0.17.0",
+    "agents": "^0.22.0",
     "ai": "^7.0.93",
     "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250906.0",
+    "@cloudflare/workers-types": "^5.20260908.1",
     "typescript": "^5.9.2",
     "wrangler": "^4.42.0"
   }

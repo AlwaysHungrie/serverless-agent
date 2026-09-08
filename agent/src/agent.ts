@@ -12,10 +12,17 @@ import { DEFAULT_CONFIG, type Config, type Memory, type SessionRegistry } from "
 export type Env = {
   SessionAgent: DurableObjectNamespace;
   SessionRegistry: DurableObjectNamespace<SessionRegistry>;
+  MessengerAgent: DurableObjectNamespace<import("./messenger-agent").MessengerAgent>;
+  ThinkMessengerStateAgent: DurableObjectNamespace;
   /** Object storage for attachment bytes: images, and voice-note clips. */
   FILES: R2Bucket;
   OPENROUTER_API_KEY: string;
   MODEL: string;
+  /** Telegram bot credentials. Only the messenger agent reads these. */
+  TELEGRAM_BOT_TOKEN: string;
+  /** The bot's @handle, without the @: mention detection needs it. */
+  TELEGRAM_BOT_USERNAME: string;
+  TELEGRAM_WEBHOOK_SECRET_TOKEN: string;
 };
 
 /** An OpenRouter message. Content is a string, or parts when an image rides along. */

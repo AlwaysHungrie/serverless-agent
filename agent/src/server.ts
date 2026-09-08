@@ -1,10 +1,17 @@
-import { routeAgentRequest } from "agents";
+import { getAgentByName, routeAgentRequest } from "agents";
 import { MODELS, type Env } from "./agent";
 import { CAPABILITIES, SECRET_MASK, type CapabilityField } from "./capabilities";
 import type { Config } from "./registry";
 
 export { SessionAgent } from "./agent";
 export { SessionRegistry } from "./registry";
+export { MessengerAgent, ThinkMessengerStateAgent } from "./messenger-agent";
+
+/**
+ * One messenger agent for the whole Worker: Telegram addresses the bot, not a
+ * session, and Think shards each chat into its own sub-agent underneath.
+ */
+const MESSENGER_AGENT = "default";
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -205,6 +212,13 @@ export default {
       }
     }
 
+    // Telegram posts to a fixed public path. Think owns everything under it — the
+    // signature check included — so the request is handed to the root agent whole.
+    if (segments[0] === "messengers") {
+      const agent = await getAgentByName(env.MessengerAgent, MESSENGER_AGENT);
+      return withCors(await agent.fetch(request));
+    }
+
     const routed = await routeAgentRequest(request, env);
     if (routed) return withCors(routed);
 
@@ -221,6 +235,7 @@ export default {
             files: "GET|POST /agents/session-agent/:id/files, GET|DELETE .../files/:fileId",
             tasks: "GET /agents/session-agent/:id/tasks, DELETE .../tasks/:taskId",
             metrics: "GET /agents/session-agent/:id/metrics",
+            telegram: "POST /messengers/telegram/webhook",
           },
         })
       );
