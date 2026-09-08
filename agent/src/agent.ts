@@ -277,8 +277,15 @@ export class SessionAgent extends Think<Env> {
     });
   }
 
+  /**
+   * Calling the provider directly would build a Responses API model — the AI SDK's
+   * default for OpenAI itself. OpenRouter's own surface is chat completions, and its
+   * Responses endpoint covers only some of the models behind it, which is why a model
+   * that works everywhere else can come back as "Provider returned error". `.chat()`
+   * is the endpoint OpenRouter actually implements for every model it offers.
+   */
   getModel() {
-    return this.openrouter()(this.model());
+    return this.openrouter().chat(this.model());
   }
 
   getSystemPrompt() {
@@ -316,7 +323,8 @@ export class SessionAgent extends Think<Env> {
     this.turnUsage = { prompt: 0, completion: 0, cost: 0, started: Date.now() };
 
     return {
-      model: this.openrouter()(config.model),
+      // Chat completions, not Responses: see `getModel`.
+      model: this.openrouter().chat(config.model),
       instructions: this.systemPrompt(),
       tools: this.capabilityTools(config),
       temperature: config.temperature,
