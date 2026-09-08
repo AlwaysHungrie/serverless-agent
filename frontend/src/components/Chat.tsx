@@ -758,7 +758,9 @@ function Bubble({
     .map((p) => p.text)
     .join("");
   // Only a question can quote something; an assistant's own "> " is Markdown it wrote.
-  const { quote, body: text } = isUser ? splitQuote(raw) : { quote: "", body: raw };
+  const { quote, body: text } = isUser
+    ? splitQuote(raw)
+    : { quote: "", body: raw };
   const usage = message.parts.find((p) => p.type === "data-usage") as
     | { type: "data-usage"; data: UsageData }
     | undefined;
@@ -804,7 +806,7 @@ function Bubble({
           }`}
         >
           {images.length > 0 && (
-            <div className={text.length > 0 ? "p-2 pb-0" : "p-2"}>
+            <div className={text.length > 0 ? "p-6 pb-0" : "p-2"}>
               <MessageMedia images={images} sessionId={sessionId} />
             </div>
           )}

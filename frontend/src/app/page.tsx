@@ -4,7 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import { Chat } from "@/components/Chat";
 import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
-import { telegramLink, type SessionRow, type StoredMessage, type Summary } from "@/lib/agent";
+import {
+  telegramLink,
+  type SessionRow,
+  type StoredMessage,
+  type Summary,
+} from "@/lib/agent";
 
 export default function Home() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -28,7 +33,8 @@ export default function Home() {
   /** Reads a proxy response, surfacing the Worker-unreachable message as an error. */
   const readJson = useCallback(async <T,>(res: Response): Promise<T | null> => {
     const payload = (await res.json().catch(() => null)) as
-      (T & { error?: string }) | null;
+      | (T & { error?: string })
+      | null;
     if (!res.ok || !payload) {
       setError(payload?.error ?? `Request failed with ${res.status}.`);
       return null;
@@ -154,7 +160,7 @@ export default function Home() {
             />
             {loaded?.sessionId !== selected ? (
               <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light">
-                Waking Durable Object…
+                Connecting Session…
               </div>
             ) : (
               <Chat
@@ -170,7 +176,10 @@ export default function Home() {
                 // send into a conversation the other people in it cannot see.
                 continueAt={
                   current?.source === "telegram"
-                    ? { label: "Telegram", href: telegramLink(current, botUsername) }
+                    ? {
+                        label: "Telegram",
+                        href: telegramLink(current, botUsername),
+                      }
                     : null
                 }
               />
