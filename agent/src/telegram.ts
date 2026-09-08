@@ -21,6 +21,16 @@ export type TelegramMessage = {
   chat: { id: number; type: string; title?: string; username?: string; first_name?: string };
   from?: { id: number; is_bot: boolean; first_name?: string; username?: string };
   entities?: { type: string; offset: number; length: number }[];
+  /**
+   * The message this one replies to. Telegram sends only one level, already flattened,
+   * so this shape does not recurse.
+   */
+  reply_to_message?: {
+    message_id: number;
+    text?: string;
+    caption?: string;
+    from?: { id: number; is_bot: boolean; first_name?: string; username?: string };
+  };
   photo?: { file_id: string; file_size?: number; width: number; height: number }[];
   document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
   voice?: { file_id: string; mime_type?: string; file_size?: number; duration: number };
@@ -37,6 +47,9 @@ export type TelegramFile = {
 
 /** Telegram rejects a message over 4096 characters, so a long reply is split. */
 const MESSAGE_LIMIT = 4096;
+
+/** A quoted message is context, not the message, so it is shown only this far. */
+const QUOTE_LIMIT = 300;
 
 export class Telegram {
   constructor(
@@ -158,6 +171,33 @@ function split(text: string): string[] {
 /** The text of a message: its own, or the caption of whatever it carried. */
 export function messageText(message: TelegramMessage): string {
   return (message.text ?? message.caption ?? "").trim();
+}
+
+/**
+ * The message being replied to, as a Markdown blockquote — who said it and what they
+ * said, capped so a reply to a wall of text stays a quote. Empty when the message is
+ * not a reply, or when what it replies to carried no words.
+ */
+export function quotedText(message: TelegramMessage): string {
+  const parent = message.reply_to_message;
+  if (!parent) return "";
+  const body = (parent.text ?? parent.caption ?? "").trim();
+  if (!body) return "";
+  const who = parent.from?.first_name ?? parent.from?.username ?? "";
+  const clipped = body.length > QUOTE_LIMIT ? `${body.slice(0, QUOTE_LIMIT).trimEnd()}…` : body;
+  const lines = (who ? `${who}: ${clipped}` : clipped).split("\n");
+  return lines.map((line) => `> ${line}`).join("\n");
+}
+
+/**
+ * A message as the rest of the agent should read it: the quote it answers, then what
+ * was actually said. The model gets the context it was missing, and the transcript
+ * carries it too, so the browser can show the same thing.
+ */
+export function messageTextWithQuote(message: TelegramMessage): string {
+  const quote = quotedText(message);
+  const text = messageText(message);
+  return [quote, text].filter((part) => part !== "").join("\n\n");
 }
 
 /**

@@ -714,6 +714,24 @@ function buildSteps(parts: ChatUIMessage["parts"]): Step[] {
 }
 
 /**
+ * A message that came in as a reply carries the quoted message ahead of it, as
+ * blockquote lines. Split the two apart so the quote can be shown as a quote rather
+ * than as a stray "> " in the middle of a sentence.
+ */
+function splitQuote(text: string): { quote: string; body: string } {
+  if (!text.startsWith(">")) return { quote: "", body: text };
+  const lines = text.split("\n");
+  let end = 0;
+  while (end < lines.length && lines[end].startsWith(">")) end++;
+  const quote = lines
+    .slice(0, end)
+    .map((line) => line.replace(/^>\s?/, ""))
+    .join("\n")
+    .trim();
+  return { quote, body: lines.slice(end).join("\n").trim() };
+}
+
+/**
  * One message: its files above, the bubble itself, and its actions below. Voice notes
  * and documents sit outside the bubble — a clip with nothing said alongside it should
  * not be dressed up as a sentence — while images stay inside it, inset from the edge.
@@ -735,10 +753,12 @@ function Bubble({
   onRetry?: () => void;
 }) {
   const isUser = message.role === "user";
-  const text = message.parts
+  const raw = message.parts
     .filter((p): p is { type: "text"; text: string } => p.type === "text")
     .map((p) => p.text)
     .join("");
+  // Only a question can quote something; an assistant's own "> " is Markdown it wrote.
+  const { quote, body: text } = isUser ? splitQuote(raw) : { quote: "", body: raw };
   const usage = message.parts.find((p) => p.type === "data-usage") as
     | { type: "data-usage"; data: UsageData }
     | undefined;
@@ -760,6 +780,7 @@ function Bubble({
   // The bubble is for what was said. Files carry themselves.
   const hasBubble =
     text.length > 0 ||
+    quote.length > 0 ||
     tools.length > 0 ||
     images.length > 0 ||
     (!isUser && (usage !== undefined || pending));
@@ -789,13 +810,25 @@ function Bubble({
           )}
 
           {(text.length > 0 ||
+            quote.length > 0 ||
             tools.length > 0 ||
             (!isUser && (usage || pending))) && (
             <div className="px-6 py-5">
               {isUser ? (
-                text.length > 0 && (
-                  <div className="whitespace-pre-wrap">{text}</div>
-                )
+                <>
+                  {quote.length > 0 && (
+                    <div
+                      className={`mb-3 border-l-2 border-current/30 pl-3 text-[14px] leading-[1.35] whitespace-pre-wrap opacity-70 ${
+                        text.length === 0 ? "mb-0" : ""
+                      }`}
+                    >
+                      {quote}
+                    </div>
+                  )}
+                  {text.length > 0 && (
+                    <div className="whitespace-pre-wrap">{text}</div>
+                  )}
+                </>
               ) : steps.length > 0 ? (
                 <div className="space-y-4">
                   {steps.map((step, i) =>
@@ -1257,178 +1290,186 @@ export function Chat({
       </div>
 
       {continueAt ? (
-        <div className="border-hairline-soft flex items-center justify-between gap-4 border-t px-8 py-6">
+        <div className="bg-gradient-to-t from-[#229ED9]/18 to-transparent px-8 py-7 text-center">
           <p className="text-muted text-[14px] leading-[1.43]">
-            This conversation happens in {continueAt.label}.
+            Continue this conversation in{" "}
+            <a
+              href={continueAt.href}
+              target="_blank"
+              rel="noreferrer"
+              className="text-ink inline-flex items-center gap-1 underline decoration-[#229ED9] underline-offset-4 hover:decoration-2"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                className="h-[15px] w-[15px] fill-[#229ED9]"
+              >
+                <path d="M12 0a12 12 0 1 0 0 24 12 12 0 0 0 0-24Zm5.56 8.22-1.86 8.78c-.14.62-.51.77-1.03.48l-2.85-2.1-1.37 1.32c-.15.15-.28.28-.58.28l.2-2.9 5.29-4.78c.23-.2-.05-.32-.36-.12l-6.54 4.12-2.82-.88c-.61-.19-.62-.61.13-.9l11.03-4.25c.51-.19.96.12.79.95Z" />
+              </svg>
+              {continueAt.label}
+            </a>
+            .
           </p>
-          <a
-            href={continueAt.href}
-            target="_blank"
-            rel="noreferrer"
-            className="bg-ink text-on-primary rounded-full px-5 py-2.5 text-[14px] leading-[1.43]"
-          >
-            Continue in {continueAt.label}
-          </a>
         </div>
       ) : (
-      <div className="border-hairline-soft border-t px-8 py-6">
-        {(attachments.length > 0 || ghosts.length > 0 || uploadError) && (
-          <div className="mb-3 space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <AttachmentStrip
-                attachments={attachments}
-                sessionId={sessionId}
-                onRemove={(id) => void remove(id)}
-              />
-              {ghosts.map((g) =>
-                g.preview ? (
-                  <span key={g.key} className="relative">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={g.preview}
-                      alt={g.name}
-                      className="border-hairline-soft h-16 w-16 animate-pulse rounded-[12px] border object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => cancelUpload(g.key)}
-                      aria-label={`Cancel ${g.name}`}
-                      className="bg-ink text-on-primary absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full"
-                    >
-                      <X size={11} strokeWidth={2.5} />
-                    </button>
-                  </span>
-                ) : (
-                  <span
-                    key={g.key}
-                    className="bg-field text-muted flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[12px] leading-[1.33]"
-                  >
-                    {/* The label pulses, not the chip: the cancel button must stay solid. */}
-                    <FileText
-                      size={13}
-                      strokeWidth={1.75}
-                      className="animate-pulse"
-                    />
-                    <span className="max-w-[200px] animate-pulse truncate">
-                      {g.name}
+        <div className="border-hairline-soft border-t px-8 py-6">
+          {(attachments.length > 0 || ghosts.length > 0 || uploadError) && (
+            <div className="mb-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <AttachmentStrip
+                  attachments={attachments}
+                  sessionId={sessionId}
+                  onRemove={(id) => void remove(id)}
+                />
+                {ghosts.map((g) =>
+                  g.preview ? (
+                    <span key={g.key} className="relative">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={g.preview}
+                        alt={g.name}
+                        className="border-hairline-soft h-16 w-16 animate-pulse rounded-[12px] border object-cover"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => cancelUpload(g.key)}
+                        aria-label={`Cancel ${g.name}`}
+                        className="bg-ink text-on-primary absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full"
+                      >
+                        <X size={11} strokeWidth={2.5} />
+                      </button>
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => cancelUpload(g.key)}
-                      aria-label={`Cancel ${g.name}`}
-                      className="text-muted hover:text-ink flex h-5 w-5 items-center justify-center rounded-full"
+                  ) : (
+                    <span
+                      key={g.key}
+                      className="bg-field text-muted flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[12px] leading-[1.33]"
                     >
-                      <X size={12} strokeWidth={2} />
-                    </button>
-                  </span>
-                ),
+                      {/* The label pulses, not the chip: the cancel button must stay solid. */}
+                      <FileText
+                        size={13}
+                        strokeWidth={1.75}
+                        className="animate-pulse"
+                      />
+                      <span className="max-w-[200px] animate-pulse truncate">
+                        {g.name}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => cancelUpload(g.key)}
+                        aria-label={`Cancel ${g.name}`}
+                        className="text-muted hover:text-ink flex h-5 w-5 items-center justify-center rounded-full"
+                      >
+                        <X size={12} strokeWidth={2} />
+                      </button>
+                    </span>
+                  ),
+                )}
+              </div>
+              {uploadError && (
+                <p className="text-muted text-[12px]">{uploadError}</p>
               )}
             </div>
-            {uploadError && (
-              <p className="text-muted text-[12px]">{uploadError}</p>
-            )}
-          </div>
-        )}
+          )}
 
-        <form onSubmit={submit} className="flex gap-3">
-          {canAttach && (
-            <>
-              <input
-                ref={picker}
-                type="file"
-                multiple
-                accept={acceptFor(ready)}
-                hidden
-                onChange={(e) => {
-                  if (e.target.files?.length)
-                    void upload(Array.from(e.target.files));
-                  e.target.value = "";
-                }}
-              />
+          <form onSubmit={submit} className="flex gap-3">
+            {canAttach && (
+              <>
+                <input
+                  ref={picker}
+                  type="file"
+                  multiple
+                  accept={acceptFor(ready)}
+                  hidden
+                  onChange={(e) => {
+                    if (e.target.files?.length)
+                      void upload(Array.from(e.target.files));
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => picker.current?.click()}
+                  disabled={uploading}
+                  title="Attach a file"
+                  aria-label="Attach a file"
+                  className="border-hairline text-ink hover:bg-canvas-soft flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition disabled:opacity-40"
+                >
+                  <Paperclip size={18} strokeWidth={1.75} />
+                </button>
+              </>
+            )}
+            {ready.has("audio_input") && !recording && (
               <button
                 type="button"
-                onClick={() => picker.current?.click()}
+                onClick={() => void record()}
                 disabled={uploading}
-                title="Attach a file"
-                aria-label="Attach a file"
+                title="Record a voice note"
+                aria-label="Record a voice note"
                 className="border-hairline text-ink hover:bg-canvas-soft flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition disabled:opacity-40"
               >
-                <Paperclip size={18} strokeWidth={1.75} />
+                <Mic size={18} strokeWidth={1.75} />
               </button>
-            </>
-          )}
-          {ready.has("audio_input") && !recording && (
-            <button
-              type="button"
-              onClick={() => void record()}
-              disabled={uploading}
-              title="Record a voice note"
-              aria-label="Record a voice note"
-              className="border-hairline text-ink hover:bg-canvas-soft flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition disabled:opacity-40"
-            >
-              <Mic size={18} strokeWidth={1.75} />
-            </button>
-          )}
+            )}
 
-          {recording ? (
-            <div className="bg-field flex h-12 flex-1 items-center gap-3 rounded-[16px] px-4">
-              <span className="bg-ink h-2.5 w-2.5 shrink-0 animate-pulse rounded-full" />
-              <span className="text-ink tnum text-[16px]">
-                {clock(recordedFor ?? 0)}
-              </span>
-              <span className="text-faint flex-1 text-[13px]">
-                {MAX_RECORDING_SECONDS - (recordedFor ?? 0) <= 30
-                  ? `Stopping in ${MAX_RECORDING_SECONDS - (recordedFor ?? 0)}s`
-                  : "Recording…"}
-              </span>
+            {recording ? (
+              <div className="bg-field flex h-12 flex-1 items-center gap-3 rounded-[16px] px-4">
+                <span className="bg-ink h-2.5 w-2.5 shrink-0 animate-pulse rounded-full" />
+                <span className="text-ink tnum text-[16px]">
+                  {clock(recordedFor ?? 0)}
+                </span>
+                <span className="text-faint flex-1 text-[13px]">
+                  {MAX_RECORDING_SECONDS - (recordedFor ?? 0) <= 30
+                    ? `Stopping in ${MAX_RECORDING_SECONDS - (recordedFor ?? 0)}s`
+                    : "Recording…"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void finishRecording(false)}
+                  className="text-muted hover:text-ink text-[13px] transition"
+                >
+                  Discard
+                </button>
+              </div>
+            ) : (
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={uploading ? "Uploading…" : "Message the agent…"}
+                className="bg-field placeholder:text-faint text-ink focus:ring-ink h-12 flex-1 rounded-[16px] px-4 text-[16px] outline-none focus:ring-2"
+              />
+            )}
+            {recording ? (
               <button
                 type="button"
-                onClick={() => void finishRecording(false)}
-                className="text-muted hover:text-ink text-[13px] transition"
+                onClick={() => void finishRecording(true)}
+                title="Stop recording"
+                aria-label="Stop recording"
+                className="bg-ink text-on-primary flex h-12 w-12 shrink-0 items-center justify-center rounded-full transition hover:opacity-85"
               >
-                Discard
+                <Square size={15} strokeWidth={2} fill="currentColor" />
               </button>
-            </div>
-          ) : (
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={uploading ? "Uploading…" : "Message the agent…"}
-              className="bg-field placeholder:text-faint text-ink focus:ring-ink h-12 flex-1 rounded-[16px] px-4 text-[16px] outline-none focus:ring-2"
-            />
-          )}
-          {recording ? (
-            <button
-              type="button"
-              onClick={() => void finishRecording(true)}
-              title="Stop recording"
-              aria-label="Stop recording"
-              className="bg-ink text-on-primary flex h-12 w-12 shrink-0 items-center justify-center rounded-full transition hover:opacity-85"
-            >
-              <Square size={15} strokeWidth={2} fill="currentColor" />
-            </button>
-          ) : streaming ? (
-            <button
-              type="button"
-              onClick={() => {
-                stop();
-                onTurnEnd();
-              }}
-              className="border-hairline text-ink hover:bg-canvas-soft h-12 shrink-0 rounded-full border px-6 text-[16px] font-semibold transition"
-            >
-              Stop
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={!input.trim() && attachments.length === 0}
-              className="bg-ink text-on-primary h-12 shrink-0 rounded-full px-6 text-[16px] font-semibold transition hover:opacity-85 disabled:opacity-30"
-            >
-              Send
-            </button>
-          )}
-        </form>
-      </div>
+            ) : streaming ? (
+              <button
+                type="button"
+                onClick={() => {
+                  stop();
+                  onTurnEnd();
+                }}
+                className="border-hairline text-ink hover:bg-canvas-soft h-12 shrink-0 rounded-full border px-6 text-[16px] font-semibold transition"
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim() && attachments.length === 0}
+                className="bg-ink text-on-primary h-12 shrink-0 rounded-full px-6 text-[16px] font-semibold transition hover:opacity-85 disabled:opacity-30"
+              >
+                Send
+              </button>
+            )}
+          </form>
+        </div>
       )}
     </div>
   );

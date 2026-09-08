@@ -16,7 +16,7 @@ import {
   Telegram,
   addressesBot,
   messageFiles,
-  messageText,
+  messageTextWithQuote,
   type TelegramMessage,
 } from "./telegram";
 
@@ -1040,7 +1040,7 @@ export class SessionAgent extends Think<Env> {
 
     try {
       await this.ingestTelegramFiles(bot, message);
-      const text = messageText(message) || "(no text)";
+      const text = messageTextWithQuote(message) || "(no text)";
       const drawnBefore = new Set(this.exec<{ id: string }>(`SELECT id FROM attachments`).map((r) => r.id));
 
       const result = await this.runTurn({ input: [await this.openTurn(text, false)] });
