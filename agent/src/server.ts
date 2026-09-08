@@ -292,7 +292,7 @@ async function assertNameFree(
   const taken = (await reg.mcpServers()).some(
     (s) => s.id !== exceptId && s.name.toLowerCase() === name.toLowerCase()
   );
-  if (taken) throw new Error(`there is already a server called "${name}"`);
+  if (taken) throw new Error(`A server with name "${name}" already exists`);
 }
 
 /**
@@ -590,14 +590,14 @@ async function handleWebhook(
   const allowed =
     message.chat.type === "private"
       ? allowedBy(config.telegram_user_whitelist, [
-          message.from?.username,
-          message.from?.id !== undefined ? String(message.from.id) : undefined,
-        ])
+        message.from?.username,
+        message.from?.id !== undefined ? String(message.from.id) : undefined,
+      ])
       : allowedBy(config.telegram_group_whitelist, [
-          threadId ? `${chatId}:${threadId}` : chatId,
-          chatId,
-          message.chat.username,
-        ]);
+        threadId ? `${chatId}:${threadId}` : chatId,
+        chatId,
+        message.chat.username,
+      ]);
   if (!allowed) return new Response("ok");
 
   const existing = await reg.forChat(chatId, threadId);

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Check, Link2, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { SECRET_MASK, type McpAuth, type McpServer } from "@/lib/agent";
 import { Toggle } from "@/components/CapabilitySection";
+import { McpPresetStrip, type McpPreset } from "@/components/McpPresets";
 
 const AUTH_MODES: { id: McpAuth; label: string; hint?: string }[] = [
   {
@@ -39,6 +40,8 @@ const input =
   "bg-canvas border-hairline placeholder:text-faint text-ink w-full min-w-0 rounded-[16px] border px-4 py-3 text-[14px] outline-none";
 const button =
   "bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-4 py-2.5 text-[13px] font-semibold transition disabled:opacity-40";
+const actionButton =
+  "bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[12px] border px-2 py-1 text-[13px] font-semibold transition disabled:opacity-40";
 
 function AuthPicker({
   value,
@@ -190,6 +193,40 @@ function ServerCard({
         </p>
       )}
 
+      <div className="flex flex-wrap gap-2 mt-2">
+        {server.auth === "oauth" &&
+          (server.connected ? (
+            <button
+              onClick={() => onAction("disconnect")}
+              disabled={busy}
+              className={actionButton}
+            >
+              Disconnect
+            </button>
+          ) : (
+            <button
+              onClick={() => onAction("connect")}
+              disabled={busy}
+              className={`bg-ink text-canvas shrink-0 rounded-[12px] border px-2 py-1 text-[13px] font-semibold transition disabled:opacity-40`}
+            >
+              <span className="inline-flex items-center gap-2">Connect</span>
+            </button>
+          ))}
+        <button
+          onClick={() => onAction("refresh")}
+          disabled={busy}
+          className={actionButton}
+        >
+          <span className="inline-flex items-center gap-2">Refresh tools</span>
+        </button>
+        <button onClick={onRemove} disabled={busy} className={actionButton}>
+          <span className="inline-flex items-center gap-2">
+            <Trash2 size={14} strokeWidth={2} />
+            Remove
+          </span>
+        </button>
+      </div>
+
       {open && (
         <div className="mt-5 space-y-4">
           <div className="flex gap-2">
@@ -203,76 +240,42 @@ function ServerCard({
               className={`${input} flex-1`}
             />
           </div>
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onBlur={() => url.trim() && url !== server.url && onPatch({ url })}
-            aria-label="Server URL"
-            className={input}
-          />
 
-          <AuthPicker
-            value={server.auth}
-            onChange={(auth) => onPatch({ auth })}
-          />
+          {!server.connected && (
+            <>
+              <input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onBlur={() =>
+                  url.trim() && url !== server.url && onPatch({ url })
+                }
+                aria-label="Server URL"
+                className={input}
+              />
+              <AuthPicker
+                value={server.auth}
+                onChange={(auth) => onPatch({ auth })}
+              />
 
-          {server.auth === "headers" && (
-            <div className="space-y-3">
-              <HeaderEditor pairs={pairs} onChange={setPairs} />
-              <button
-                onClick={() => onPatch({ headers: objectFrom(pairs) })}
-                disabled={busy}
-                className={button}
-              >
-                Save headers
-              </button>
-            </div>
+              {server.auth === "headers" && (
+                <div className="space-y-3">
+                  <HeaderEditor pairs={pairs} onChange={setPairs} />
+                  <button
+                    onClick={() => onPatch({ headers: objectFrom(pairs) })}
+                    disabled={busy}
+                    className={button}
+                  >
+                    Save headers
+                  </button>
+                </div>
+              )}
+            </>
           )}
-
-          <div className="flex flex-wrap gap-2">
-            {server.auth === "oauth" &&
-              (server.connected ? (
-                <button
-                  onClick={() => onAction("disconnect")}
-                  disabled={busy}
-                  className={button}
-                >
-                  Disconnect
-                </button>
-              ) : (
-                <button
-                  onClick={() => onAction("connect")}
-                  disabled={busy}
-                  className="bg-ink text-canvas shrink-0 rounded-[16px] px-4 py-2.5 text-[13px] font-semibold transition disabled:opacity-40"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Link2 size={14} strokeWidth={2} />
-                    Connect
-                  </span>
-                </button>
-              ))}
-            <button
-              onClick={() => onAction("refresh")}
-              disabled={busy}
-              className={button}
-            >
-              <span className="inline-flex items-center gap-2">
-                <RefreshCw size={14} strokeWidth={2} />
-                Refresh tools
-              </span>
-            </button>
-            <button onClick={onRemove} disabled={busy} className={button}>
-              <span className="inline-flex items-center gap-2">
-                <Trash2 size={14} strokeWidth={2} />
-                Remove
-              </span>
-            </button>
-          </div>
 
           {server.tools.length > 0 && (
             <div>
               <span className="text-muted block text-[12px] leading-[1.33]">
-                Tools the agent can call
+                Tools available
               </span>
               <div className="mt-2 flex flex-wrap gap-2">
                 {server.tools.map((tool) => (
@@ -297,14 +300,20 @@ function ServerCard({
 function AddServer({
   onAdd,
   busy,
+  preset,
 }: {
   onAdd: (body: Record<string, unknown>) => Promise<boolean>;
   busy: boolean;
+  /**
+   * What a provider picked from the strip expects. The form is remounted when one
+   * arrives, so the preset is simply where its fields start.
+   */
+  preset: McpPreset | null;
 }) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [url, setUrl] = useState("");
-  const [auth, setAuth] = useState<McpAuth>("oauth");
+  const [open, setOpen] = useState(!!preset);
+  const [name, setName] = useState(preset?.name ?? "");
+  const [url, setUrl] = useState(preset?.url ?? "");
+  const [auth, setAuth] = useState<McpAuth>(preset?.auth ?? "oauth");
   const [pairs, setPairs] = useState<HeaderPair[]>([{ key: "", value: "" }]);
 
   const reset = () => {
@@ -391,6 +400,9 @@ function oauthResult(): { connected: string | null; failed: string | null } {
 export function McpServers() {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [redirectUri, setRedirectUri] = useState("");
+  // A picked provider, and a counter that remounts the form so it takes the values.
+  const [preset, setPreset] = useState<McpPreset | null>(null);
+  const [picks, setPicks] = useState(0);
   // The OAuth callback lands back here with its result in the query string. It is
   // read as the initial state rather than in an effect: it is already there on the
   // first render, and there is nothing to synchronize with afterwards.
@@ -486,17 +498,18 @@ export function McpServers() {
 
   return (
     <div className="space-y-4">
-      {notice && (
-        <p className="bg-canvas border-hairline flex items-center gap-2 rounded-[16px] border px-4 py-3 text-[13px] leading-[1.33]">
-          <Check size={14} strokeWidth={2} />
-          {notice}
-        </p>
-      )}
       {error && (
         <p className="bg-canvas border-hairline rounded-[16px] border px-4 py-3 text-[13px] leading-[1.33]">
           {error}
         </p>
       )}
+
+      <McpPresetStrip
+        onPick={(picked) => {
+          setPreset(picked);
+          setPicks((n) => n + 1);
+        }}
+      />
 
       {servers.map((server) => (
         <ServerCard
@@ -519,7 +532,7 @@ export function McpServers() {
         />
       ))}
 
-      <AddServer onAdd={add} busy={busy} />
+      <AddServer key={picks} onAdd={add} busy={busy} preset={preset} />
 
       {redirectUri && (
         <p className="text-faint text-[12px] leading-[1.33]">

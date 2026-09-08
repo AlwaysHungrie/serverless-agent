@@ -240,7 +240,7 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_mcp",
     alwaysOn: true,
     label: "MCP servers",
-    summary: "Connect to external tools and websites hosted elsewhere — Notion, Clickup, etc.",
+    summary: "Connect to any external MCP server or select an MCP server template from the list below.",
     // The servers are rows, not settings, so this capability's editor is its own
     // component rather than a list of fields.
     tools: [],
