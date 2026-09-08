@@ -72,6 +72,20 @@ export class Telegram {
     await this.call("deleteWebhook", { drop_pending_updates: true });
   }
 
+  /**
+   * What Telegram thinks the webhook is: where it points, how many updates are
+   * queued behind it, and why the last delivery failed. The fastest answer to "the
+   * bot is not replying".
+   */
+  async webhookInfo(): Promise<{
+    url: string;
+    pending_update_count: number;
+    last_error_date?: number;
+    last_error_message?: string;
+  }> {
+    return await this.call("getWebhookInfo", {});
+  }
+
   /** The bot's own username, so a group mention can be recognised. */
   async me(): Promise<{ id: number; username: string }> {
     return await this.call("getMe", {});

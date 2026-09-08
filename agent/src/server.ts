@@ -225,6 +225,30 @@ export default {
       }
     }
 
+    // "Why is the bot not answering?" — asked of Telegram itself.
+    if (segments[0] === "api" && segments[1] === "telegram" && segments[2] === "status") {
+      const config = await registry(env).config(env.MODEL);
+      if (!config.telegram_bot_token) {
+        return withCors(Response.json({ error: "no bot token saved" }, { status: 400 }));
+      }
+      const bot = new Telegram(config.telegram_bot_token, env.TELEGRAM_API_BASE);
+      try {
+        const [info, me] = await Promise.all([bot.webhookInfo(), bot.me()]);
+        return withCors(
+          Response.json({
+            enabled: config.cap_telegram === 1,
+            bot: me.username,
+            expected: `${url.origin}/telegram/webhook`,
+            webhook: info,
+          })
+        );
+      } catch (err) {
+        return withCors(
+          Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 })
+        );
+      }
+    }
+
     if (segments[0] === "api" && segments[1] === "sessions") {
       const reg = registry(env);
       const id = segments[2];
