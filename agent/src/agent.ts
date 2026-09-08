@@ -19,7 +19,10 @@ export type Env = {
 };
 
 /** An OpenRouter message. Content is a string, or parts when an image rides along. */
-type Part = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type Part =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "file"; file: { filename: string; file_data: string } };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 type Msg = {
   role: "user" | "assistant" | "system" | "tool";
@@ -66,7 +69,7 @@ export type TurnStep =
 /** A file the user attached, or an image the agent drew. */
 export type Attachment = {
   id: string;
-  kind: "text" | "image";
+  kind: "text" | "image" | "pdf";
   name: string;
   mime: string;
   /** Extracted text for a text file, a transcript for audio, a prompt for an image. */
@@ -134,6 +137,9 @@ function roundLimitNote(failures: string[]): string {
  */
 const MAX_UPLOAD_BYTES = {
   text: 1_000_000,
+  // A PDF is base64'd into every prompt that carries it, like an image, and parsing
+  // it costs a page at a time, so the ceiling sits well under the image one.
+  pdf: 8_000_000,
   image: 10_000_000,
   audio: 25_000_000,
 } as const;
@@ -385,8 +391,9 @@ export class SessionAgent extends Agent<Env> {
     const mime = file.type || "application/octet-stream";
     const id = crypto.randomUUID().slice(0, 12);
 
-    const limit =
-      mime.startsWith("image/")
+    const limit = isPdf(mime, file.name)
+      ? MAX_UPLOAD_BYTES.pdf
+      : mime.startsWith("image/")
         ? MAX_UPLOAD_BYTES.image
         : mime.startsWith("audio/") || mime.startsWith("video/")
           ? MAX_UPLOAD_BYTES.audio
@@ -398,6 +405,26 @@ export class SessionAgent extends Agent<Env> {
         },
         status: 413,
       };
+    }
+
+    if (isPdf(mime, file.name)) {
+      if (!enabled(config, "file_ingest")) {
+        return { body: { error: "File ingest is off. Turn it on under Capabilities." }, status: 400 };
+      }
+      // Nothing is extracted here: the pages ride to OpenRouter as a file part and its
+      // file-parser plugin turns them into text, which keeps a PDF parser out of the
+      // Worker and out of the upload path.
+      const attachment = this.insertAttachment({
+        id,
+        kind: "pdf",
+        name: file.name,
+        mime: "application/pdf",
+        text: "",
+        data: "",
+        key: await this.putObject(id, await file.arrayBuffer(), "application/pdf"),
+        bytes: file.size,
+      });
+      return { body: { attachment: publicAttachment(attachment) }, status: 200 };
     }
 
     if (mime.startsWith("image/")) {
@@ -579,10 +606,12 @@ export class SessionAgent extends Agent<Env> {
     const attached = this.attachmentsOf(row);
     const text = withAudioNotes(row.content, attached);
     const images = attached.filter((a) => a.kind === "image");
-    if (images.length === 0) return text;
+    const pdfs = attached.filter((a) => a.kind === "pdf");
+    if (images.length === 0 && pdfs.length === 0) return text;
     return [
       { type: "text", text },
       ...(await this.imageParts(images)),
+      ...(await this.pdfParts(pdfs)),
     ];
   }
 
@@ -592,6 +621,18 @@ export class SessionAgent extends Agent<Env> {
     return urls
       .filter((url) => url !== "")
       .map((url) => ({ type: "image_url" as const, image_url: { url } }));
+  }
+
+  /** PDF attachments as OpenRouter file parts; the file-parser plugin reads them. */
+  private async pdfParts(pdfs: Attachment[]): Promise<Part[]> {
+    const urls = await Promise.all(pdfs.map((a) => this.dataUrlOf(a)));
+    return pdfs
+      .map((a, i) => ({ a, url: urls[i] }))
+      .filter(({ url }) => url !== "")
+      .map(({ a, url }) => ({
+        type: "file" as const,
+        file: { filename: a.name, file_data: url },
+      }));
   }
 
   private systemPrompt(): string {
@@ -628,10 +669,15 @@ export class SessionAgent extends Agent<Env> {
     const text = withAudioNotes(withDocs, attachments);
 
     const images = attachments.filter((a) => a.kind === "image");
-    if (images.length === 0) return { role: "user", content: text };
+    const pdfs = attachments.filter((a) => a.kind === "pdf");
+    if (images.length === 0 && pdfs.length === 0) return { role: "user", content: text };
     return {
       role: "user",
-      content: [{ type: "text", text }, ...(await this.imageParts(images))],
+      content: [
+        { type: "text", text },
+        ...(await this.imageParts(images)),
+        ...(await this.pdfParts(pdfs)),
+      ],
     };
   }
 
@@ -928,6 +974,12 @@ export class SessionAgent extends Agent<Env> {
       if (config.reasoning_effort !== "off") body.reasoning = { effort: config.reasoning_effort };
       const tools = toolDefinitions(config);
       if (tools.length > 0) body.tools = tools;
+    }
+
+    // pdf-text is the free engine: it lifts the embedded text layer and only falls
+    // short on scanned pages, which no engine reads without paying for OCR.
+    if (messages.some(hasFilePart)) {
+      body.plugins = [{ id: "file-parser", pdf: { engine: "pdf-text" } }];
     }
 
     return fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -1290,6 +1342,15 @@ function withAudioNotes(text: string, attachments: Attachment[]): string {
       : `--- attached audio: ${a.name} (id ${a.id}), not transcribed. Call transcribe_audio with attachment_id "${a.id}" if you need the words. ---`
   );
   return [text, ...notes].filter((part) => part.trim() !== "").join("\n\n");
+}
+
+/** A PDF by mime, or by name when the browser sends no type at all. */
+function isPdf(mime: string, name: string): boolean {
+  return mime === "application/pdf" || /\.pdf$/i.test(name);
+}
+
+function hasFilePart(m: Msg): boolean {
+  return Array.isArray(m.content) && m.content.some((p) => p.type === "file");
 }
 
 function publicAttachment(a: Attachment) {

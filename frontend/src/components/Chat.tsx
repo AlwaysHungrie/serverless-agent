@@ -9,6 +9,7 @@ import {
   Copy,
   Download,
   FileText,
+  FileType2,
   GitBranch,
   Mic,
   Paperclip,
@@ -96,6 +97,24 @@ function formatChars(chars: number) {
   return chars >= 1000
     ? `${(chars / 1000).toFixed(1)}k chars`
     : `${chars} chars`;
+}
+
+function formatBytes(bytes: number) {
+  return bytes >= 1_000_000
+    ? `${(bytes / 1_000_000).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1000))} kB`;
+}
+
+/** The short type label on a file card: the extension, or the format's own name. */
+function fileLabel(a: Attachment) {
+  if (a.kind === "pdf") return "PDF";
+  const ext = a.name.split(".").pop() ?? "";
+  return ext && ext !== a.name ? ext.toUpperCase() : "TEXT";
+}
+
+/** The line under a file's name: what it is, and how much of it there is. */
+function fileMeta(a: Attachment) {
+  return `${fileLabel(a)} · ${a.kind === "pdf" ? formatBytes(a.bytes) : formatChars(a.chars)}`;
 }
 
 function fileUrl(sessionId: string, id: string) {
@@ -194,6 +213,9 @@ const MARKDOWN_COMPONENTS = (sessionId: string) => ({
     />
   ),
 });
+
+/** Softens the last line of a file preview, so the cut reads as a sample. */
+const FADE = "linear-gradient(to bottom, #000 55%, transparent 100%)";
 
 /** A voice note is stored as a text attachment; only its mime type gives it away. */
 function isAudio(a: Attachment) {
@@ -392,6 +414,8 @@ function AttachmentStrip({
           >
             {isAudio(a) ? (
               <Mic size={13} strokeWidth={1.75} className="shrink-0" />
+            ) : a.kind === "pdf" ? (
+              <FileType2 size={13} strokeWidth={1.75} className="shrink-0" />
             ) : (
               <FileText size={13} strokeWidth={1.75} className="shrink-0" />
             )}
@@ -415,8 +439,9 @@ function AttachmentStrip({
 }
 
 /**
- * Non-image attachments on a sent message: a full-width card per file, tinted to sit
- * on whichever bubble it lands in, rather than the composer's light pill.
+ * Non-image attachments on a sent message: one fixed-width card per file — name, type
+ * and size on a line of their own, a sample of the text faded out under them — tinted
+ * to sit on whichever bubble it lands in, rather than the composer's light pill.
  */
 function MessageDocs({
   docs,
@@ -441,36 +466,48 @@ function MessageDocs({
         ) : (
           <div
             key={a.id}
-            className={`flex w-fit max-w-full gap-3 rounded-[14px] px-3 py-2.5 ${
-              a.preview ? "items-start" : "items-center"
-            } ${isUser ? "bg-white/10" : "bg-field"}`}
+            className={`w-[268px] max-w-full overflow-hidden rounded-[14px] ${
+              isUser ? "bg-white/10" : "bg-field"
+            }`}
           >
-            <span
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] ${
-                isUser ? "bg-white/15" : "bg-canvas border-hairline-soft border"
-              }`}
-            >
-              <FileText size={16} strokeWidth={1.75} />
-            </span>
-            <span className="min-w-0 max-w-[320px] flex-1">
-              <span className="block truncate text-[14px] leading-[1.35]">
-                {a.name}
-              </span>
+            <div className="flex items-center gap-2.5 px-3 py-2.5">
               <span
-                className={`tnum block text-[12px] leading-[1.33] ${isUser ? "opacity-60" : "text-faint"}`}
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] ${
+                  isUser ? "bg-white/15" : "bg-canvas border-hairline-soft border"
+                }`}
               >
-                {formatChars(a.chars)}
+                {a.kind === "pdf" ? (
+                  <FileType2 size={16} strokeWidth={1.75} />
+                ) : (
+                  <FileText size={16} strokeWidth={1.75} />
+                )}
               </span>
-              {a.preview && (
-                <span
-                  className={`mt-1.5 block max-h-[4.2em] overflow-hidden font-mono text-[12px] leading-[1.4] whitespace-pre-wrap ${
-                    isUser ? "opacity-60" : "text-muted"
-                  }`}
-                >
-                  {a.preview}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[14px] leading-[1.35]">
+                  {a.name}
                 </span>
-              )}
-            </span>
+                <span
+                  className={`tnum block text-[12px] leading-[1.33] ${isUser ? "opacity-60" : "text-faint"}`}
+                >
+                  {fileMeta(a)}
+                </span>
+              </span>
+            </div>
+            {a.preview && (
+              <span
+                className={`block max-h-[3.9em] overflow-hidden px-3 pb-2.5 font-mono text-[11.5px] leading-[1.3] whitespace-pre-wrap ${
+                  isUser ? "opacity-55" : "text-muted"
+                }`}
+                style={{
+                  // The preview is a sample, not the file: fading its last line says so
+                  // without a truncation mark that could be read as content.
+                  maskImage: FADE,
+                  WebkitMaskImage: FADE,
+                }}
+              >
+                {a.preview}
+              </span>
+            )}
           </div>
         ),
       )}
@@ -893,6 +930,8 @@ function acceptFor(ready: Set<string>): string {
   if (ready.has("file_ingest"))
     accept.push(
       "text/*",
+      "application/pdf",
+      ".pdf",
       ".md",
       ".csv",
       ".json",

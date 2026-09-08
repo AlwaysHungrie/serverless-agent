@@ -118,7 +118,7 @@ export function capabilityReady(
 /** A file the user attached, or an image the agent drew, minus the bytes. */
 export type Attachment = {
   id: string;
-  kind: "text" | "image";
+  kind: "text" | "image" | "pdf";
   name: string;
   mime: string;
   bytes: number;
