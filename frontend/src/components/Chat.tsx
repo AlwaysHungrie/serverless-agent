@@ -32,30 +32,49 @@ import {
   type Capability,
   type Config,
   type StoredMessage,
+  type TurnStep,
   type UsageData,
 } from "@/lib/agent";
 import { formatMs, formatUsd } from "@/lib/format";
 import { fitImage } from "@/lib/image";
 import { startRecording, type Recorder } from "@/lib/recorder";
 
-/** How a tool call reads while it runs, and once it is done. */
-const TOOL_LABELS: Record<string, [running: string, done: string]> = {
-  web_search: ["Searching the web…", "Searched the web"],
-  fetch_url: ["Reading the page…", "Read the page"],
-  generate_image: ["Drawing…", "Drew an image"],
-  schedule_task: ["Scheduling…", "Scheduled a task"],
-  list_scheduled_tasks: ["Checking the schedule…", "Checked the schedule"],
-  cancel_scheduled_task: ["Cancelling…", "Cancelled a task"],
-  remember: ["Remembering…", "Remembered"],
-  recall: ["Recalling…", "Recalled"],
+/** How a tool call reads while it runs, once it is done, and when it fails. */
+const TOOL_LABELS: Record<
+  string,
+  [running: string, done: string, failed: string]
+> = {
+  web_search: ["Searching web", "Searched", "Web search failed"],
+  fetch_url: ["Reading page", "Read page", "Page fetch failed"],
+  generate_image: ["Generating", "Generated", "Image generation failed"],
+  schedule_task: ["Scheduling", "Scheduled", "Scheduling failed"],
+  list_scheduled_tasks: [
+    "Checking schedule",
+    "Checked",
+    "Schedule check failed",
+  ],
+  cancel_scheduled_task: ["Cancelling", "Cancelled", "Cancelling failed"],
+  remember: ["Looking up", "Looked up", "Could not remember"],
+  recall: ["Recalling", "Recalled", "Recall failed"],
 };
 
 function toolLabel(tool: ToolData) {
-  const pair = TOOL_LABELS[tool.name] ?? [
+  const trio = TOOL_LABELS[tool.name] ?? [
     `Running ${tool.name}…`,
     `Ran ${tool.name}`,
+    `${tool.name} failed`,
   ];
-  return tool.done ? pair[1] : pair[0];
+  if (!tool.done) return trio[0];
+  return tool.ok === false ? trio[2] : trio[1];
+}
+
+/**
+ * A failed tool has to read as failed rather than pass for a step that quietly went
+ * by. The label says so; darkening it from faint to muted is the whole emphasis.
+ */
+function ToolLine({ tool }: { tool: ToolData }) {
+  const failed = tool.done && tool.ok === false;
+  return <div>{toolLabel(tool)}</div>;
 }
 
 function UsageLine({ usage }: { usage: UsageData }) {
@@ -646,6 +665,37 @@ function MessageActions({
   );
 }
 
+type ToolPart = { type: "data-tool"; id?: string; data: ToolData };
+type Step =
+  | { kind: "text"; text: string }
+  | { kind: "tools"; tools: ToolPart[] };
+
+/** Fold a message's parts into the ordered steps of the turn. */
+function buildSteps(parts: ChatUIMessage["parts"]): Step[] {
+  const steps: Step[] = [];
+  for (const part of parts) {
+    if (part.type === "text") {
+      if (!part.text) continue;
+      const last = steps[steps.length - 1];
+      if (last?.kind === "text") last.text += part.text;
+      else steps.push({ kind: "text", text: part.text });
+    } else if (part.type === "data-tool") {
+      const tool = part as ToolPart;
+      const last = steps[steps.length - 1];
+      if (last?.kind === "tools") {
+        // A tool reports twice — running, then done. The second write replaces the
+        // first so the line changes in place rather than stacking.
+        const at = last.tools.findIndex((t) => t.id && t.id === tool.id);
+        if (at === -1) last.tools.push(tool);
+        else last.tools[at] = tool;
+      } else {
+        steps.push({ kind: "tools", tools: [tool] });
+      }
+    }
+  }
+  return steps;
+}
+
 /**
  * One message: its files above, the bubble itself, and its actions below. Voice notes
  * and documents sit outside the bubble — a clip with nothing said alongside it should
@@ -673,13 +723,19 @@ function Bubble({
     .map((p) => p.text)
     .join("");
   const usage = message.parts.find((p) => p.type === "data-usage") as
-    { type: "data-usage"; data: UsageData } | undefined;
+    | { type: "data-usage"; data: UsageData }
+    | undefined;
   const tools = message.parts.filter(
     (p): p is { type: "data-tool"; id?: string; data: ToolData } =>
       p.type === "data-tool",
   );
+  // The turn as it happened: text the model wrote, the tools it then ran, the text it
+  // wrote after them. Consecutive tool calls collapse into one block; everything else
+  // stays in the order the stream produced it.
+  const steps = useMemo(() => buildSteps(message.parts), [message.parts]);
   const files = message.parts.find((p) => p.type === "data-files") as
-    { type: "data-files"; data: FilesData } | undefined;
+    | { type: "data-files"; data: FilesData }
+    | undefined;
 
   const attachments = files?.data.attachments ?? [];
   const images = attachments.filter((a) => a.kind === "image");
@@ -719,25 +775,34 @@ function Bubble({
             tools.length > 0 ||
             (!isUser && (usage || pending))) && (
             <div className="px-6 py-5">
-              {tools.length > 0 && (
-                <div className="text-faint mb-3 space-y-1 text-[12px] leading-[1.33]">
-                  {tools.map((t, i) => (
-                    <div key={t.id ?? i}>{toolLabel(t.data)}</div>
-                  ))}
-                </div>
-              )}
-
               {isUser ? (
                 text.length > 0 && (
                   <div className="whitespace-pre-wrap">{text}</div>
                 )
-              ) : text ? (
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={MARKDOWN_COMPONENTS(sessionId)}
-                >
-                  {text}
-                </ReactMarkdown>
+              ) : steps.length > 0 ? (
+                <div className="space-y-4">
+                  {steps.map((step, i) =>
+                    step.kind === "tools" ? (
+                      <div
+                        key={`tools-${i}`}
+                        className="text-faint space-y-1 text-[12px] leading-[1.33]"
+                      >
+                        {step.tools.map((t, j) => (
+                          <ToolLine key={t.id ?? j} tool={t.data} />
+                        ))}
+                      </div>
+                    ) : (
+                      <div key={`text-${i}`}>
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={MARKDOWN_COMPONENTS(sessionId)}
+                        >
+                          {step.text}
+                        </ReactMarkdown>
+                      </div>
+                    ),
+                  )}
+                </div>
               ) : (
                 <Thinking />
               )}
@@ -761,6 +826,35 @@ function Bubble({
   );
 }
 
+/**
+ * An assistant turn's stored steps as message parts. Turns saved before steps existed
+ * — and any turn that ran no tools — fall back to the plain text of the row.
+ */
+function storedParts(row: StoredMessage): ChatUIMessage["parts"] {
+  let steps: TurnStep[] = [];
+  try {
+    steps = JSON.parse(row.steps || "[]") as TurnStep[];
+  } catch {
+    steps = [];
+  }
+  if (steps.length === 0) return [{ type: "text", text: row.content }];
+  const parts: ChatUIMessage["parts"] = [];
+  steps.forEach((step, i) => {
+    if (step.kind === "text") {
+      parts.push({ type: "text", text: step.text });
+      return;
+    }
+    for (const tool of step.tools) {
+      parts.push({
+        type: "data-tool",
+        id: `stored-${row.id}-${i}-${tool.name}`,
+        data: { name: tool.name, done: true, ok: tool.ok },
+      });
+    }
+  });
+  return parts;
+}
+
 /** Turn the rows persisted in the Durable Object back into AI SDK messages. */
 function toUIMessages(rows: StoredMessage[]): ChatUIMessage[] {
   return rows.map((row) => ({
@@ -770,7 +864,7 @@ function toUIMessages(rows: StoredMessage[]): ChatUIMessage[] {
       row.role === "assistant"
         ? [
             { type: "data-meta" as const, data: { ts: row.ts } },
-            { type: "text" as const, text: row.content },
+            ...storedParts(row),
             {
               type: "data-usage" as const,
               data: {
@@ -1061,7 +1155,8 @@ export function Chat({
         )}
         {messages.map((m, i) => {
           const stored = m.parts.find((p) => p.type === "data-meta") as
-            { type: "data-meta"; data: MetaData } | undefined;
+            | { type: "data-meta"; data: MetaData }
+            | undefined;
           const at = stored?.data.ts ?? seen.get(m.id) ?? null;
           const last = i === messages.length - 1;
           return (

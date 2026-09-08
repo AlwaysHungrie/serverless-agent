@@ -20,7 +20,17 @@ export type StoredMessage = {
   ms: number;
   /** Files and images sent with this message, resolved by the Worker. */
   attachments: Attachment[];
+  /** JSON array of `TurnStep`: how an assistant turn unfolded. `[]` when unused. */
+  steps?: string;
 };
+
+/**
+ * One segment of an assistant turn, in the order it happened — mirrors the Worker's
+ * own type, so a reopened session redraws the tool lines the live stream showed.
+ */
+export type TurnStep =
+  | { kind: "text"; text: string }
+  | { kind: "tools"; tools: { name: string; ok: boolean }[] };
 
 /**
  * Per-message usage, streamed to the client as a `data-usage` part.

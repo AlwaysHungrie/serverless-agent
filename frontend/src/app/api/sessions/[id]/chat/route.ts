@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 /** A tool the agent ran mid-turn, streamed so the UI can say what is happening. */
-export type ToolData = { name: string; done: boolean };
+export type ToolData = { name: string; done: boolean; ok?: boolean };
 
 /** The attachments sent with a user message, so the bubble can show them. */
 export type FilesData = { attachments: Attachment[] };
@@ -81,8 +81,24 @@ export async function POST(
         throw new Error(`agent ${upstream.status}: ${await upstream.text()}`);
       }
 
-      const textId = crypto.randomUUID();
-      writer.write({ type: "text-start", id: textId });
+      // Text is emitted as one part per round, opened on the round's first token and
+      // closed when the round ends in tool calls. Parts then reach the UI in the order
+      // they happened — say something, run a tool, say something more — instead of all
+      // the prose collapsing into one block above all the tool lines.
+      let textId: string | null = null;
+      let round = 0;
+      const running = new Set<string>();
+      const openText = () => {
+        if (textId) return textId;
+        textId = `${crypto.randomUUID()}-${round}`;
+        writer.write({ type: "text-start", id: textId });
+        return textId;
+      };
+      const closeText = () => {
+        if (!textId) return;
+        writer.write({ type: "text-end", id: textId });
+        textId = null;
+      };
 
       const reader = upstream.body
         .pipeThrough(new TextDecoderStream())
@@ -106,14 +122,14 @@ export async function POST(
               | { type: "delta"; text: string }
               | ({ type: "usage" } & UsageData)
               | { type: "tool"; name: string }
-              | { type: "tool_done"; name: string }
+              | { type: "tool_done"; name: string; ok: boolean }
               | { type: "error"; error: string }
               | { type: "done" };
 
             if (event.type === "delta") {
               writer.write({
                 type: "text-delta",
-                id: textId,
+                id: openText(),
                 delta: event.text,
               });
             } else if (event.type === "usage") {
@@ -127,23 +143,37 @@ export async function POST(
                 },
               });
             } else if (event.type === "tool" || event.type === "tool_done") {
-              // One part per tool call, re-sent as done: the UI keys on the name and
-              // replaces the running line with a finished one.
+              // One part per tool call per round, re-sent as done: the UI keys on the
+              // id and replaces the running line with a finished one.
+              if (event.type === "tool") {
+                closeText();
+                running.add(event.name);
+              }
               writer.write({
                 type: "data-tool",
-                id: `${textId}-tool-${event.name}`,
-                data: { name: event.name, done: event.type === "tool_done" },
+                id: `tool-${round}-${event.name}`,
+                data: {
+                  name: event.name,
+                  done: event.type === "tool_done",
+                  ...(event.type === "tool_done" ? { ok: event.ok } : {}),
+                },
               });
+              // The round is over once its last tool reports back; anything after this
+              // belongs to the next one.
+              if (event.type === "tool_done") {
+                running.delete(event.name);
+                if (running.size === 0) round++;
+              }
             } else if (event.type === "error") {
               throw new Error(event.error);
             } else if (event.type === "done") {
-              writer.write({ type: "text-end", id: textId });
+              closeText();
               closed = true;
             }
           }
         }
       } finally {
-        if (!closed) writer.write({ type: "text-end", id: textId });
+        if (!closed) closeText();
       }
     },
     onError: (error) => describeStreamError(error),

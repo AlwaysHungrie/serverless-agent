@@ -258,13 +258,13 @@ export const TOOLS: ToolSpec[] = [
     },
     async run(args, ctx) {
       const query = str(args.query).trim();
-      if (!query) return "Error: query was empty.";
+      if (!query) throw new Error("query was empty");
       const count = Math.min(10, Math.max(1, Number(args.count) || 5));
       const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
       const res = await fetch(url, {
         headers: { Accept: "application/json", "X-Subscription-Token": ctx.config.brave_api_key },
       });
-      if (!res.ok) return `Search failed: Brave returned ${res.status} ${await res.text()}`;
+      if (!res.ok) throw new Error(`Brave returned ${res.status} ${await res.text()}`);
       const json = (await res.json()) as {
         web?: { results?: { title: string; url: string; description?: string }[] };
       };
@@ -290,16 +290,16 @@ export const TOOLS: ToolSpec[] = [
       try {
         target = new URL(raw);
       } catch {
-        return `Error: "${raw}" is not a valid URL.`;
+        throw new Error(`"${raw}" is not a valid URL`);
       }
       if (target.protocol !== "http:" && target.protocol !== "https:") {
-        return "Error: only http and https URLs can be fetched.";
+        throw new Error("only http and https URLs can be fetched");
       }
       const res = await fetch(target, {
         headers: { accept: "text/html,text/plain", "user-agent": "serverless-agent/1.0" },
         redirect: "follow",
       });
-      if (!res.ok) return `Fetch failed: ${res.status} ${res.statusText}`;
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const type = res.headers.get("content-type") ?? "";
       const body = await res.text();
       const text = type.includes("html") ? htmlToText(body) : body;
@@ -320,7 +320,7 @@ export const TOOLS: ToolSpec[] = [
     },
     async run(args, ctx) {
       const prompt = str(args.prompt).trim();
-      if (!prompt) return "Error: prompt was empty.";
+      if (!prompt) throw new Error("prompt was empty");
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -333,7 +333,7 @@ export const TOOLS: ToolSpec[] = [
           messages: [{ role: "user", content: prompt }],
         }),
       });
-      if (!res.ok) return `Image generation failed: ${res.status} ${await res.text()}`;
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
       const json = (await res.json()) as {
         choices?: { message?: { images?: { image_url?: { url?: string } }[] } }[];
       };
@@ -358,7 +358,7 @@ export const TOOLS: ToolSpec[] = [
     },
     async run(args, ctx) {
       const id = str(args.attachment_id).trim();
-      if (!id) return "Error: attachment_id is required.";
+      if (!id) throw new Error("attachment_id is required");
       const transcript = await ctx.transcribeAttachment(id);
       return transcript.trim() === "" ? "The clip transcribed to nothing." : transcript;
     },
@@ -382,13 +382,9 @@ export const TOOLS: ToolSpec[] = [
     async run(args, ctx) {
       const prompt = str(args.prompt).trim();
       const when = str(args.when).trim();
-      if (!prompt || !when) return "Error: both prompt and when are required.";
-      try {
-        const task = await ctx.schedule(when, prompt);
-        return `Scheduled task ${task.id} for ${task.when}.`;
-      } catch (err) {
-        return `Could not schedule: ${err instanceof Error ? err.message : String(err)}`;
-      }
+      if (!prompt || !when) throw new Error("both prompt and when are required");
+      const task = await ctx.schedule(when, prompt);
+      return `Scheduled task ${task.id} for ${task.when}.`;
     },
   },
   {
@@ -425,7 +421,7 @@ export const TOOLS: ToolSpec[] = [
     },
     async run(args, ctx) {
       const text = str(args.text).trim();
-      if (!text) return "Error: nothing to remember.";
+      if (!text) throw new Error("nothing to remember");
       const memory = (await ctx.registry.remember(text.slice(0, 500), ctx.sessionId)) as Memory;
       return `Remembered (#${memory.id}): ${memory.text}`;
     },
@@ -464,12 +460,24 @@ export function toolDefinitions(config: Config) {
   }));
 }
 
-export async function runTool(name: string, args: Record<string, unknown>, ctx: ToolContext) {
+/**
+ * Run one tool. A failure is not thrown: the model is shown the message so it can
+ * correct itself, and `ok` lets the caller tell the user when the turn ends with
+ * nothing but failed tools behind it.
+ */
+export async function runTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext
+): Promise<{ content: string; ok: boolean }> {
   const tool = TOOL_BY_NAME.get(name);
-  if (!tool) return `Error: no tool named ${name}.`;
+  if (!tool) return { content: `Error: no tool named ${name}.`, ok: false };
   try {
-    return await tool.run(args, ctx);
+    return { content: await tool.run(args, ctx), ok: true };
   } catch (err) {
-    return `Tool ${name} failed: ${err instanceof Error ? err.message : String(err)}`;
+    return {
+      content: `Tool ${name} failed: ${err instanceof Error ? err.message : String(err)}`,
+      ok: false,
+    };
   }
 }

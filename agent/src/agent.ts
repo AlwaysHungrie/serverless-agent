@@ -42,7 +42,21 @@ export type StoredMessage = {
   ms: number;
   /** JSON array of attachment ids sent with this message. */
   attachments: string;
+  /**
+   * JSON array of `TurnStep`: the shape of an assistant turn — what it said, which
+   * tools it ran between saying things, and whether each one succeeded. Empty for
+   * user messages and for assistant turns that used no tools.
+   */
+  steps: string;
 };
+
+/**
+ * One segment of an assistant turn, in the order it happened. Stored so a reopened
+ * session shows the same tool lines the live stream did, failures included.
+ */
+export type TurnStep =
+  | { kind: "text"; text: string }
+  | { kind: "tools"; tools: { name: string; ok: boolean }[] };
 
 /** A file the user attached, or an image the agent drew. */
 export type Attachment = {
@@ -88,6 +102,25 @@ const TITLE_PROMPT =
 
 /** How many times a single turn may call tools before it must answer. */
 const MAX_TOOL_ROUNDS = 6;
+
+/** Append a run of text to the steps of a turn, merging it into a trailing text step. */
+function pushText(steps: TurnStep[], text: string) {
+  if (!text) return;
+  const last = steps[steps.length - 1];
+  if (last?.kind === "text") last.text += text;
+  else steps.push({ kind: "text", text });
+}
+
+/**
+ * What the user reads when a turn burns every tool round without answering. The tool
+ * errors from the final round are quoted, because a silent stall is nearly always a
+ * tool failing the same way over and over.
+ */
+function roundLimitNote(failures: string[]): string {
+  const head = `I stopped after ${MAX_TOOL_ROUNDS} rounds of tool calls without reaching an answer.`;
+  if (failures.length === 0) return head;
+  return `${head} The last attempt failed with:\n\n${failures.map((f) => `- ${f}`).join("\n")}`;
+}
 
 /**
  * Attachment ceilings, per kind. Bytes live in R2, so the limits are about what each
@@ -135,6 +168,7 @@ export class SessionAgent extends Agent<Env> {
       "cost_usd REAL NOT NULL DEFAULT 0",
       "ms INTEGER NOT NULL DEFAULT 0",
       "attachments TEXT NOT NULL DEFAULT '[]'",
+      "steps TEXT NOT NULL DEFAULT '[]'",
     ]) {
       try {
         this.exec(`ALTER TABLE messages ADD COLUMN ${col}`);
@@ -490,7 +524,7 @@ export class SessionAgent extends Agent<Env> {
 
   private rows(): StoredMessage[] {
     return this.exec<StoredMessage>(
-      `SELECT id, role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments
+      `SELECT id, role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments, steps
        FROM messages ORDER BY id ASC`
     );
   }
@@ -619,18 +653,20 @@ export class SessionAgent extends Agent<Env> {
     completionTokens: number,
     cost: number,
     ms: number,
-    attachmentIds: string[] = []
+    attachmentIds: string[] = [],
+    steps: TurnStep[] = []
   ) {
     this.exec(
-      `INSERT INTO messages (role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments)
-       VALUES ('assistant', ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments, steps)
+       VALUES ('assistant', ?, ?, ?, ?, ?, ?, ?, ?)`,
       content,
       Date.now(),
       promptTokens,
       completionTokens,
       cost,
       ms,
-      JSON.stringify(attachmentIds)
+      JSON.stringify(attachmentIds),
+      JSON.stringify(steps)
     );
   }
 
@@ -676,8 +712,8 @@ export class SessionAgent extends Agent<Env> {
     }
     for (const row of snapshot.messages ?? []) {
       this.exec(
-        `INSERT INTO messages (role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments, steps)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         row.role,
         row.content,
         row.ts,
@@ -685,7 +721,8 @@ export class SessionAgent extends Agent<Env> {
         row.completion_tokens,
         row.cost_usd,
         row.ms,
-        row.attachments || "[]"
+        row.attachments || "[]",
+        row.steps || "[]"
       );
     }
   }
@@ -758,9 +795,18 @@ export class SessionAgent extends Agent<Env> {
   }
 
   /** Run every tool the model asked for, and shape the results as `tool` messages. */
-  private async runToolCalls(calls: ToolCall[]): Promise<{ messages: Msg[]; names: string[] }> {
+  private async runToolCalls(
+    calls: ToolCall[]
+  ): Promise<{
+    messages: Msg[];
+    names: string[];
+    failures: string[];
+    outcomes: { name: string; ok: boolean }[];
+  }> {
     const ctx = this.toolContext();
     const messages: Msg[] = [];
+    const failures: string[] = [];
+    const outcomes: { name: string; ok: boolean }[] = [];
     for (const call of calls) {
       let args: Record<string, unknown> = {};
       try {
@@ -769,9 +815,11 @@ export class SessionAgent extends Agent<Env> {
         // A malformed argument blob is the model's mistake to see and correct.
       }
       const result = await runTool(call.function.name, args, ctx);
-      messages.push({ role: "tool", tool_call_id: call.id, content: result });
+      if (!result.ok) failures.push(result.content);
+      outcomes.push({ name: call.function.name, ok: result.ok });
+      messages.push({ role: "tool", tool_call_id: call.id, content: result.content });
     }
-    return { messages, names: calls.map((c) => c.function.name) };
+    return { messages, names: calls.map((c) => c.function.name), failures, outcomes };
   }
 
   /* ------------------------------------------------------------- scheduling -- */
@@ -909,6 +957,9 @@ export class SessionAgent extends Agent<Env> {
     let cost = 0;
     let reply = "";
     const toolsUsed: string[] = [];
+    let lastFailures: string[] = [];
+    let exhausted = false;
+    const steps: TurnStep[] = [];
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const res = await this.openrouter(convo, false);
@@ -931,14 +982,25 @@ export class SessionAgent extends Agent<Env> {
       const calls = choice?.tool_calls ?? [];
       if (calls.length === 0) break;
 
+      pushText(steps, reply);
       convo.push({ role: "assistant", content: reply, tool_calls: calls });
-      const { messages, names } = await this.runToolCalls(calls);
+      const { messages, names, failures, outcomes } = await this.runToolCalls(calls);
       convo.push(...messages);
+      steps.push({ kind: "tools", tools: outcomes });
       toolsUsed.push(...names);
+      lastFailures = failures;
+      exhausted = round === MAX_TOOL_ROUNDS - 1;
     }
 
+    // The model was still calling tools when it ran out of rounds, so it never wrote
+    // an answer. Say so rather than banking an empty reply.
+    if (exhausted) reply = (reply ? reply + "\n\n" : "") + roundLimitNote(lastFailures);
+    // The final round's text closes the turn; every earlier one was pushed before its
+    // tools ran, so the steps read in order.
+    pushText(steps, exhausted ? roundLimitNote(lastFailures) : reply);
+
     const llmMs = Date.now() - llmStart;
-    this.saveAssistant(reply, promptTokens, completionTokens, cost, llmMs);
+    this.saveAssistant(reply, promptTokens, completionTokens, cost, llmMs, [], steps);
     if (first) await this.nameSession(message, reply);
 
     return {
@@ -978,17 +1040,21 @@ export class SessionAgent extends Agent<Env> {
     let completionTokens = 0;
     let cost = 0;
     let finished = false;
+    const steps: TurnStep[] = [];
 
     const finish = (aborted: boolean) => {
       if (finished) return;
       finished = true;
       const llmMs = Date.now() - llmStart;
+      if (aborted) pushText(steps, "\n\n_(stopped)_");
       this.saveAssistant(
         text + (aborted ? "\n\n_(stopped)_" : ""),
         promptTokens,
         completionTokens,
         cost,
-        llmMs
+        llmMs,
+        [],
+        steps
       );
       return { cost, llmMs };
     };
@@ -1047,6 +1113,7 @@ export class SessionAgent extends Agent<Env> {
                 if (delta?.content) {
                   roundText += delta.content;
                   text += delta.content;
+                  pushText(steps, delta.content);
                   send({ type: "delta", text: delta.content });
                 }
                 // Tool calls arrive in fragments keyed by index: name first, then the
@@ -1079,9 +1146,20 @@ export class SessionAgent extends Agent<Env> {
 
             for (const call of pending) send({ type: "tool", name: call.function.name });
             convo.push({ role: "assistant", content: roundText, tool_calls: pending });
-            const { messages } = await self.runToolCalls(pending);
+            const { messages, failures, outcomes } = await self.runToolCalls(pending);
             convo.push(...messages);
-            for (const call of pending) send({ type: "tool_done", name: call.function.name });
+            steps.push({ kind: "tools", tools: outcomes });
+            for (const outcome of outcomes)
+              send({ type: "tool_done", name: outcome.name, ok: outcome.ok });
+
+            // Out of rounds with tools still pending: the model never gets to write an
+            // answer, so the note is the reply the user sees.
+            if (round === MAX_TOOL_ROUNDS - 1) {
+              const note = (text ? "\n\n" : "") + roundLimitNote(failures);
+              text += note;
+              pushText(steps, note);
+              send({ type: "delta", text: note });
+            }
           }
 
           const result = finish(false);
