@@ -10,20 +10,18 @@
     "bindings": [
       { "name": "SessionAgent", "class_name": "SessionAgent" },
       { "name": "SessionRegistry", "class_name": "SessionRegistry" },
-      { "name": "MessengerAgent", "class_name": "MessengerAgent" },
-      { "name": "ThinkMessengerStateAgent", "class_name": "ThinkMessengerStateAgent" }
+      { "name": "ThinkAgent", "class_name": "ThinkAgent" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["SessionAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["SessionRegistry"] },
-    { "tag": "v3", "new_sqlite_classes": ["MessengerAgent", "ThinkMessengerStateAgent"] }
+    { "tag": "v3", "new_sqlite_classes": ["ThinkAgent"] }
   ],
   "r2_buckets": [
     { "binding": "FILES", "bucket_name": "serverless-agent-files" }
   ],
   "vars": {
-    "MODEL": "deepseek/deepseek-v4-flash",
-    "TELEGRAM_BOT_USERNAME": ""
+    "MODEL": "deepseek/deepseek-v4-flash"
   }
 }

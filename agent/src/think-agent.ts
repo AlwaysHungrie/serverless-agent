@@ -1,7 +1,5 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { Think, type TurnConfig, type TurnContext } from "@cloudflare/think";
-import { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
-import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import { jsonSchema, tool, type ToolSet } from "ai";
 import type { Env } from "./agent";
 import {
@@ -13,17 +11,14 @@ import {
 } from "./capabilities";
 import { DEFAULT_CONFIG, type Config } from "./registry";
 
-export { ThinkMessengerStateAgent };
-
-const SYSTEM_PROMPT =
-  "You are a concise assistant reachable over chat. Keep replies short enough to read on a phone.";
+const SYSTEM_PROMPT = "You are a concise assistant.";
 
 /**
- * The messenger agent runs the same settings and the same capability tools as the
- * browser sessions do — the registry object is the single source of truth for both,
- * so a toggle flipped in the settings panel reaches Telegram without a deploy.
+ * The same settings and the same capability tools as the browser sessions run on —
+ * the registry object is the single source of truth for both — but with the agentic
+ * loop, the transcript and the streaming owned by Think rather than written here.
  */
-export class MessengerAgent extends Think<Env> {
+export class ThinkAgent extends Think<Env> {
   /** The registry row, reread at the start of every turn. */
   private settings: Config | undefined;
 
@@ -52,18 +47,6 @@ export class MessengerAgent extends Think<Env> {
 
   getSystemPrompt() {
     return SYSTEM_PROMPT;
-  }
-
-  getMessengers() {
-    return {
-      telegram: telegramMessenger({
-        token: this.env.TELEGRAM_BOT_TOKEN,
-        userName: this.env.TELEGRAM_BOT_USERNAME,
-        secretToken: this.env.TELEGRAM_WEBHOOK_SECRET_TOKEN,
-        // One Think sub-agent per chat, so a group and a DM never share memory.
-        conversation: "self",
-      }),
-    };
   }
 
   /**
@@ -102,7 +85,7 @@ export class MessengerAgent extends Think<Env> {
 
   /**
    * The capability tools, wrapped for the AI SDK. Their JSON Schema is reused as is,
-   * so a tool added in `capabilities.ts` reaches Telegram with no work here.
+   * so a tool added in `capabilities.ts` reaches this agent with no work here.
    */
   private capabilityTools(config: Config): ToolSet {
     const context = this.toolContext(config);
@@ -123,24 +106,22 @@ export class MessengerAgent extends Think<Env> {
       sessionId: this.name,
       openrouterKey: this.env.OPENROUTER_API_KEY,
       registry: this.registry(),
-      // Generated images go to R2 and come back as a public link: a chat message
-      // cannot serve a Durable Object attachment route the way the browser can.
+      // Generated images go to R2 under this agent's own prefix.
       saveImage: async (dataUrl, prompt) => {
         const id = crypto.randomUUID().slice(0, 12);
         const mime = dataUrl.match(/^data:([^;]+)/)?.[1] ?? "image/png";
         const base64 = dataUrl.split(",", 2)[1] ?? "";
         const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-        const key = `messenger/${this.name}/${id}`;
+        const key = `think/${this.name}/${id}`;
         await this.env.FILES.put(key, bytes, {
           httpMetadata: { contentType: mime },
           customMetadata: { prompt: prompt.slice(0, 200) },
         });
-        return `/messengers/files/${encodeURIComponent(key)}`;
+        return `/think/files/${encodeURIComponent(key)}`;
       },
-      // Voice notes arrive as messenger attachments, not as session uploads, so the
-      // transcription tool has nothing to look up here.
+      // Attachments belong to a SessionAgent's table, which this agent does not read.
       transcribeAttachment: async () => {
-        throw new Error("audio transcription is not available over chat");
+        throw new Error("audio transcription is not available here");
       },
       schedule: (when, prompt) => this.scheduleTask(when, prompt),
       listTasks: () => this.listTasks(),

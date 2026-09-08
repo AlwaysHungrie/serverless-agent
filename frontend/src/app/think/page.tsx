@@ -5,23 +5,23 @@ import { useAgentChat } from "@cloudflare/think/react";
 import { useEffect, useState } from "react";
 
 /**
- * The messenger conversation, as the browser sees it. The agent is configured with
- * `conversation: "self"`, so this is the same transcript the Telegram bot writes
- * into: a message sent here shows up in the chat, and vice versa.
+ * The Think agent, as the browser sees it. Think owns the transcript, the agentic
+ * loop and the streaming, so this page is a thin client over its websocket rather
+ * than the REST-and-SSE surface the session agent exposes.
  */
 const AGENT_HOST = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://localhost:8787";
 
-export default function MessengerPage() {
+export default function ThinkPage() {
   // The agent socket opens on connect, so the component stays out of the way until
   // it is running in a browser: prerendering it would dial the Worker at build time.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  return mounted ? <MessengerChat /> : null;
+  return mounted ? <ThinkChat /> : null;
 }
 
-function MessengerChat() {
+function ThinkChat() {
   const agent = useAgent({
-    agent: "MessengerAgent",
+    agent: "ThinkAgent",
     name: "default",
     host: AGENT_HOST,
   });
@@ -31,9 +31,9 @@ function MessengerChat() {
   return (
     <main className="mx-auto flex h-dvh max-w-2xl flex-col gap-4 p-6">
       <header>
-        <h1 className="text-lg font-medium">Messenger</h1>
+        <h1 className="text-lg font-medium">Think</h1>
         <p className="text-sm text-neutral-500">
-          Shared with the Telegram bot — both sides write to this conversation.
+          The same settings and tools as a session, with the loop run by Think.
         </p>
       </header>
 
