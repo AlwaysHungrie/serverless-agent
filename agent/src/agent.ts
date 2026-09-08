@@ -248,11 +248,32 @@ export class SessionAgent extends Think<Env> {
     return this.config().model;
   }
 
-  /** OpenRouter through the AI SDK's OpenAI-compatible client. */
+  /**
+   * OpenRouter through the AI SDK's OpenAI-compatible client.
+   *
+   * Failed calls are logged with their body before the SDK sees them. OpenRouter
+   * answers an upstream failure with "Provider returned error" and puts what actually
+   * happened in `error.metadata.raw` — which is the only part worth reading, and the
+   * part that never survives to the chat.
+   */
   private openrouter() {
+    const session = this.name;
     return createOpenAI({
       apiKey: this.env.OPENROUTER_API_KEY,
       baseURL: "https://openrouter.ai/api/v1",
+      async fetch(input, init) {
+        const res = await fetch(input as RequestInfo, init as RequestInit);
+        if (res.ok) return res;
+        // An error body is small and not streamed, so reading it here is safe — but
+        // it is consumed by the read, so the response has to be rebuilt for the SDK.
+        const text = await res.text();
+        console.error(`openrouter ${res.status} in session ${session}: ${text.slice(0, 2000)}`);
+        return new Response(text, {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers,
+        });
+      },
     });
   }
 
@@ -1567,7 +1588,12 @@ function turnFailure(status: string, error?: string): string {
   if (status === "skipped") {
     return `That turn was skipped${why} — an earlier one is probably still running. Give it a moment, then ask again.`;
   }
-  return `That turn did not finish${why}. If it keeps happening, the session needs a reset.`;
+  // The model refusing the request is not the session being broken, and telling
+  // someone to reset a session that is fine costs them the conversation for nothing.
+  if (/provider|upstream|rate.?limit|credit|quota|context length|too large/i.test(error ?? "")) {
+    return `The model could not answer that${why}. Nothing here is broken — this is the provider, so it is worth trying again, or switching model in settings.`;
+  }
+  return `That turn did not finish${why}. If it keeps happening, !unstick clears this session's turn state.`;
 }
 
 /** Every text part of a message, joined — what the transcript API calls its content. */
