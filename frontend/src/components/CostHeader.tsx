@@ -91,12 +91,12 @@ export function CostHeader({
               <Stat
                 label="Rows written"
                 value={formatUsd(actual.cost.lines.doRowsWritten)}
-                hint={`${formatCount(actual.usage.storageWriteUnits)} @ $1.00/M`}
+                hint={`${formatCount(actual.usage.rowsWritten)} @ $1.00/M`}
               />
               <Stat
                 label="Rows read"
                 value={formatUsd(actual.cost.lines.doRowsRead)}
-                hint={`${formatCount(actual.usage.storageReadUnits)} @ $0.001/M`}
+                hint={`${formatCount(actual.usage.rowsRead)} @ $0.001/M`}
               />
               <Stat
                 label="Worker requests"
@@ -110,8 +110,16 @@ export function CostHeader({
               />
               <Stat
                 label="Namespace storage"
-                value={`${formatUsd(actual.cost.namespaceStorageUsdPerMonth)}/mo`}
-                hint={`${formatBytes(actual.usage.storedBytesNamespace)}, all sessions`}
+                value={
+                  actual.cost.namespaceStorageUsdPerMonth === null
+                    ? "—"
+                    : `${formatUsd(actual.cost.namespaceStorageUsdPerMonth)}/mo`
+                }
+                hint={
+                  actual.usage.storedBytesNamespace === null
+                    ? "not computed yet"
+                    : `${formatBytes(actual.usage.storedBytesNamespace)}, all sessions`
+                }
               />
               <Stat label="Errors" value={formatCount(actual.usage.errors)} />
             </div>
@@ -134,7 +142,8 @@ export function CostHeader({
             own reported usage for this object over the last 24 hours, priced at published rates. It
             lags a few minutes and the datasets are sampled
             {actual?.usage.sampled ? " (this response was sampled)" : ""}, so it trails what you just
-            sent. Stored bytes are reported per namespace only, so that line covers every session.
+            sent. Stored bytes are reported per namespace only, never per object, and on a slow
+            cadence — a namespace deployed today shows nothing there for a while.
             None of it is billed until the Paid plan&apos;s monthly allowances — 1,000,000 requests,
             400,000 GB-s, 5 GB — run out.
           </p>

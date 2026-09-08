@@ -17,11 +17,19 @@ export type ActualUsage = {
   activeTimeUs: number;
   cpuTimeUs: number;
   subrequests: number;
-  storageReadUnits: number;
-  storageWriteUnits: number;
-  storageDeletes: number;
-  /** Namespace-wide: Cloudflare does not break stored bytes down per object. */
-  storedBytesNamespace: number;
+  /**
+   * SQLite-backed objects report `rowsRead`/`rowsWritten`. The similarly named
+   * `storageReadUnits`/`storageWriteUnits` belong to the key-value backend and stay
+   * at zero here, which is what made these look free.
+   */
+  rowsRead: number;
+  rowsWritten: number;
+  /**
+   * Namespace-wide, and null until Cloudflare computes it. Stored bytes are not
+   * broken down per object, and the dataset is populated on a slow cadence rather
+   * than per request, so a namespace deployed today reports nothing yet.
+   */
+  storedBytesNamespace: number | null;
   sampled: boolean;
 };
 
@@ -40,14 +48,7 @@ const QUERY = `
           limit: 10000
           filter: { datetime_geq: $since, objectId: $objectId }
         ) {
-          sum {
-            activeTime
-            cpuTime
-            subrequests
-            storageReadUnits
-            storageWriteUnits
-            storageDeletes
-          }
+          sum { activeTime cpuTime subrequests rowsRead rowsWritten }
           avg { sampleInterval }
         }
         storage: durableObjectsStorageGroups(limit: 1, filter: { datetime_geq: $since }) {
@@ -112,10 +113,9 @@ export async function fetchActualUsage(opts: {
     activeTimeUs: total(periodic, "activeTime"),
     cpuTimeUs: total(periodic, "cpuTime"),
     subrequests: total(periodic, "subrequests"),
-    storageReadUnits: total(periodic, "storageReadUnits"),
-    storageWriteUnits: total(periodic, "storageWriteUnits"),
-    storageDeletes: total(periodic, "storageDeletes"),
-    storedBytesNamespace: total(account.storage, "storedBytes"),
+    rowsRead: total(periodic, "rowsRead"),
+    rowsWritten: total(periodic, "rowsWritten"),
+    storedBytesNamespace: account.storage?.length ? total(account.storage, "storedBytes") : null,
     sampled: sampled(invocations) || sampled(periodic),
   };
 }
@@ -127,9 +127,8 @@ export function costOfActualUsage(u: ActualUsage) {
   const lines = {
     doRequests: (u.requests / 1e6) * PRICING.doRequestsPerMillion,
     doDuration: (gbSeconds / 1e6) * PRICING.doGbSecondsPerMillion,
-    // For SQLite-backed objects these units are rows read and written.
-    doRowsRead: (u.storageReadUnits / 1e6) * PRICING.doRowsReadPerMillion,
-    doRowsWritten: (u.storageWriteUnits / 1e6) * PRICING.doRowsWrittenPerMillion,
+    doRowsRead: (u.rowsRead / 1e6) * PRICING.doRowsReadPerMillion,
+    doRowsWritten: (u.rowsWritten / 1e6) * PRICING.doRowsWrittenPerMillion,
     workerRequests: (u.requests / 1e6) * PRICING.workerRequestsPerMillion,
   };
 
@@ -137,7 +136,10 @@ export function costOfActualUsage(u: ActualUsage) {
     gbSeconds,
     lines,
     cloudflareUsd: Object.values(lines).reduce((a, b) => a + b, 0),
-    /** Namespace-wide, not per session — Cloudflare does not report bytes per object. */
-    namespaceStorageUsdPerMonth: (u.storedBytesNamespace / 1e9) * PRICING.doStorageGbMonth,
+    /** Namespace-wide, not per session, and null until Cloudflare reports bytes. */
+    namespaceStorageUsdPerMonth:
+      u.storedBytesNamespace === null
+        ? null
+        : (u.storedBytesNamespace / 1e9) * PRICING.doStorageGbMonth,
   };
 }

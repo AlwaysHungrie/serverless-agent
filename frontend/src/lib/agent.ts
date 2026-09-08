@@ -50,10 +50,9 @@ export type ActualUsage = {
     activeTimeUs: number;
     cpuTimeUs: number;
     subrequests: number;
-    storageReadUnits: number;
-    storageWriteUnits: number;
-    storageDeletes: number;
-    storedBytesNamespace: number;
+    rowsRead: number;
+    rowsWritten: number;
+    storedBytesNamespace: number | null;
     sampled: boolean;
   };
   cost: {
@@ -66,7 +65,7 @@ export type ActualUsage = {
       workerRequests: number;
     };
     cloudflareUsd: number;
-    namespaceStorageUsdPerMonth: number;
+    namespaceStorageUsdPerMonth: number | null;
   };
 };
 
