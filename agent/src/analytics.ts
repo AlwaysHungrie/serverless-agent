@@ -34,13 +34,14 @@ export type ActualUsage = {
 };
 
 const QUERY = `
-  query ActualUsage($account: String!, $since: Time!, $objectId: String) {
+  query ActualUsage($account: String!, $since: Time!, $sinceDate: Date!, $objectId: String) {
     viewer {
       accounts(filter: { accountTag: $account }) {
         invocations: durableObjectsInvocationsAdaptiveGroups(
           limit: 10000
           filter: { datetime_geq: $since, objectId: $objectId }
         ) {
+          dimensions { namespaceId }
           sum { requests errors }
           avg { sampleInterval }
         }
@@ -51,7 +52,10 @@ const QUERY = `
           sum { activeTime cpuTime subrequests rowsRead rowsWritten }
           avg { sampleInterval }
         }
-        storage: durableObjectsStorageGroups(limit: 1, filter: { datetime_geq: $since }) {
+        # SQLite-backed objects report storage here, not in durableObjectsStorageGroups,
+        # which covers the key-value backend and stays empty for this Worker.
+        storage: durableObjectsSqlStorageGroups(limit: 1000, filter: { date_geq: $sinceDate }) {
+          dimensions { date namespaceId }
           max { storedBytes }
         }
       }
@@ -59,7 +63,12 @@ const QUERY = `
   }
 `;
 
-type Group<T> = { sum?: T; max?: T; avg?: { sampleInterval: number } };
+type Group<T> = {
+  sum?: T;
+  max?: T;
+  avg?: { sampleInterval: number };
+  dimensions?: { namespaceId?: string; date?: string };
+};
 
 function total<T extends Record<string, number>>(groups: Group<T>[] | undefined, key: keyof T): number {
   if (!groups) return 0;
@@ -90,6 +99,7 @@ export async function fetchActualUsage(opts: {
       variables: {
         account: opts.accountId,
         since: opts.since.toISOString(),
+        sinceDate: opts.since.toISOString().slice(0, 10),
         objectId: opts.objectId ?? null,
       },
     }),
@@ -107,6 +117,14 @@ export async function fetchActualUsage(opts: {
   const invocations = account.invocations;
   const periodic = account.periodic;
 
+  // Storage is reported per namespace and per day, never per object, so narrow it to
+  // this Worker's namespace and take the most recent day rather than summing days.
+  const namespaceId = invocations?.find((g) => g.dimensions?.namespaceId)?.dimensions?.namespaceId;
+  const storageRows = (account.storage ?? [])
+    .filter((g) => !namespaceId || g.dimensions?.namespaceId === namespaceId)
+    .sort((a, b) => (a.dimensions?.date ?? "").localeCompare(b.dimensions?.date ?? ""));
+  const latestStorage = storageRows.at(-1);
+
   return {
     requests: total(invocations, "requests"),
     errors: total(invocations, "errors"),
@@ -115,7 +133,7 @@ export async function fetchActualUsage(opts: {
     subrequests: total(periodic, "subrequests"),
     rowsRead: total(periodic, "rowsRead"),
     rowsWritten: total(periodic, "rowsWritten"),
-    storedBytesNamespace: account.storage?.length ? total(account.storage, "storedBytes") : null,
+    storedBytesNamespace: latestStorage ? Number(latestStorage.max?.storedBytes ?? 0) : null,
     sampled: sampled(invocations) || sampled(periodic),
   };
 }
