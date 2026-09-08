@@ -314,6 +314,20 @@ export default {
         return withCors(Response.json(row));
       }
 
+      // A session whose turns stopped completing, freed without losing what it holds.
+      if (request.method === "POST" && id && segments[3] === "unstick") {
+        const freed = await routeAgentRequest(
+          new Request(`${url.origin}/agents/session-agent/${encodeURIComponent(id)}/unstick`, {
+            method: "POST",
+          }),
+          env
+        );
+        if (!freed?.ok) {
+          return withCors(Response.json({ error: "could not reach that session" }, { status: 502 }));
+        }
+        return withCors(Response.json(await freed.json()));
+      }
+
       if (request.method === "PATCH" && id) {
         const { title } = (await request.json()) as { title: string };
         await reg.rename(id, title);
@@ -356,6 +370,7 @@ export default {
           routes: {
             sessions: "GET|POST /api/sessions, PATCH|DELETE /api/sessions/:id",
             fork: "POST /api/sessions/:id/fork  { count }",
+            unstick: "POST /api/sessions/:id/unstick",
             config: "GET|PATCH /api/config",
             stream: "POST /agents/session-agent/:id/stream  { message }  -> SSE",
             chat: "POST /agents/session-agent/:id/chat  { message }",

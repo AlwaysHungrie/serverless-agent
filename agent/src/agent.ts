@@ -561,6 +561,8 @@ export class SessionAgent extends Think<Env> {
         body = { ok: true };
       } else if (request.method === "GET" && path === "summary") {
         body = await this.summary();
+      } else if (request.method === "POST" && path === "unstick") {
+        body = { ok: true, ...this.unstick() };
       } else if (request.method === "POST" && path === "reset") {
         await this.reset();
         body = { ok: true };
@@ -1021,6 +1023,7 @@ export class SessionAgent extends Think<Env> {
 
   /* --------------------------------------------------------------- telegram -- */
 
+
   /**
    * One message from Telegram, answered. The chat is a session like any other, so the
    * turn is the same turn the browser runs: the same settings, tools, memory and
@@ -1048,10 +1051,17 @@ export class SessionAgent extends Think<Env> {
       const drawnBefore = new Set(this.exec<{ id: string }>(`SELECT id FROM attachments`).map((r) => r.id));
 
       const result = await this.runTurn({ input: [await this.openTurn(text, false)] });
+      if (result.status !== "completed") {
+        // The turn carries why it stopped; a chat that only ever says "try again"
+        // cannot be told apart from one that is broken in a way retrying will not fix.
+        console.error(
+          `telegram turn ${result.status} in session ${this.name}: ${result.error ?? "no reason given"}`
+        );
+      }
       const reply =
         result.status === "completed"
           ? textOf(result.message as unknown as UIMessage)
-          : "That turn did not finish. Try again?";
+          : turnFailure(result.status, result.error);
 
       await bot.send(chatId, reply || "(no reply)", message.message_id, thread);
       // An image the agent drew during the turn is a file, not a link, in a chat.
@@ -1311,6 +1321,22 @@ export class SessionAgent extends Think<Env> {
   }
 
   /** Clear the session in place: transcript, files, and pending tasks. */
+  /**
+   * Free a session whose turns have stopped completing. A turn that dies without
+   * settling — an isolate evicted mid-flight, a stream that never terminated — leaves
+   * concurrency state behind that turns every later question into a failure, and no
+   * amount of asking again clears it.
+   *
+   * This is deliberately narrower than a reset: in-flight turns are cancelled and the
+   * execution state is dropped, but messages, files and memory all stay. The
+   * conversation survives; only the stuck machinery around it goes.
+   */
+  private unstick(): { cancelled: boolean } {
+    this.cancelAllChats();
+    this.resetTurnState();
+    return { cancelled: true };
+  }
+
   private async reset(): Promise<void> {
     await this.session.clearMessages();
     this.exec(`DELETE FROM usage`);
@@ -1445,6 +1471,22 @@ function publicAttachment(a: Attachment) {
     /** Whether a first-page image exists to draw on the file card. */
     thumb: a.thumb_path !== "",
   };
+}
+
+/**
+ * What to say in the chat when a turn does not complete. The status says what kind of
+ * failure it was, and Think's own error says why — worth passing on, because the two
+ * cases want opposite things from the user: an aborted or errored turn is worth
+ * retrying, while a turn that never ran is a session to reset, and "try again" sends
+ * someone in a loop.
+ */
+function turnFailure(status: string, error?: string): string {
+  const why = error ? ` (${error})` : "";
+  if (status === "aborted") return `That turn was cut short${why}. Ask again?`;
+  if (status === "skipped") {
+    return `That turn was skipped${why} — an earlier one is probably still running. Give it a moment, then ask again.`;
+  }
+  return `That turn did not finish${why}. If it keeps happening, the session needs a reset.`;
 }
 
 /** Every text part of a message, joined — what the transcript API calls its content. */
