@@ -145,9 +145,9 @@ export const CAPABILITIES: Capability[] = [
     id: "audio_input",
     flag: "cap_audio_input",
     label: "Audio input",
-    summary: "Attach a voice note or recording; it is transcribed and sent as your message.",
-    note: "Billed on the existing OpenRouter key. Transcription happens once, on upload, and the text is what the model sees.",
-    tools: [],
+    summary: "Attach a voice note or recording; the agent can listen to it when it needs to.",
+    note: "Billed on the existing OpenRouter key. The clip is stored as-is; the agent calls transcribe_audio when it wants the words, and the transcript is cached on the clip.",
+    tools: ["transcribe_audio"],
     fields: [
       {
         key: "transcription_model",
@@ -212,6 +212,8 @@ export type ToolContext = {
   registry: DurableObjectStub<SessionRegistry>;
   /** Stores an image and returns a URL this session can serve it from. */
   saveImage: (dataUrl: string, prompt: string) => Promise<string>;
+  /** Transcribes a stored audio attachment by id, caching the words on its row. */
+  transcribeAttachment: (id: string) => Promise<string>;
   schedule: (when: string, prompt: string) => Promise<ScheduledTask>;
   listTasks: () => ScheduledTask[];
   cancelTask: (id: string) => boolean;
@@ -338,6 +340,27 @@ export const TOOLS: ToolSpec[] = [
       const dataUrl = json.choices?.[0]?.message?.images?.[0]?.image_url?.url;
       if (!dataUrl) return "Image generation returned no image. Try a different image model.";
       return `Image ready. Include exactly this in your reply: ![${prompt.slice(0, 60)}](${await ctx.saveImage(dataUrl, prompt)})`;
+    },
+  },
+  {
+    name: "transcribe_audio",
+    description:
+      "Transcribe an audio attachment the user sent. The message names each clip with its id. Call this when the words matter; the transcript is cached, so calling it twice on the same clip is free.",
+    parameters: {
+      type: "object",
+      properties: {
+        attachment_id: {
+          type: "string",
+          description: "The id of the audio attachment, as given in the message.",
+        },
+      },
+      required: ["attachment_id"],
+    },
+    async run(args, ctx) {
+      const id = str(args.attachment_id).trim();
+      if (!id) return "Error: attachment_id is required.";
+      const transcript = await ctx.transcribeAttachment(id);
+      return transcript.trim() === "" ? "The clip transcribed to nothing." : transcript;
     },
   },
   {

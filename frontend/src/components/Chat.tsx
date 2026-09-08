@@ -377,7 +377,9 @@ function AttachmentStrip({
             <span className="max-w-[200px] truncate">
               {isAudio(a) ? "Voice note" : a.name}
             </span>
-            <span className="text-faint tnum">{formatChars(a.chars)}</span>
+            {!isAudio(a) && (
+              <span className="text-faint tnum">{formatChars(a.chars)}</span>
+            )}
             {onRemove && (
               <button
                 onClick={() => onRemove(a.id)}
@@ -944,8 +946,8 @@ export function Chat({
       setGhosts((g) => g.filter((x) => x.key !== key));
       if (preview) URL.revokeObjectURL(preview);
 
-      // Cancelled while it was in flight: the Worker has already transcribed and
-      // stored it, so the tidying happens here rather than being left behind.
+      // Cancelled while it was in flight: the Worker has already stored it, so the
+      // tidying happens here rather than being left behind.
       if (cancelled.current.has(key)) {
         cancelled.current.delete(key);
         if (payload?.attachment) void remove(payload.attachment.id);

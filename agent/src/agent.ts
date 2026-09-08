@@ -325,7 +325,7 @@ export class SessionAgent extends Agent<Env> {
   /**
    * Take one uploaded file. Which files are accepted is decided by the capabilities
    * that are on: text needs File ingest, images need Image input, audio needs Audio
-   * input — and audio is transcribed here, once, so the model only ever sees text.
+   * input. Audio is stored untranscribed; transcribing it is the model's own call.
    */
   private async upload(request: Request): Promise<{ body: unknown; status: number }> {
     const form = await request.formData();
@@ -387,15 +387,15 @@ export class SessionAgent extends Agent<Env> {
           status: 400,
         };
       }
-      const transcript = await this.transcribe(file);
+      // Not transcribed here: the clip is stored as-is and the model decides whether
+      // it needs the words, by calling transcribe_audio with this attachment's id.
       const attachment = this.insertAttachment({
         id,
         kind: "text",
         name: file.name,
         mime,
-        text: transcript,
+        text: "",
         data: "",
-        // The clip is kept alongside its transcript so the chat can play it back.
         key: await this.putObject(id, await file.arrayBuffer(), mime),
         bytes: file.size,
       });
@@ -464,6 +464,28 @@ export class SessionAgent extends Agent<Env> {
     return (json.choices?.[0]?.message?.content ?? "").trim();
   }
 
+  /**
+   * Transcribe a stored clip on demand, and cache the words on its row so a second
+   * call — or a reopened session — does not pay for the same audio twice.
+   */
+  private async transcribeAttachment(id: string): Promise<string> {
+    const row = this.attachment(id);
+    if (!row) return `No attachment with id ${id}.`;
+    if (!row.mime.startsWith("audio/") && !row.mime.startsWith("video/")) {
+      return `${row.name} is not audio.`;
+    }
+    if (row.text.trim()) return row.text;
+    if (!enabled(this.config(), "audio_input")) {
+      return "Audio input is off. Turn it on under Capabilities.";
+    }
+    const object = row.key ? await this.env.FILES.get(row.key) : null;
+    if (!object) return `The bytes for ${row.name} are gone.`;
+    const file = new File([await object.arrayBuffer()], row.name, { type: row.mime });
+    const transcript = await this.transcribe(file);
+    this.exec(`UPDATE attachments SET text = ? WHERE id = ?`, transcript, id);
+    return transcript;
+  }
+
   /* ------------------------------------------------------------- transcript -- */
 
   private rows(): StoredMessage[] {
@@ -507,10 +529,12 @@ export class SessionAgent extends Agent<Env> {
 
   /** Rebuild a stored row's content, putting its images back as image parts. */
   private async contentOf(row: StoredMessage): Promise<string | Part[]> {
-    const images = this.attachmentsOf(row).filter((a) => a.kind === "image");
-    if (images.length === 0) return row.content;
+    const attached = this.attachmentsOf(row);
+    const text = withAudioNotes(row.content, attached);
+    const images = attached.filter((a) => a.kind === "image");
+    if (images.length === 0) return text;
     return [
-      { type: "text", text: row.content },
+      { type: "text", text },
       ...(await this.imageParts(images)),
     ];
   }
@@ -545,13 +569,16 @@ export class SessionAgent extends Agent<Env> {
    * multimodal model will accept.
    */
   private async userMessage(message: string, attachments: Attachment[]): Promise<Msg> {
-    const documents = attachments.filter((a) => a.kind === "text" && a.text.trim() !== "");
-    const text = documents.length
+    const documents = attachments.filter(
+      (a) => a.kind === "text" && !isAudioAttachment(a) && a.text.trim() !== ""
+    );
+    const withDocs = documents.length
       ? [
           message,
           ...documents.map((d) => `--- attached file: ${d.name} ---\n${d.text}`),
         ].join("\n\n")
       : message;
+    const text = withAudioNotes(withDocs, attachments);
 
     const images = attachments.filter((a) => a.kind === "image");
     if (images.length === 0) return { role: "user", content: text };
@@ -723,6 +750,7 @@ export class SessionAgent extends Agent<Env> {
         this.exec(`UPDATE attachments SET used = 1 WHERE id = ?`, id);
         return `/agents/session-agent/${encodeURIComponent(this.name)}/files/${id}`;
       },
+      transcribeAttachment: (id) => this.transcribeAttachment(id),
       schedule: (when, prompt) => this.scheduleTask(when, prompt),
       listTasks: () => this.listTasks(),
       cancelTask: (id) => this.cancelTask(id),
@@ -1126,6 +1154,25 @@ export class SessionAgent extends Agent<Env> {
 }
 
 /** Attachment rows carry a whole image; the API sends everything except the bytes. */
+function isAudioAttachment(a: Attachment): boolean {
+  return a.mime.startsWith("audio/") || a.mime.startsWith("video/");
+}
+
+/**
+ * Audio rides along as a clip, not as words: the message names each one and hands the
+ * model its id, so it can call transcribe_audio when the words actually matter.
+ */
+function withAudioNotes(text: string, attachments: Attachment[]): string {
+  const clips = attachments.filter(isAudioAttachment);
+  if (clips.length === 0) return text;
+  const notes = clips.map((a) =>
+    a.text.trim()
+      ? `--- attached audio: ${a.name} (id ${a.id}), already transcribed ---\n${a.text}`
+      : `--- attached audio: ${a.name} (id ${a.id}), not transcribed. Call transcribe_audio with attachment_id "${a.id}" if you need the words. ---`
+  );
+  return [text, ...notes].filter((part) => part.trim() !== "").join("\n\n");
+}
+
 function publicAttachment(a: Attachment) {
   return {
     id: a.id,
@@ -1134,7 +1181,7 @@ function publicAttachment(a: Attachment) {
     mime: a.mime,
     bytes: a.bytes,
     chars: a.text.length,
-    // Enough of the text (or of an audio transcript) for the UI to show what was sent.
+    // Enough of the text (or of an audio transcript, once one exists) for the UI.
     preview: a.kind === "text" ? a.text.slice(0, 400) : "",
   };
 }
