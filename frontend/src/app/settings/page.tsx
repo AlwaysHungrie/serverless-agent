@@ -22,23 +22,6 @@ function Row({ title, hint, children }: { title: string; hint: string; children:
   );
 }
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      role="switch"
-      aria-checked={on}
-      onClick={() => onChange(!on)}
-      className={`relative h-7 w-12 shrink-0 rounded-full transition ${on ? "bg-ink" : "bg-field"}`}
-    >
-      <span
-        className={`bg-canvas absolute top-1 h-5 w-5 rounded-full shadow-sm transition-all ${
-          on ? "left-6" : "left-1"
-        }`}
-      />
-    </button>
-  );
-}
-
 function Segmented<T extends string>({
   options,
   value,
@@ -274,18 +257,6 @@ export default function Settings() {
                 format={(v) => (v === 0 ? "Full history" : `Last ${v}`)}
                 onChange={(v) => set({ context_messages: v })}
               />
-            </Row>
-
-            <Row
-              title="Auto-title sessions"
-              hint="Name each session from your first message."
-            >
-              <div className="flex items-center justify-between gap-6">
-                <span className="text-muted text-[14px]">
-                  {config.auto_title ? "On" : "Off"}
-                </span>
-                <Toggle on={!!config.auto_title} onChange={(v) => set({ auto_title: v ? 1 : 0 })} />
-              </div>
             </Row>
           </div>
         )}

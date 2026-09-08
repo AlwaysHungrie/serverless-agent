@@ -25,9 +25,9 @@ export function Sidebar({
     <aside className="border-hairline-soft bg-canvas relative flex h-full w-72 shrink-0 flex-col border-r">
       <div className="flex items-center justify-between gap-4 px-6 pt-6 pb-4">
         <div className="min-w-0">
-          <div className="text-2xl font-[650] leading-[1.25]">Agent.</div>
+          <div className="text-2xl font-[650] leading-[1.25]">Baby.</div>
           <div className="text-muted text-[14px] font-light leading-[1.43]">
-            One Durable Object each.
+            Cloud Agent
           </div>
         </div>
         <button

@@ -24,8 +24,6 @@ export type Config = {
   reasoning_effort: "off" | "low" | "medium" | "high";
   /** How many past messages to resend. 0 means "the whole transcript". */
   context_messages: number;
-  /** 1 lets the agent name a session from its first exchange. */
-  auto_title: number;
 
   cap_web_search: number;
   cap_url_fetch: number;
@@ -50,7 +48,6 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   max_tokens: 0,
   reasoning_effort: "off",
   context_messages: 0,
-  auto_title: 1,
 
   cap_web_search: 0,
   cap_url_fetch: 0,
@@ -76,7 +73,6 @@ const CONFIG_MIGRATIONS = [
   `max_tokens INTEGER NOT NULL DEFAULT 0`,
   `reasoning_effort TEXT NOT NULL DEFAULT 'off'`,
   `context_messages INTEGER NOT NULL DEFAULT 0`,
-  `auto_title INTEGER NOT NULL DEFAULT 1`,
   `cap_web_search INTEGER NOT NULL DEFAULT 0`,
   `cap_url_fetch INTEGER NOT NULL DEFAULT 0`,
   `cap_file_ingest INTEGER NOT NULL DEFAULT 0`,

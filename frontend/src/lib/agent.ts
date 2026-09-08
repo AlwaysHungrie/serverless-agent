@@ -65,7 +65,6 @@ export type Config = {
   max_tokens: number;
   reasoning_effort: ReasoningEffort;
   context_messages: number;
-  auto_title: number;
 
   cap_web_search: number;
   cap_url_fetch: number;

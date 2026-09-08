@@ -224,7 +224,7 @@ export default function Capabilities() {
 
                   {blocked && (
                     <p className="text-muted mt-4 text-[12px] leading-[1.33]">
-                      {model?.label ?? "This model"} can't see images. Pick a
+                      {model?.label ?? "This model"} can&rsquo;t see images. Pick a
                       model that can in{" "}
                       <Link href="/settings" className="text-ink underline">
                         Settings

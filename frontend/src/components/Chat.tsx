@@ -398,9 +398,6 @@ function AttachmentStrip({
             <span className="max-w-[200px] truncate">
               {isAudio(a) ? "Voice note" : a.name}
             </span>
-            {!isAudio(a) && (
-              <span className="text-faint tnum">{formatChars(a.chars)}</span>
-            )}
             {onRemove && (
               <button
                 onClick={() => onRemove(a.id)}

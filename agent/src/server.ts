@@ -64,7 +64,6 @@ function validateConfig(body: Partial<Config>): Partial<Config> {
     if (!Number.isFinite(body.context_messages)) throw new Error("context_messages must be a number");
     patch.context_messages = Math.round(clamp(body.context_messages, 0, 200));
   }
-  if (body.auto_title !== undefined) patch.auto_title = body.auto_title ? 1 : 0;
 
   for (const flag of CAPABILITY_FLAGS) {
     if (body[flag] !== undefined) (patch[flag] as number) = body[flag] ? 1 : 0;

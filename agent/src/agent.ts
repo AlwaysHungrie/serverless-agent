@@ -949,9 +949,9 @@ export class SessionAgent extends Agent<Env> {
     return (this.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM messages`)[0]?.n ?? 0) === 0;
   }
 
-  /** Whether this turn should name the session: the first one, if auto-title is on. */
+  /** Only the first turn names the session; later turns leave the title alone. */
   private shouldName() {
-    return this.isFirstTurn() && this.config().auto_title === 1;
+    return this.isFirstTurn();
   }
 
   /**

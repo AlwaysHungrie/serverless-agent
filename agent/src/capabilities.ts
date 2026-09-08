@@ -28,7 +28,7 @@ export type CapabilityId =
 export type CapabilityField = {
   key: keyof Config;
   label: string;
-  hint: string;
+  hint?: string;
   /** Secrets are write-only over the API: reads return a mask, not the value. */
   secret: boolean;
   /**
@@ -49,7 +49,7 @@ export type Capability = {
   label: string;
   summary: string;
   /** What it costs or risks, shown under the toggle. */
-  note: string;
+  note?: string;
   tools: string[];
   fields: CapabilityField[];
 };
@@ -83,13 +83,12 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_web_search",
     label: "Web search",
     summary: "Get answers from the live web, with links.",
-    note: "Uses one Brave API call per search.",
     tools: ["web_search"],
     fields: [
       {
         key: "brave_api_key",
         label: "Brave Search API key",
-        hint: "Get a free key at api-dashboard.search.brave.com.",
+        hint: "",
         secret: true,
         required: true,
         placeholder: "BSA…",
@@ -101,7 +100,6 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_url_fetch",
     label: "Read a URL",
     summary: "Open a link you share and read the page.",
-    note: "Works on public pages only.",
     tools: ["fetch_url"],
     fields: [],
   },
@@ -119,7 +117,7 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_vision",
     label: "Image input",
     summary: "Ask questions about images you attach.",
-    note: "Needs a model that can see images.",
+    note: "Not available for all models.",
     tools: [],
     fields: [],
   },
@@ -128,13 +126,11 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_image_generation",
     label: "Image generation",
     summary: "Ask for an image and get it drawn.",
-    note: "Billed at the image model's own rate.",
     tools: ["generate_image"],
     fields: [
       {
         key: "image_model",
         label: "Image model",
-        hint: "Cheapest first.",
         secret: false,
         required: true,
         options: IMAGE_MODELS,
@@ -146,13 +142,11 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_audio_input",
     label: "Audio input",
     summary: "Ask questions about voice notes you send.",
-    note: "Transcribed only when the agent needs the words.",
     tools: ["transcribe_audio"],
     fields: [
       {
         key: "transcription_model",
         label: "Transcription model",
-        hint: "Cheapest first.",
         secret: false,
         required: true,
         options: TRANSCRIPTION_MODELS,
@@ -164,7 +158,6 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_scheduled_tasks",
     label: "Scheduled tasks",
     summary: "Have a prompt run later, or on repeat.",
-    note: "Each scheduled run costs like a normal reply.",
     tools: ["schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"],
     fields: [],
   },
@@ -173,7 +166,6 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_memory",
     label: "Memory",
     summary: "Let the agent remember facts between sessions.",
-    note: "Every session shares what it remembers.",
     tools: ["remember", "recall"],
     fields: [],
   },
