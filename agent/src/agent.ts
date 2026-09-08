@@ -12,6 +12,8 @@ import { DEFAULT_CONFIG, type Config, type Memory, type SessionRegistry } from "
 export type Env = {
   SessionAgent: DurableObjectNamespace;
   SessionRegistry: DurableObjectNamespace<SessionRegistry>;
+  /** Object storage for attachment bytes: images, and voice-note clips. */
+  FILES: R2Bucket;
   OPENROUTER_API_KEY: string;
   MODEL: string;
 };
@@ -47,8 +49,10 @@ export type Attachment = {
   mime: string;
   /** Extracted text for a text file, a transcript for audio, a prompt for an image. */
   text: string;
-  /** Data URL, for images only. Text files keep their content in `text`. */
+  /** Legacy inline data URL. Rows written before attachments moved to R2. */
   data: string;
+  /** R2 object key holding the bytes, for images and audio clips. Empty for text. */
+  key: string;
   bytes: number;
   ts: number;
   /** 0 until the attachment has been sent with a turn. */
@@ -135,11 +139,17 @@ export class SessionAgent extends Agent<Env> {
          mime TEXT NOT NULL,
          text TEXT NOT NULL DEFAULT '',
          data TEXT NOT NULL DEFAULT '',
+         key TEXT NOT NULL DEFAULT '',
          bytes INTEGER NOT NULL DEFAULT 0,
          ts INTEGER NOT NULL,
          used INTEGER NOT NULL DEFAULT 0
        )`
     );
+    try {
+      this.exec(`ALTER TABLE attachments ADD COLUMN key TEXT NOT NULL DEFAULT ''`);
+    } catch {
+      // Column already present.
+    }
     this.schemaReady = true;
   }
 
@@ -159,12 +169,12 @@ export class SessionAgent extends Agent<Env> {
       if (message === undefined) {
         return Response.json({ error: "body must be { message: string }" }, { status: 400 });
       }
-      return this.streamChat(message);
+      return await this.streamChat(message);
     }
 
     // Attachment bytes are served raw so an <img src> can point straight at them.
     if (request.method === "GET" && path === "files" && route[1]) {
-      return this.serveAttachment(route[1]);
+      return await this.serveAttachment(route[1]);
     }
 
     let body: unknown;
@@ -183,7 +193,10 @@ export class SessionAgent extends Agent<Env> {
       } else if (request.method === "GET" && path === "files") {
         body = { attachments: this.pendingAttachments().map(publicAttachment) };
       } else if (request.method === "DELETE" && path === "files" && route[1]) {
+        const row = this.attachment(route[1]);
         this.exec(`DELETE FROM attachments WHERE id = ? AND used = 0`, route[1]);
+        // Only the pending row is deletable, so a surviving row means the bytes stay.
+        if (row?.key && !this.attachment(route[1])) await this.env.FILES.delete(row.key);
         body = { ok: true };
       } else if (request.method === "GET" && path === "tasks") {
         body = { tasks: this.listTasks() };
@@ -195,6 +208,7 @@ export class SessionAgent extends Agent<Env> {
         body = this.summary();
       } else if (request.method === "POST" && path === "reset") {
         this.exec(`DELETE FROM messages`);
+        await this.deleteObjects();
         this.exec(`DELETE FROM attachments`);
         for (const task of this.listTasks()) this.cancelTask(task.id);
         body = { ok: true };
@@ -224,28 +238,68 @@ export class SessionAgent extends Agent<Env> {
     return this.exec<Attachment>(`SELECT * FROM attachments WHERE used = 0 ORDER BY ts ASC`);
   }
 
-  private serveAttachment(id: string): Response {
+  /**
+   * Attachment bytes live in R2, so a big image or a long voice note never sits in
+   * the Durable Object's SQLite. Rows written before the move still carry a data URL.
+   */
+  private async serveAttachment(id: string): Promise<Response> {
     const row = this.attachment(id);
-    if (!row || row.kind !== "image") return new Response("not found", { status: 404 });
+    // Images and voice notes both keep their bytes; text files have none to serve.
+    if (!row || (!row.key && !row.data)) return new Response("not found", { status: 404 });
+
+    const CACHE = { "cache-control": "public, max-age=31536000, immutable" };
+    if (row.key) {
+      const object = await this.env.FILES.get(row.key);
+      if (!object) return new Response("not found", { status: 404 });
+      return new Response(object.body, {
+        headers: { "content-type": row.mime, ...CACHE },
+      });
+    }
+
     const [meta, base64] = row.data.split(",", 2);
     const mime = meta?.match(/^data:([^;]+)/)?.[1] ?? row.mime;
     const binary = Uint8Array.from(atob(base64 ?? ""), (c) => c.charCodeAt(0));
-    return new Response(binary, {
-      headers: { "content-type": mime, "cache-control": "public, max-age=31536000, immutable" },
-    });
+    return new Response(binary, { headers: { "content-type": mime, ...CACHE } });
+  }
+
+  /** Put an upload's bytes in the bucket, namespaced by session, and hand back its key. */
+  private async putObject(id: string, body: ArrayBuffer | Blob, mime: string): Promise<string> {
+    const key = `${this.name}/${id}`;
+    await this.env.FILES.put(key, body, { httpMetadata: { contentType: mime } });
+    return key;
+  }
+
+  /** Drop every object this session holds in the bucket. */
+  private async deleteObjects(): Promise<void> {
+    const keys = this.exec<{ key: string }>(
+      `SELECT key FROM attachments WHERE key != ''`
+    ).map((r) => r.key);
+    // R2 takes up to 1000 keys per delete call.
+    for (let i = 0; i < keys.length; i += 1000) {
+      await this.env.FILES.delete(keys.slice(i, i + 1000));
+    }
+  }
+
+  /** The bytes behind an attachment, as the data URL OpenRouter wants. */
+  private async dataUrlOf(a: Attachment): Promise<string> {
+    if (!a.key) return a.data;
+    const object = await this.env.FILES.get(a.key);
+    if (!object) return "";
+    return `data:${a.mime};base64,${bytesToBase64(await object.arrayBuffer())}`;
   }
 
   private insertAttachment(row: Omit<Attachment, "ts" | "used">): Attachment {
     const full: Attachment = { ...row, ts: Date.now(), used: 0 };
     this.exec(
-      `INSERT INTO attachments (id, kind, name, mime, text, data, bytes, ts, used)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO attachments (id, kind, name, mime, text, data, key, bytes, ts, used)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       full.id,
       full.kind,
       full.name,
       full.mime,
       full.text,
       full.data,
+      full.key,
       full.bytes,
       full.ts
     );
@@ -295,7 +349,8 @@ export class SessionAgent extends Agent<Env> {
         name: file.name,
         mime,
         text: "",
-        data: await dataUrl(file, mime),
+        data: "",
+        key: await this.putObject(id, await file.arrayBuffer(), mime),
         bytes: file.size,
       });
       return { body: { attachment: publicAttachment(attachment) }, status: 200 };
@@ -304,7 +359,7 @@ export class SessionAgent extends Agent<Env> {
     if (mime.startsWith("audio/") || mime.startsWith("video/")) {
       if (!enabled(config, "audio_input")) {
         return {
-          body: { error: "Audio input is off, or its transcription key is missing." },
+          body: { error: "Audio input is off. Turn it on under Capabilities." },
           status: 400,
         };
       }
@@ -316,6 +371,8 @@ export class SessionAgent extends Agent<Env> {
         mime,
         text: transcript,
         data: "",
+        // The clip is kept alongside its transcript so the chat can play it back.
+        key: await this.putObject(id, await file.arrayBuffer(), mime),
         bytes: file.size,
       });
       return { body: { attachment: publicAttachment(attachment) }, status: 200 };
@@ -337,25 +394,49 @@ export class SessionAgent extends Agent<Env> {
       mime,
       text: await file.text(),
       data: "",
+      key: "",
       bytes: file.size,
     });
     return { body: { attachment: publicAttachment(attachment) }, status: 200 };
   }
 
-  /** Send audio to any OpenAI-compatible transcription endpoint. */
+  /**
+   * Turn audio into text. OpenRouter has no /audio/transcriptions route, but many of
+   * its models take audio as a chat input part, so this spends the key the Worker
+   * already holds rather than asking the user for a second provider.
+   */
   private async transcribe(file: File): Promise<string> {
-    const config = this.config();
-    const form = new FormData();
-    form.set("file", file, file.name);
-    form.set("model", config.transcription_model);
-    const res = await fetch(config.transcription_url, {
+    const format = audioFormat(file.type, file.name);
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: { Authorization: `Bearer ${config.transcription_key}` },
-      body: form,
+      headers: {
+        Authorization: `Bearer ${this.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: this.config().transcription_model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Transcribe this audio verbatim. Reply with the transcript alone — no preamble, no commentary, no quotation marks.",
+              },
+              {
+                type: "input_audio",
+                input_audio: { data: await base64(file), format },
+              },
+            ],
+          },
+        ],
+      }),
     });
     if (!res.ok) throw new Error(`transcription ${res.status}: ${await res.text()}`);
-    const json = (await res.json()) as { text?: string };
-    return json.text ?? "";
+    const json = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    return (json.choices?.[0]?.message?.content ?? "").trim();
   }
 
   /* ------------------------------------------------------------- transcript -- */
@@ -390,21 +471,31 @@ export class SessionAgent extends Agent<Env> {
    * N messages, so a long session stops growing its prompt (and its per-turn cost)
    * without limit; 0 keeps everything.
    */
-  private history(): Msg[] {
+  private async history(): Promise<Msg[]> {
     const limit = this.config().context_messages;
     const rows = this.rows();
     const kept = limit > 0 ? rows.slice(-limit) : rows;
-    return kept.map((row) => ({ role: row.role, content: this.contentOf(row) }));
+    return Promise.all(
+      kept.map(async (row) => ({ role: row.role, content: await this.contentOf(row) }))
+    );
   }
 
   /** Rebuild a stored row's content, putting its images back as image parts. */
-  private contentOf(row: StoredMessage): string | Part[] {
+  private async contentOf(row: StoredMessage): Promise<string | Part[]> {
     const images = this.attachmentsOf(row).filter((a) => a.kind === "image");
     if (images.length === 0) return row.content;
     return [
       { type: "text", text: row.content },
-      ...images.map((a) => ({ type: "image_url" as const, image_url: { url: a.data } })),
+      ...(await this.imageParts(images)),
     ];
+  }
+
+  /** Image attachments as OpenRouter parts, with their bytes read back from R2. */
+  private async imageParts(images: Attachment[]): Promise<Part[]> {
+    const urls = await Promise.all(images.map((a) => this.dataUrlOf(a)));
+    return urls
+      .filter((url) => url !== "")
+      .map((url) => ({ type: "image_url" as const, image_url: { url } }));
   }
 
   private systemPrompt(): string {
@@ -428,7 +519,7 @@ export class SessionAgent extends Agent<Env> {
    * into the message so any model can read them; images become parts, which only a
    * multimodal model will accept.
    */
-  private userMessage(message: string, attachments: Attachment[]): Msg {
+  private async userMessage(message: string, attachments: Attachment[]): Promise<Msg> {
     const documents = attachments.filter((a) => a.kind === "text" && a.text.trim() !== "");
     const text = documents.length
       ? [
@@ -441,18 +532,15 @@ export class SessionAgent extends Agent<Env> {
     if (images.length === 0) return { role: "user", content: text };
     return {
       role: "user",
-      content: [
-        { type: "text", text },
-        ...images.map((a) => ({ type: "image_url" as const, image_url: { url: a.data } })),
-      ],
+      content: [{ type: "text", text }, ...(await this.imageParts(images))],
     };
   }
 
-  private modelMessages(message: string, attachments: Attachment[]): Msg[] {
+  private async modelMessages(message: string, attachments: Attachment[]): Promise<Msg[]> {
     return [
       { role: "system", content: this.systemPrompt() },
-      ...this.history(),
-      this.userMessage(message, attachments),
+      ...(await this.history()),
+      await this.userMessage(message, attachments),
     ];
   }
 
@@ -536,16 +624,19 @@ export class SessionAgent extends Agent<Env> {
       sessionId: this.name,
       openrouterKey: this.env.OPENROUTER_API_KEY,
       registry: this.registry(),
-      saveImage: (dataUrl, prompt) => {
+      saveImage: async (dataUrl, prompt) => {
         const id = crypto.randomUUID().slice(0, 12);
+        const mime = dataUrl.match(/^data:([^;]+)/)?.[1] ?? "image/png";
+        const bytes = base64ToBytes(dataUrl.split(",", 2)[1] ?? "");
         this.insertAttachment({
           id,
           kind: "image",
           name: `${prompt.slice(0, 40)}.png`,
-          mime: dataUrl.match(/^data:([^;]+)/)?.[1] ?? "image/png",
+          mime,
           text: prompt,
-          data: dataUrl,
-          bytes: dataUrl.length,
+          data: "",
+          key: await this.putObject(id, bytes, mime),
+          bytes: bytes.byteLength,
         });
         // Marked used straight away: it belongs to the reply, not to the next turn.
         this.exec(`UPDATE attachments SET used = 1 WHERE id = ?`, id);
@@ -699,7 +790,7 @@ export class SessionAgent extends Agent<Env> {
    */
   private async chat(message: string) {
     const attachments = this.pendingAttachments();
-    const convo = this.modelMessages(message, attachments);
+    const convo = await this.modelMessages(message, attachments);
     const first = this.shouldName();
     this.saveUser(message, attachments);
 
@@ -763,9 +854,9 @@ export class SessionAgent extends Agent<Env> {
    * event tells the client what is happening, and the next round starts. Text from
    * every round is forwarded as it arrives.
    */
-  private streamChat(message: string): Response {
+  private async streamChat(message: string): Promise<Response> {
     const attachments = this.pendingAttachments();
-    const convo = this.modelMessages(message, attachments);
+    const convo = await this.modelMessages(message, attachments);
     const first = this.shouldName();
     this.saveUser(message, attachments);
 
@@ -955,7 +1046,16 @@ export class SessionAgent extends Agent<Env> {
 
 /** Attachment rows carry a whole image; the API sends everything except the bytes. */
 function publicAttachment(a: Attachment) {
-  return { id: a.id, kind: a.kind, name: a.name, mime: a.mime, bytes: a.bytes, chars: a.text.length };
+  return {
+    id: a.id,
+    kind: a.kind,
+    name: a.name,
+    mime: a.mime,
+    bytes: a.bytes,
+    chars: a.text.length,
+    // Enough of the text (or of an audio transcript) for the UI to show what was sent.
+    preview: a.kind === "text" ? a.text.slice(0, 400) : "",
+  };
 }
 
 function describeSchedule(schedule: Schedule<{ prompt: string }>): ScheduledTask {
@@ -975,12 +1075,47 @@ function isTextLike(mime: string, name: string): boolean {
   );
 }
 
-async function dataUrl(file: File, mime: string): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
+async function base64(file: File): Promise<string> {
+  return bytesToBase64(await file.arrayBuffer());
+}
+
+function base64ToBytes(encoded: string): ArrayBuffer {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
   let binary = "";
   // Chunked, because spreading a megabyte into String.fromCharCode blows the stack.
   for (let i = 0; i < bytes.length; i += 8192) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
   }
-  return `data:${mime};base64,${btoa(binary)}`;
+  return btoa(binary);
 }
+
+/**
+ * The format name OpenRouter wants beside the audio bytes. It is picky about the
+ * container, so anything unrecognised is reported here rather than as a 400 from
+ * upstream.
+ */
+function audioFormat(mime: string, name: string): string {
+  const subtype = mime.split("/")[1]?.split(";")[0]?.toLowerCase() ?? "";
+  const extension = name.split(".").pop()?.toLowerCase() ?? "";
+  const candidate = AUDIO_FORMATS[subtype] ?? AUDIO_FORMATS[extension];
+  if (!candidate) {
+    throw new Error(`${name} is not an audio format transcription accepts. WAV and MP3 work.`);
+  }
+  return candidate;
+}
+
+const AUDIO_FORMATS: Record<string, string> = {
+  wav: "wav",
+  wave: "wav",
+  "x-wav": "wav",
+  mp3: "mp3",
+  mpeg: "mp3",
+  mpga: "mp3",
+};

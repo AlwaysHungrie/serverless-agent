@@ -40,9 +40,7 @@ export type Config = {
   brave_api_key: string;
   /** OpenRouter model used for `generate_image`; billed on the existing OpenRouter key. */
   image_model: string;
-  /** Any OpenAI-compatible /audio/transcriptions endpoint, plus its key. */
-  transcription_url: string;
-  transcription_key: string;
+  /** OpenRouter model used to transcribe audio uploads; same key, same bill. */
   transcription_model: string;
 };
 
@@ -65,9 +63,7 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
 
   brave_api_key: "",
   image_model: "google/gemini-2.5-flash-image",
-  transcription_url: "https://api.openai.com/v1/audio/transcriptions",
-  transcription_key: "",
-  transcription_model: "whisper-1",
+  transcription_model: "google/gemini-2.5-flash-lite",
 };
 
 /** The config columns, in the order they are written, excluding the primary key. */
@@ -91,8 +87,6 @@ const CONFIG_MIGRATIONS = [
   `cap_memory INTEGER NOT NULL DEFAULT 0`,
   `brave_api_key TEXT NOT NULL DEFAULT ''`,
   `image_model TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.image_model}'`,
-  `transcription_url TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.transcription_url}'`,
-  `transcription_key TEXT NOT NULL DEFAULT ''`,
   `transcription_model TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.transcription_model}'`,
 ];
 

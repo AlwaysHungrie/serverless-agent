@@ -1,4 +1,8 @@
-import { createUIMessageStream, createUIMessageStreamResponse, type UIMessage } from "ai";
+import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  type UIMessage,
+} from "ai";
 import { agentUrl, type Attachment, type UsageData } from "@/lib/agent";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +27,34 @@ export type ChatUIMessage = UIMessage<
  * stop, the Worker's stream is cancelled, the Durable Object banks the partial reply
  * and the tokens already billed, and stops accruing duration.
  */
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+/**
+ * Stream failures reach the client as text, so they have to read as sentences. The
+ * runtime's own wording does not: a cancelled or dropped connection surfaces from
+ * undici as the bare word "terminated".
+ */
+function describeStreamError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/^terminated$/i.test(raw) || /aborted|ECONNRESET/i.test(raw)) {
+    return "The reply was cut off before it finished. Send the message again to retry.";
+  }
+  const status = raw.match(/^agent (\d{3}): ([\s\S]*)$/);
+  if (status) {
+    const detail = (() => {
+      try {
+        return (JSON.parse(status[2]) as { error?: string }).error ?? status[2];
+      } catch {
+        return status[2];
+      }
+    })();
+    return detail.trim() || `The agent returned ${status[1]}.`;
+  }
+  return raw || "Something went wrong on the way to the agent.";
+}
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const { id } = await params;
   const { messages } = (await request.json()) as { messages: ChatUIMessage[] };
 
@@ -50,7 +81,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const textId = crypto.randomUUID();
       writer.write({ type: "text-start", id: textId });
 
-      const reader = upstream.body.pipeThrough(new TextDecoderStream()).getReader();
+      const reader = upstream.body
+        .pipeThrough(new TextDecoderStream())
+        .getReader();
       let buffer = "";
       let closed = false;
 
@@ -75,7 +108,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               | { type: "done" };
 
             if (event.type === "delta") {
-              writer.write({ type: "text-delta", id: textId, delta: event.text });
+              writer.write({
+                type: "text-delta",
+                id: textId,
+                delta: event.text,
+              });
             } else if (event.type === "usage") {
               writer.write({
                 type: "data-usage",
@@ -106,7 +143,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         if (!closed) writer.write({ type: "text-end", id: textId });
       }
     },
-    onError: (error) => (error instanceof Error ? error.message : String(error)),
+    onError: (error) => describeStreamError(error),
   });
 
   return createUIMessageStreamResponse({ stream });

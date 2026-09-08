@@ -2,11 +2,24 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useEffect, useRef, useState } from "react";
-import { FileText, Paperclip, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertCircle,
+  FileText,
+  Mic,
+  Paperclip,
+  Pause,
+  Play,
+  Square,
+  X,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ChatUIMessage, FilesData, ToolData } from "@/app/api/sessions/[id]/chat/route";
+import type {
+  ChatUIMessage,
+  FilesData,
+  ToolData,
+} from "@/app/api/sessions/[id]/chat/route";
 import {
   capabilityReady,
   type Attachment,
@@ -16,6 +29,7 @@ import {
   type UsageData,
 } from "@/lib/agent";
 import { formatMs, formatUsd } from "@/lib/format";
+import { startRecording, type Recorder } from "@/lib/recorder";
 
 /** How a tool call reads while it runs, and once it is done. */
 const TOOL_LABELS: Record<string, [running: string, done: string]> = {
@@ -30,7 +44,10 @@ const TOOL_LABELS: Record<string, [running: string, done: string]> = {
 };
 
 function toolLabel(tool: ToolData) {
-  const pair = TOOL_LABELS[tool.name] ?? [`Running ${tool.name}…`, `Ran ${tool.name}`];
+  const pair = TOOL_LABELS[tool.name] ?? [
+    `Running ${tool.name}…`,
+    `Ran ${tool.name}`,
+  ];
   return tool.done ? pair[1] : pair[0];
 }
 
@@ -40,13 +57,21 @@ function UsageLine({ usage }: { usage: UsageData }) {
       <span>
         {usage.prompt_tokens} + {usage.completion_tokens} tkns
       </span>
-      <span className="text-ink font-semibold">{formatUsd(usage.cost_usd)}</span>
+      <span className="text-ink font-semibold">
+        {formatUsd(usage.cost_usd)}
+      </span>
       <span>{formatMs(usage.llm_ms)}</span>
     </div>
   );
 }
 
 /** Where the browser reads an attachment's bytes from. */
+function formatChars(chars: number) {
+  return chars >= 1000
+    ? `${(chars / 1000).toFixed(1)}k chars`
+    : `${chars} chars`;
+}
+
 function fileUrl(sessionId: string, id: string) {
   return `/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(id)}`;
 }
@@ -56,24 +81,44 @@ function fileUrl(sessionId: string, id: string) {
  * every element lands on the same monochrome scale as the rest of the app.
  */
 const MARKDOWN_COMPONENTS = (sessionId: string) => ({
-  p: (props: React.ComponentProps<"p">) => <p className="my-2 first:mt-0 last:mb-0" {...props} />,
+  p: (props: React.ComponentProps<"p">) => (
+    <p className="my-2 first:mt-0 last:mb-0" {...props} />
+  ),
   ul: (props: React.ComponentProps<"ul">) => (
     <ul className="my-2 list-disc space-y-1 pl-5" {...props} />
   ),
   ol: (props: React.ComponentProps<"ol">) => (
     <ol className="my-2 list-decimal space-y-1 pl-5" {...props} />
   ),
-  li: (props: React.ComponentProps<"li">) => <li className="leading-[1.5]" {...props} />,
-  h1: (props: React.ComponentProps<"h1">) => <h1 className="mt-4 mb-2 text-[20px]" {...props} />,
-  h2: (props: React.ComponentProps<"h2">) => <h2 className="mt-4 mb-2 text-[18px]" {...props} />,
-  h3: (props: React.ComponentProps<"h3">) => <h3 className="mt-3 mb-1 text-[16px]" {...props} />,
-  a: (props: React.ComponentProps<"a">) => (
-    <a className="underline underline-offset-2" target="_blank" rel="noreferrer" {...props} />
+  li: (props: React.ComponentProps<"li">) => (
+    <li className="leading-[1.5]" {...props} />
   ),
-  strong: (props: React.ComponentProps<"strong">) => <strong className="font-semibold" {...props} />,
+  h1: (props: React.ComponentProps<"h1">) => (
+    <h1 className="mt-4 mb-2 text-[20px]" {...props} />
+  ),
+  h2: (props: React.ComponentProps<"h2">) => (
+    <h2 className="mt-4 mb-2 text-[18px]" {...props} />
+  ),
+  h3: (props: React.ComponentProps<"h3">) => (
+    <h3 className="mt-3 mb-1 text-[16px]" {...props} />
+  ),
+  a: (props: React.ComponentProps<"a">) => (
+    <a
+      className="underline underline-offset-2"
+      target="_blank"
+      rel="noreferrer"
+      {...props}
+    />
+  ),
+  strong: (props: React.ComponentProps<"strong">) => (
+    <strong className="font-semibold" {...props} />
+  ),
   hr: () => <hr className="border-hairline-soft my-4" />,
   blockquote: (props: React.ComponentProps<"blockquote">) => (
-    <blockquote className="border-hairline my-2 border-l-2 pl-4 italic" {...props} />
+    <blockquote
+      className="border-hairline my-2 border-l-2 pl-4 italic"
+      {...props}
+    />
   ),
   code: ({ className, ...props }: React.ComponentProps<"code">) =>
     // Fenced code arrives wrapped in <pre>, which carries the block styling; only
@@ -81,7 +126,10 @@ const MARKDOWN_COMPONENTS = (sessionId: string) => ({
     className?.includes("language-") ? (
       <code className={className} {...props} />
     ) : (
-      <code className="bg-canvas-soft rounded px-1.5 py-0.5 text-[14px]" {...props} />
+      <code
+        className="bg-canvas-soft rounded px-1.5 py-0.5 text-[14px]"
+        {...props}
+      />
     ),
   pre: (props: React.ComponentProps<"pre">) => (
     <pre
@@ -95,10 +143,16 @@ const MARKDOWN_COMPONENTS = (sessionId: string) => ({
     </div>
   ),
   th: (props: React.ComponentProps<"th">) => (
-    <th className="border-hairline-soft border-b px-3 py-2 text-left font-semibold" {...props} />
+    <th
+      className="border-hairline-soft border-b px-3 py-2 text-left font-semibold"
+      {...props}
+    />
   ),
   td: (props: React.ComponentProps<"td">) => (
-    <td className="border-hairline-soft border-b px-3 py-2 align-top" {...props} />
+    <td
+      className="border-hairline-soft border-b px-3 py-2 align-top"
+      {...props}
+    />
   ),
   img: ({ src, alt }: React.ComponentProps<"img">) => (
     // The Worker names its own path for a generated image; the browser reaches it
@@ -115,7 +169,141 @@ const MARKDOWN_COMPONENTS = (sessionId: string) => ({
   ),
 });
 
-/** Attachments as they appear on a sent message: images as thumbnails, files as chips. */
+/** A voice note is stored as a text attachment; only its mime type gives it away. */
+function isAudio(a: Attachment) {
+  return a.mime.startsWith("audio/") || a.mime.startsWith("video/");
+}
+
+/** m:ss, for player positions and durations. */
+function clock(seconds: number) {
+  const whole = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+/**
+ * A fixed bar pattern per clip. Real amplitudes would mean decoding the whole file in
+ * the browser; a stable pseudo-random figure reads the same way and costs nothing.
+ */
+function bars(id: string, count = 34) {
+  let seed = 0;
+  for (let i = 0; i < id.length; i++)
+    seed = (seed * 31 + id.charCodeAt(i)) >>> 0;
+  return Array.from({ length: count }, () => {
+    seed = (seed * 1103515245 + 12345) >>> 0;
+    return 0.25 + ((seed >>> 16) % 1000) / 1000 / 1.35;
+  });
+}
+
+/** Play/scrub a voice note in place, with its transcript underneath. */
+function VoiceNote({
+  attachment,
+  sessionId,
+  isUser,
+}: {
+  attachment: Attachment;
+  sessionId: string;
+  isUser: boolean;
+}) {
+  const audio = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [at, setAt] = useState(0);
+  const [total, setTotal] = useState(0);
+  const shape = useMemo(() => bars(attachment.id), [attachment.id]);
+  const progress = total > 0 ? at / total : 0;
+
+  const toggle = () => {
+    const el = audio.current;
+    if (!el) return;
+    if (el.paused) void el.play();
+    else el.pause();
+  };
+
+  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = audio.current;
+    if (!el || !total) return;
+    const box = e.currentTarget.getBoundingClientRect();
+    el.currentTime = ((e.clientX - box.left) / box.width) * total;
+  };
+
+  return (
+    <div
+      className={`rounded-[14px] px-3 py-2.5 ${isUser ? "bg-white/10" : "bg-field"}`}
+    >
+      <div className="flex items-center gap-3">
+        <button
+          onClick={toggle}
+          aria-label={
+            playing ? `Pause ${attachment.name}` : `Play ${attachment.name}`
+          }
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+            isUser ? "bg-white/20" : "bg-ink text-on-primary"
+          }`}
+        >
+          {playing ? (
+            <Pause size={14} strokeWidth={2} fill="currentColor" />
+          ) : (
+            <Play
+              size={14}
+              strokeWidth={2}
+              fill="currentColor"
+              className="ml-0.5"
+            />
+          )}
+        </button>
+
+        <div
+          onClick={seek}
+          className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-[2px]"
+        >
+          {shape.map((h, i) => (
+            <span
+              key={i}
+              className="flex-1 rounded-full"
+              style={{
+                height: `${Math.round(h * 26)}px`,
+                backgroundColor: "currentColor",
+                opacity: i / shape.length <= progress ? 0.9 : 0.28,
+              }}
+            />
+          ))}
+        </div>
+
+        <span
+          className={`tnum shrink-0 text-[12px] leading-[1.33] ${isUser ? "opacity-70" : "text-faint"}`}
+        >
+          {clock(playing || at > 0 ? total - at : total)}
+        </span>
+      </div>
+
+      {attachment.preview && (
+        <p
+          className={`mt-2 text-[13px] leading-[1.4] ${isUser ? "opacity-70" : "text-muted"}`}
+        >
+          {attachment.preview}
+        </p>
+      )}
+
+      <audio
+        ref={audio}
+        src={fileUrl(sessionId, attachment.id)}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false);
+          setAt(0);
+        }}
+        onLoadedMetadata={(e) => {
+          const d = e.currentTarget.duration;
+          setTotal(Number.isFinite(d) ? d : 0);
+        }}
+        onTimeUpdate={(e) => setAt(e.currentTarget.currentTime)}
+      />
+    </div>
+  );
+}
+
+/** Attachments queued in the composer: images as thumbnails, files as chips. */
 function AttachmentStrip({
   attachments,
   sessionId,
@@ -152,9 +340,15 @@ function AttachmentStrip({
             key={a.id}
             className="bg-field text-ink flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[12px] leading-[1.33]"
           >
-            <FileText size={13} strokeWidth={1.75} className="shrink-0" />
-            <span className="max-w-[200px] truncate">{a.name}</span>
-            <span className="text-faint tnum">{a.chars} chars</span>
+            {isAudio(a) ? (
+              <Mic size={13} strokeWidth={1.75} className="shrink-0" />
+            ) : (
+              <FileText size={13} strokeWidth={1.75} className="shrink-0" />
+            )}
+            <span className="max-w-[200px] truncate">
+              {isAudio(a) ? "Voice note" : a.name}
+            </span>
+            <span className="text-faint tnum">{formatChars(a.chars)}</span>
             {onRemove && (
               <button
                 onClick={() => onRemove(a.id)}
@@ -171,54 +365,210 @@ function AttachmentStrip({
   );
 }
 
-function Bubble({ message, sessionId }: { message: ChatUIMessage; sessionId: string }) {
+/**
+ * Non-image attachments on a sent message: a full-width card per file, tinted to sit
+ * on whichever bubble it lands in, rather than the composer's light pill.
+ */
+function MessageDocs({
+  docs,
+  isUser,
+  sessionId,
+}: {
+  docs: Attachment[];
+  isUser: boolean;
+  sessionId: string;
+}) {
+  if (docs.length === 0) return null;
+  return (
+    <div className="space-y-1.5">
+      {docs.map((a) =>
+        isAudio(a) ? (
+          <VoiceNote
+            key={a.id}
+            attachment={a}
+            sessionId={sessionId}
+            isUser={isUser}
+          />
+        ) : (
+          <div
+            key={a.id}
+            className={`flex gap-3 rounded-[14px] px-3 py-2.5 ${
+              a.preview ? "items-start" : "items-center"
+            } ${isUser ? "bg-white/10" : "bg-field"}`}
+          >
+            <span
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] ${
+                isUser ? "bg-white/15" : "bg-canvas border-hairline-soft border"
+              }`}
+            >
+              <FileText size={16} strokeWidth={1.75} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[14px] leading-[1.35]">
+                {a.name}
+              </span>
+              <span
+                className={`tnum block text-[12px] leading-[1.33] ${isUser ? "opacity-60" : "text-faint"}`}
+              >
+                {formatChars(a.chars)}
+              </span>
+              {a.preview && (
+                <span
+                  className={`mt-1.5 block max-h-[4.2em] overflow-hidden font-mono text-[12px] leading-[1.4] whitespace-pre-wrap ${
+                    isUser ? "opacity-60" : "text-muted"
+                  }`}
+                >
+                  {a.preview}
+                </span>
+              )}
+            </span>
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+/**
+ * Images on a sent message, laid out the way a messaging app does it: flush to the
+ * bubble edge, one large frame for a single image and a square grid beyond that.
+ */
+function MessageMedia({
+  images,
+  sessionId,
+}: {
+  images: Attachment[];
+  sessionId: string;
+}) {
+  if (images.length === 0) return null;
+  const single = images.length === 1;
+  return (
+    <div className={single ? "" : "grid grid-cols-2 gap-0.5"}>
+      {images.map((a) => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={a.id}
+          src={fileUrl(sessionId, a.id)}
+          alt={a.name}
+          className={
+            single
+              ? "block max-h-[360px] w-full bg-black/[0.06] object-contain"
+              : "block aspect-square w-full bg-black/[0.06] object-cover"
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Anything that is neither the user nor the agent talking: a dropped stream, a failed
+ * turn. Centred and quiet, so it never reads as a message someone sent.
+ */
+function SystemNotice({
+  text,
+  onRetry,
+}: {
+  text: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="flex justify-center">
+      <div className="border-hairline-soft text-muted flex max-w-md items-center gap-2.5 rounded-full border px-4 py-2 text-[13px] leading-[1.35]">
+        <AlertCircle size={14} strokeWidth={1.75} className="shrink-0" />
+        <span className="min-w-0">{text}</span>
+        {onRetry && (
+          <button
+            onClick={onRetry}
+            className="text-ink shrink-0 font-medium underline underline-offset-2"
+          >
+            Retry
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Bubble({
+  message,
+  sessionId,
+}: {
+  message: ChatUIMessage;
+  sessionId: string;
+}) {
   const isUser = message.role === "user";
   const text = message.parts
     .filter((p): p is { type: "text"; text: string } => p.type === "text")
     .map((p) => p.text)
     .join("");
   const usage = message.parts.find((p) => p.type === "data-usage") as
-    | { type: "data-usage"; data: UsageData }
-    | undefined;
+    { type: "data-usage"; data: UsageData } | undefined;
   const tools = message.parts.filter(
-    (p): p is { type: "data-tool"; id?: string; data: ToolData } => p.type === "data-tool",
+    (p): p is { type: "data-tool"; id?: string; data: ToolData } =>
+      p.type === "data-tool",
   );
   const files = message.parts.find((p) => p.type === "data-files") as
-    | { type: "data-files"; data: FilesData }
-    | undefined;
+    { type: "data-files"; data: FilesData } | undefined;
+
+  const attachments = files?.data.attachments ?? [];
+  const images = attachments.filter((a) => a.kind === "image");
+  const docs = attachments.filter((a) => a.kind !== "image");
+  const hasBody =
+    text.length > 0 ||
+    tools.length > 0 ||
+    docs.length > 0 ||
+    (!isUser && usage !== undefined);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-2xl rounded-[24px] px-6 py-5 text-[16px] leading-[1.38] ${
-          isUser ? "bg-ink text-on-primary" : "bg-canvas border-hairline-soft text-ink border"
+        className={`max-w-2xl overflow-hidden rounded-[24px] text-[16px] leading-[1.38] ${
+          isUser
+            ? "bg-ink text-on-primary"
+            : "bg-canvas border-hairline-soft text-ink border"
         }`}
       >
-        {files && files.data.attachments.length > 0 && (
-          <div className="mb-3">
-            <AttachmentStrip attachments={files.data.attachments} sessionId={sessionId} />
+        <MessageMedia images={images} sessionId={sessionId} />
+
+        {hasBody && (
+          <div className={`px-6 py-5 ${images.length > 0 ? "pt-4" : ""}`}>
+            {docs.length > 0 && (
+              <div className="mb-3">
+                <MessageDocs
+                  docs={docs}
+                  isUser={isUser}
+                  sessionId={sessionId}
+                />
+              </div>
+            )}
+
+            {tools.length > 0 && (
+              <div className="text-faint mb-3 space-y-1 text-[12px] leading-[1.33]">
+                {tools.map((t, i) => (
+                  <div key={t.id ?? i}>{toolLabel(t.data)}</div>
+                ))}
+              </div>
+            )}
+
+            {isUser ? (
+              text.length > 0 && (
+                <div className="whitespace-pre-wrap">{text}</div>
+              )
+            ) : text ? (
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={MARKDOWN_COMPONENTS(sessionId)}
+              >
+                {text}
+              </ReactMarkdown>
+            ) : (
+              "…"
+            )}
+
+            {!isUser && usage && <UsageLine usage={usage.data} />}
           </div>
         )}
-
-        {tools.length > 0 && (
-          <div className="text-faint mb-3 space-y-1 text-[12px] leading-[1.33]">
-            {tools.map((t, i) => (
-              <div key={t.id ?? i}>{toolLabel(t.data)}</div>
-            ))}
-          </div>
-        )}
-
-        {isUser ? (
-          <div className="whitespace-pre-wrap">{text}</div>
-        ) : text ? (
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS(sessionId)}>
-            {text}
-          </ReactMarkdown>
-        ) : (
-          "…"
-        )}
-
-        {!isUser && usage && <UsageLine usage={usage.data} />}
       </div>
     </div>
   );
@@ -245,7 +595,12 @@ function toUIMessages(rows: StoredMessage[]): ChatUIMessage[] {
           ]
         : [
             ...(row.attachments?.length
-              ? [{ type: "data-files" as const, data: { attachments: row.attachments } }]
+              ? [
+                  {
+                    type: "data-files" as const,
+                    data: { attachments: row.attachments },
+                  },
+                ]
               : []),
             { type: "text" as const, text: row.content },
           ],
@@ -255,9 +610,21 @@ function toUIMessages(rows: StoredMessage[]): ChatUIMessage[] {
 /** The file types the attach button offers, given which input capabilities are on. */
 function acceptFor(ready: Set<string>): string {
   const accept: string[] = [];
-  if (ready.has("file_ingest")) accept.push("text/*", ".md", ".csv", ".json", ".yaml", ".ts", ".tsx", ".py");
+  if (ready.has("file_ingest"))
+    accept.push(
+      "text/*",
+      ".md",
+      ".csv",
+      ".json",
+      ".yaml",
+      ".ts",
+      ".tsx",
+      ".py",
+    );
   if (ready.has("vision")) accept.push("image/*");
-  if (ready.has("audio_input")) accept.push("audio/*");
+  // OpenRouter takes WAV and MP3 audio; other containers are rejected on upload.
+  if (ready.has("audio_input"))
+    accept.push("audio/wav", "audio/mpeg", ".wav", ".mp3");
   return accept.join(",");
 }
 
@@ -273,8 +640,12 @@ export function Chat({
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  /** Seconds into the current take, or null when the mic is idle. */
+  const [recordedFor, setRecordedFor] = useState<number | null>(null);
   // Local previews shown while a file is still on its way to the Worker.
-  const [ghosts, setGhosts] = useState<{ key: string; name: string; preview: string | null }[]>([]);
+  const [ghosts, setGhosts] = useState<
+    { key: string; name: string; preview: string | null }[]
+  >([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [ready, setReady] = useState<Set<string>>(new Set());
   const bottom = useRef<HTMLDivElement>(null);
@@ -284,9 +655,10 @@ export function Chat({
   useEffect(() => {
     void (async () => {
       const res = await fetch("/api/config");
-      const payload = (await res.json().catch(() => null)) as
-        | { config: Config; capabilities: Capability[] }
-        | null;
+      const payload = (await res.json().catch(() => null)) as {
+        config: Config;
+        capabilities: Capability[];
+      } | null;
       if (!payload?.config) return;
       setReady(
         new Set(
@@ -302,47 +674,67 @@ export function Chat({
   // are restored when the session is reopened.
   useEffect(() => {
     void (async () => {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files`);
-      const payload = (await res.json().catch(() => null)) as { attachments?: Attachment[] } | null;
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/files`,
+      );
+      const payload = (await res.json().catch(() => null)) as {
+        attachments?: Attachment[];
+      } | null;
       setAttachments(payload?.attachments ?? []);
     })();
   }, [sessionId]);
 
-  const { messages, sendMessage, stop, status, error } = useChat<ChatUIMessage>({
-    id: sessionId,
-    messages: toUIMessages(initialMessages),
-    transport: new DefaultChatTransport({
-      api: `/api/sessions/${encodeURIComponent(sessionId)}/chat`,
-    }),
-    onFinish: onTurnEnd,
-  });
+  const { messages, sendMessage, regenerate, stop, status, error } =
+    useChat<ChatUIMessage>({
+      id: sessionId,
+      messages: toUIMessages(initialMessages),
+      transport: new DefaultChatTransport({
+        api: `/api/sessions/${encodeURIComponent(sessionId)}/chat`,
+      }),
+      onFinish: onTurnEnd,
+    });
 
   const streaming = status === "streaming" || status === "submitted";
-  const canAttach = ready.has("file_ingest") || ready.has("vision") || ready.has("audio_input");
+  const recording = recordedFor !== null;
+  const canAttach =
+    ready.has("file_ingest") || ready.has("vision") || ready.has("audio_input");
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const upload = async (files: FileList) => {
+  // Advance the counter once a second while a take is running, and never otherwise.
+  useEffect(() => {
+    if (!recording) return;
+    const id = setInterval(() => setRecordedFor((s) => (s ?? 0) + 1), 1000);
+    return () => clearInterval(id);
+  }, [recording]);
+
+  const upload = async (files: File[]) => {
     setUploading(true);
     setUploadError(null);
-    for (const file of Array.from(files)) {
+    for (const file of files) {
       const key = `${file.name}-${Date.now()}`;
       // An image can be previewed from the browser's own copy straight away, so the
       // thumbnail appears on pick rather than after the round trip.
-      const preview = file.type.startsWith("image/") ? URL.createObjectURL(file) : null;
+      const preview = file.type.startsWith("image/")
+        ? URL.createObjectURL(file)
+        : null;
       setGhosts((g) => [...g, { key, name: file.name, preview }]);
 
       const form = new FormData();
       form.set("file", file);
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files`, {
-        method: "POST",
-        body: form,
-      });
-      const payload = (await res.json().catch(() => null)) as
-        | { attachment?: Attachment; error?: string }
-        | null;
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/files`,
+        {
+          method: "POST",
+          body: form,
+        },
+      );
+      const payload = (await res.json().catch(() => null)) as {
+        attachment?: Attachment;
+        error?: string;
+      } | null;
 
       setGhosts((g) => g.filter((x) => x.key !== key));
       if (preview) URL.revokeObjectURL(preview);
@@ -356,9 +748,43 @@ export function Chat({
     setUploading(false);
   };
 
+  /** Hold the live recorder outside React state: it is a handle, not rendered data. */
+  const recorder = useRef<Recorder | null>(null);
+
+  const record = async () => {
+    setUploadError(null);
+    try {
+      recorder.current = await startRecording();
+      setRecordedFor(0);
+    } catch {
+      setUploadError(
+        "No microphone. Check the browser's permission for this site.",
+      );
+    }
+  };
+
+  const finishRecording = async (keep: boolean) => {
+    const active = recorder.current;
+    recorder.current = null;
+    setRecordedFor(null);
+    if (!active) return;
+    if (!keep) {
+      active.cancel();
+      return;
+    }
+    try {
+      const clip = await active.stop();
+      if (clip) await upload([clip]);
+    } catch {
+      setUploadError("Could not encode the recording.");
+    }
+  };
+
   const remove = async (id: string) => {
     setAttachments((a) => a.filter((x) => x.id !== id));
-    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files/${id}`, { method: "DELETE" });
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files/${id}`, {
+      method: "DELETE",
+    });
   };
 
   const submit = (e: React.FormEvent) => {
@@ -371,7 +797,9 @@ export function Chat({
     sendMessage({
       role: "user",
       parts: [
-        ...(attachments.length ? [{ type: "data-files" as const, data: { attachments } }] : []),
+        ...(attachments.length
+          ? [{ type: "data-files" as const, data: { attachments } }]
+          : []),
         { type: "text" as const, text: input },
       ],
     });
@@ -385,17 +813,18 @@ export function Chat({
       <div className="flex-1 space-y-6 overflow-y-auto px-8 py-10">
         {messages.length === 0 && (
           <p className="text-muted mx-auto max-w-md pt-20 text-center text-[20px] font-light leading-[1.38]">
-            Send a message. The Durable Object wakes, streams a reply, and bills for the
-            seconds it stays awake.
+            Send a message. The Durable Object wakes, streams a reply, and bills
+            for the seconds it stays awake.
           </p>
         )}
         {messages.map((m) => (
           <Bubble key={m.id} message={m} sessionId={sessionId} />
         ))}
         {error && (
-          <div className="bg-ink text-on-primary rounded-[24px] px-6 py-5 text-[16px] leading-[1.38]">
-            {error.message}
-          </div>
+          <SystemNotice
+            text={error.message}
+            onRetry={streaming ? undefined : () => void regenerate()}
+          />
         )}
         <div ref={bottom} />
       </div>
@@ -429,7 +858,9 @@ export function Chat({
                 ),
               )}
             </div>
-            {uploadError && <p className="text-muted text-[12px]">{uploadError}</p>}
+            {uploadError && (
+              <p className="text-muted text-[12px]">{uploadError}</p>
+            )}
           </div>
         )}
 
@@ -443,7 +874,8 @@ export function Chat({
                 accept={acceptFor(ready)}
                 hidden
                 onChange={(e) => {
-                  if (e.target.files?.length) void upload(e.target.files);
+                  if (e.target.files?.length)
+                    void upload(Array.from(e.target.files));
                   e.target.value = "";
                 }}
               />
@@ -459,13 +891,53 @@ export function Chat({
               </button>
             </>
           )}
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={uploading ? "Uploading…" : "Message the agent…"}
-            className="bg-field placeholder:text-faint text-ink focus:ring-ink h-12 flex-1 rounded-[16px] px-4 text-[16px] outline-none focus:ring-2"
-          />
-          {streaming ? (
+          {ready.has("audio_input") && !recording && (
+            <button
+              type="button"
+              onClick={() => void record()}
+              disabled={uploading}
+              title="Record a voice note"
+              aria-label="Record a voice note"
+              className="border-hairline text-ink hover:bg-canvas-soft flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition disabled:opacity-40"
+            >
+              <Mic size={18} strokeWidth={1.75} />
+            </button>
+          )}
+
+          {recording ? (
+            <div className="bg-field flex h-12 flex-1 items-center gap-3 rounded-[16px] px-4">
+              <span className="bg-ink h-2.5 w-2.5 shrink-0 animate-pulse rounded-full" />
+              <span className="text-ink tnum text-[16px]">
+                {clock(recordedFor ?? 0)}
+              </span>
+              <span className="text-faint flex-1 text-[13px]">Recording…</span>
+              <button
+                type="button"
+                onClick={() => void finishRecording(false)}
+                className="text-muted hover:text-ink text-[13px] transition"
+              >
+                Discard
+              </button>
+            </div>
+          ) : (
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={uploading ? "Uploading…" : "Message the agent…"}
+              className="bg-field placeholder:text-faint text-ink focus:ring-ink h-12 flex-1 rounded-[16px] px-4 text-[16px] outline-none focus:ring-2"
+            />
+          )}
+          {recording ? (
+            <button
+              type="button"
+              onClick={() => void finishRecording(true)}
+              title="Stop recording"
+              aria-label="Stop recording"
+              className="bg-ink text-on-primary flex h-12 w-12 shrink-0 items-center justify-center rounded-full transition hover:opacity-85"
+            >
+              <Square size={15} strokeWidth={2} fill="currentColor" />
+            </button>
+          ) : streaming ? (
             <button
               type="button"
               onClick={() => {

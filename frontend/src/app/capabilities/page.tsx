@@ -11,7 +11,13 @@ import {
   type Config,
 } from "@/lib/agent";
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  on,
+  onChange,
+}: {
+  on: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <button
       role="switch"
@@ -42,16 +48,34 @@ function Field({
   const masked = field.secret && value === SECRET_MASK;
   return (
     <label className="block">
-      <span className="block text-[14px] font-semibold leading-[1.43]">{field.label}</span>
-      <span className="text-muted block text-[12px] font-light leading-[1.33]">{field.hint}</span>
-      <input
-        type={field.secret && !masked ? "password" : "text"}
-        value={value}
-        placeholder={field.placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        onFocus={() => masked && onChange("")}
-        className="bg-field placeholder:text-faint mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none"
-      />
+      <span className="block text-[14px] font-semibold leading-[1.43]">
+        {field.label}
+      </span>
+      <span className="text-muted block text-[12px] font-light leading-[1.33]">
+        {field.hint}
+      </span>
+      {field.options ? (
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="bg-field text-ink mt-2 w-full appearance-none rounded-[16px] px-4 py-3 text-[14px] outline-none"
+        >
+          {field.options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type={field.secret && !masked ? "password" : "text"}
+          value={value}
+          placeholder={field.placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={() => masked && onChange("")}
+          className="bg-field placeholder:text-faint mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none"
+        />
+      )}
     </label>
   );
 }
@@ -67,9 +91,11 @@ export default function Capabilities() {
   useEffect(() => {
     void (async () => {
       const res = await fetch("/api/config");
-      const payload = (await res.json().catch(() => null)) as
-        | { config: Config; capabilities: Capability[]; error?: string }
-        | null;
+      const payload = (await res.json().catch(() => null)) as {
+        config: Config;
+        capabilities: Capability[];
+        error?: string;
+      } | null;
       if (!res.ok || !payload) {
         setError(payload?.error ?? `Request failed with ${res.status}.`);
         return;
@@ -87,11 +113,15 @@ export default function Capabilities() {
       body: JSON.stringify(patch),
     });
     setSaving(false);
-    const payload = (await res.json().catch(() => null)) as
-      | { config: Config; error?: string }
-      | null;
+    const payload = (await res.json().catch(() => null)) as {
+      config: Config;
+      error?: string;
+    } | null;
     if (!res.ok || !payload) {
-      setError(payload?.error ?? "Could not save. The agent Worker may be unreachable.");
+      setError(
+        payload?.error ??
+          "Could not save. The agent Worker may be unreachable.",
+      );
       return;
     }
     setConfig(payload.config);
@@ -121,8 +151,12 @@ export default function Capabilities() {
         </Link>
 
         <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-[32px] font-[650] leading-[1.2]">Capabilities.</h1>
-          <span className="text-faint text-[12px] leading-[1.33]">{saving ? "Saving…" : "Saved"}</span>
+          <h1 className="text-[32px] font-[650] leading-[1.2]">
+            Capabilities.
+          </h1>
+          <span className="text-faint text-[12px] leading-[1.33]">
+            {saving ? "Saving…" : "Saved"}
+          </span>
         </div>
         <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
           What the agent can do beyond writing text. Applies to every session.
@@ -135,7 +169,9 @@ export default function Capabilities() {
         )}
 
         {!config && !error && (
-          <p className="text-muted py-16 text-[14px] leading-[1.43]">Loading capabilities…</p>
+          <p className="text-muted py-16 text-[14px] leading-[1.43]">
+            Loading capabilities…
+          </p>
         )}
 
         {config && (
@@ -144,15 +180,23 @@ export default function Capabilities() {
               const on = !!config[capability.flag];
               const ready = capabilityReady(capability, config);
               return (
-                <section key={capability.id} className="border-hairline-soft border-t py-7">
+                <section
+                  key={capability.id}
+                  className="border-hairline-soft border-t py-7"
+                >
                   <div className="flex items-start justify-between gap-6">
                     <div className="min-w-0">
-                      <h2 className="text-[16px] font-semibold leading-[1.38]">{capability.label}</h2>
+                      <h2 className="text-[16px] font-semibold leading-[1.38]">
+                        {capability.label}
+                      </h2>
                       <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
                         {capability.summary}
                       </p>
                     </div>
-                    <Toggle on={on} onChange={(v) => set({ [capability.flag]: v ? 1 : 0 })} />
+                    <Toggle
+                      on={on}
+                      onChange={(v) => set({ [capability.flag]: v ? 1 : 0 })}
+                    />
                   </div>
 
                   {on && (
@@ -170,10 +214,7 @@ export default function Capabilities() {
                       <p className="text-faint text-[12px] leading-[1.33]">
                         {capability.note}
                         {capability.tools.length > 0 && (
-                          <>
-                            {" "}
-                            Tools: {capability.tools.join(", ")}.
-                          </>
+                          <> Tools: {capability.tools.join(", ")}.</>
                         )}
                       </p>
 

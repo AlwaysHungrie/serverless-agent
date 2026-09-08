@@ -16,6 +16,9 @@
     { "tag": "v1", "new_sqlite_classes": ["SessionAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["SessionRegistry"] }
   ],
+  "r2_buckets": [
+    { "binding": "FILES", "bucket_name": "serverless-agent-files" }
+  ],
   "vars": {
     "MODEL": "deepseek/deepseek-v4-flash"
   }

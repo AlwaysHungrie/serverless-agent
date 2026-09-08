@@ -31,6 +31,12 @@ export type CapabilityField = {
   hint: string;
   /** Secrets are write-only over the API: reads return a mask, not the value. */
   secret: boolean;
+  /**
+   * When present the field is a fixed choice, not free text. Every model this app can
+   * pick is an OpenRouter model, and OpenRouter's catalogue is far too large and too
+   * uneven to type an id into: most ids would fail for the capability at hand.
+   */
+  options?: { value: string; label: string }[];
   /** A capability with an empty required field is enabled but cannot run. */
   required: boolean;
   placeholder?: string;
@@ -47,6 +53,29 @@ export type Capability = {
   tools: string[];
   fields: CapabilityField[];
 };
+
+/**
+ * The model choices offered on the capabilities page: OpenRouter ids filtered by the
+ * modality each capability needs — image output, audio input — because a model without
+ * it fails at the API call, not at the setting. Cheapest first.
+ */
+const IMAGE_MODELS = [
+  { value: "google/gemini-3.1-flash-lite-image", label: "Nano Banana 2 Lite — cheapest" },
+  { value: "google/gemini-2.5-flash-image", label: "Nano Banana (Gemini 2.5 Flash)" },
+  { value: "google/gemini-3.1-flash-image", label: "Nano Banana 2 (Gemini 3.1 Flash)" },
+  { value: "google/gemini-3-pro-image", label: "Nano Banana Pro — best quality" },
+  { value: "openai/gpt-5-image-mini", label: "GPT-5 Image Mini" },
+  { value: "openai/gpt-5-image", label: "GPT-5 Image" },
+];
+
+const TRANSCRIPTION_MODELS = [
+  { value: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite — cheapest" },
+  { value: "google/gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+  { value: "google/gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
+  { value: "mistralai/voxtral-small-24b-2507", label: "Voxtral Small 24B — speech-native" },
+  { value: "openai/gpt-audio-mini", label: "GPT Audio Mini" },
+  { value: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash — best quality" },
+];
 
 export const CAPABILITIES: Capability[] = [
   {
@@ -105,10 +134,10 @@ export const CAPABILITIES: Capability[] = [
       {
         key: "image_model",
         label: "Image model",
-        hint: "Any OpenRouter model that returns images.",
+        hint: "OpenRouter models that return an image. Cheapest first.",
         secret: false,
         required: true,
-        placeholder: "google/gemini-2.5-flash-image",
+        options: IMAGE_MODELS,
       },
     ],
   },
@@ -117,32 +146,16 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_audio_input",
     label: "Audio input",
     summary: "Attach a voice note or recording; it is transcribed and sent as your message.",
-    note: "Transcription happens once, on upload, and the text is what the model sees.",
+    note: "Billed on the existing OpenRouter key. Transcription happens once, on upload, and the text is what the model sees.",
     tools: [],
     fields: [
       {
-        key: "transcription_url",
-        label: "Transcription endpoint",
-        hint: "Any OpenAI-compatible /audio/transcriptions URL.",
-        secret: false,
-        required: true,
-        placeholder: "https://api.openai.com/v1/audio/transcriptions",
-      },
-      {
-        key: "transcription_key",
-        label: "Transcription API key",
-        hint: "Sent as a bearer token to that endpoint.",
-        secret: true,
-        required: true,
-        placeholder: "sk-…",
-      },
-      {
         key: "transcription_model",
         label: "Transcription model",
-        hint: "whisper-1 on OpenAI, whisper-large-v3 on Groq.",
+        hint: "OpenRouter models that accept audio. Cheapest first.",
         secret: false,
         required: true,
-        placeholder: "whisper-1",
+        options: TRANSCRIPTION_MODELS,
       },
     ],
   },
@@ -198,7 +211,7 @@ export type ToolContext = {
   openrouterKey: string;
   registry: DurableObjectStub<SessionRegistry>;
   /** Stores an image and returns a URL this session can serve it from. */
-  saveImage: (dataUrl: string, prompt: string) => string;
+  saveImage: (dataUrl: string, prompt: string) => Promise<string>;
   schedule: (when: string, prompt: string) => Promise<ScheduledTask>;
   listTasks: () => ScheduledTask[];
   cancelTask: (id: string) => boolean;
@@ -324,7 +337,7 @@ export const TOOLS: ToolSpec[] = [
       };
       const dataUrl = json.choices?.[0]?.message?.images?.[0]?.image_url?.url;
       if (!dataUrl) return "Image generation returned no image. Try a different image model.";
-      return `Image ready. Include exactly this in your reply: ![${prompt.slice(0, 60)}](${ctx.saveImage(dataUrl, prompt)})`;
+      return `Image ready. Include exactly this in your reply: ![${prompt.slice(0, 60)}](${await ctx.saveImage(dataUrl, prompt)})`;
     },
   },
   {

@@ -68,8 +68,6 @@ export type Config = {
 
   brave_api_key: string;
   image_model: string;
-  transcription_url: string;
-  transcription_key: string;
   transcription_model: string;
 };
 
@@ -83,6 +81,8 @@ export type CapabilityField = {
   secret: boolean;
   required: boolean;
   placeholder?: string;
+  /** When present the field is a fixed choice, not free text. */
+  options?: { value: string; label: string }[];
 };
 
 export type Capability = {
@@ -96,9 +96,14 @@ export type Capability = {
 };
 
 /** A capability is only usable once it is on *and* its required fields are filled. */
-export function capabilityReady(capability: Capability, config: Config): boolean {
+export function capabilityReady(
+  capability: Capability,
+  config: Config,
+): boolean {
   if (!config[capability.flag]) return false;
-  return capability.fields.every((f) => !f.required || String(config[f.key] ?? "").trim() !== "");
+  return capability.fields.every(
+    (f) => !f.required || String(config[f.key] ?? "").trim() !== "",
+  );
 }
 
 /** A file the user attached, or an image the agent drew, minus the bytes. */
@@ -109,6 +114,8 @@ export type Attachment = {
   mime: string;
   bytes: number;
   chars: number;
+  /** First stretch of a text file, or of a voice note's transcript. */
+  preview?: string;
 };
 
 export type ScheduledTask = { id: string; prompt: string; when: string };
@@ -116,7 +123,12 @@ export type ScheduledTask = { id: string; prompt: string; when: string };
 export type Summary = {
   session: string;
   messages: number;
-  llm: { model: string; prompt_tokens: number; completion_tokens: number; cost_usd: number };
+  llm: {
+    model: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cost_usd: number;
+  };
   tasks: ScheduledTask[];
   sqlite_bytes: number;
 };

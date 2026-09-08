@@ -18,6 +18,17 @@ pnpm dev                          # wrangler dev on http://localhost:8787
 
 `.dev.vars` is gitignored and holds `OPENROUTER_API_KEY`.
 
+Attachment bytes (images, voice-note clips) live in R2, not in the session's SQLite.
+Create the bucket once before deploying — `wrangler dev` simulates it locally:
+
+```bash
+wrangler r2 bucket create serverless-agent-files
+```
+
+Objects are keyed `<session-id>/<attachment-id>`, and a session reset or delete drops
+them. Rows written before the move still carry an inline data URL and are served from
+there.
+
 ## Send a message
 
 ```bash
@@ -67,7 +78,7 @@ capability needs no frontend change.
 | File ingest | input | — | — |
 | Image input | input | a multimodal model | — |
 | Image generation | tool | an OpenRouter image model | `generate_image` |
-| Audio input | input | an OpenAI-compatible transcription endpoint + key | — |
+| Audio input | input | an OpenRouter model that accepts audio | — |
 | Scheduled tasks | tool | — | `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` |
 | Memory | tool | — | `remember`, `recall` |
 
