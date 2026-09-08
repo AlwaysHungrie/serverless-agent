@@ -1,5 +1,6 @@
 import { routeAgentRequest } from "agents";
 import { MODELS, type Env } from "./agent";
+import { Telegram, chatTitle, type TelegramUpdate } from "./telegram";
 import { CAPABILITIES, SECRET_MASK, type CapabilityField } from "./capabilities";
 import type { Config } from "./registry";
 
@@ -14,6 +15,26 @@ const CORS = {
 
 function registry(env: Env) {
   return env.SessionRegistry.get(env.SessionRegistry.idFromName("global"));
+}
+
+/**
+ * The session a Telegram chat maps to. A DM is one chat, a group is another, so this
+ * is what gives every conversation its own session — and keeps giving it the same one.
+ */
+function sessionIdForChat(chatId: string): string {
+  return `tg-${chatId.replace("-", "n")}`;
+}
+
+/**
+ * The webhook's shared secret. Telegram echoes it on every call, and it is derived
+ * from the bot token so there is nothing extra for anyone to store or paste.
+ */
+async function webhookSecret(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 32);
 }
 
 function withCors(res: Response) {
@@ -91,8 +112,83 @@ function redact(config: Config): Config {
   return safe;
 }
 
+/**
+ * Point the bot at this Worker, or unhook it when the capability is switched off.
+ * Best effort: a bad token is reported back to the settings page, not thrown, because
+ * the rest of the save has already happened.
+ */
+async function syncWebhook(
+  config: Config,
+  origin: string,
+  api?: string
+): Promise<{ ok: boolean; error?: string } | undefined> {
+  if (!config.telegram_bot_token) return undefined;
+  const bot = new Telegram(config.telegram_bot_token, api);
+  try {
+    if (config.cap_telegram) {
+      await bot.setWebhook(`${origin}/telegram/webhook`, await webhookSecret(config.telegram_bot_token));
+    } else {
+      await bot.deleteWebhook();
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * One Telegram update. The chat is resolved to its session — created on first
+ * contact — and the message is handed to that session's own agent, which answers in
+ * the chat itself. Telegram retries anything that is not a fast 200, so the turn runs
+ * after the response rather than under it.
+ */
+async function handleWebhook(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  const reg = registry(env);
+  const config = await reg.config(env.MODEL);
+  if (!config.cap_telegram || !config.telegram_bot_token) {
+    return new Response("telegram is off", { status: 404 });
+  }
+  const offered = request.headers.get("x-telegram-bot-api-secret-token") ?? "";
+  if (offered !== (await webhookSecret(config.telegram_bot_token))) {
+    return new Response("bad secret", { status: 401 });
+  }
+
+  const update = (await request.json().catch(() => null)) as TelegramUpdate | null;
+  const message = update?.message;
+  // Edits are ignored: answering them again would double every correction.
+  if (!message?.chat) return new Response("ok");
+
+  const chatId = String(message.chat.id);
+  const existing = await reg.forChat(chatId);
+  const sessionId = existing?.id ?? sessionIdForChat(chatId);
+  if (!existing) {
+    await reg.create(sessionId, chatTitle(message), env.SessionAgent.idFromName(sessionId).toString(), {
+      source: "telegram",
+      chat_id: chatId,
+    });
+  }
+  await reg.touch(sessionId);
+
+  const url = new URL(request.url);
+  const turn = routeAgentRequest(
+    new Request(`${url.origin}/agents/session-agent/${sessionId}/telegram`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(message),
+    }),
+    env
+  );
+  // Telegram is told the update landed straight away; the answer arrives in the chat.
+  ctx.waitUntil(turn);
+  return new Response("ok", { headers: { "x-session": sessionId } });
+}
+
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
 
     const url = new URL(request.url);
@@ -118,7 +214,11 @@ export default {
         } catch (err) {
           return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
         }
-        return withCors(Response.json({ config: redact(await reg.setConfig(patch, env.MODEL)) }));
+        const config = await reg.setConfig(patch, env.MODEL);
+        // Saving the token is the whole setup: the bot is pointed at this Worker here
+        // rather than through a curl the user has to run by hand.
+        const telegram = await syncWebhook(config, url.origin, env.TELEGRAM_API_BASE);
+        return withCors(Response.json({ config: redact(config), ...(telegram ? { telegram } : {}) }));
       }
     }
 
@@ -208,6 +308,12 @@ export default {
       }
     }
 
+    // Telegram posts here. The secret token is what makes the call trustworthy, so a
+    // request without it is refused before anything is read.
+    if (request.method === "POST" && segments[0] === "telegram" && segments[1] === "webhook") {
+      return await handleWebhook(request, env, ctx);
+    }
+
     const routed = await routeAgentRequest(request, env);
     if (routed) return withCors(routed);
 
@@ -224,6 +330,7 @@ export default {
             files: "GET|POST /agents/session-agent/:id/files, GET|DELETE .../files/:fileId",
             tasks: "GET /agents/session-agent/:id/tasks, DELETE .../tasks/:taskId",
             metrics: "GET /agents/session-agent/:id/metrics",
+            telegram: "POST /telegram/webhook",
           },
         })
       );

@@ -22,7 +22,8 @@ export type CapabilityId =
   | "image_generation"
   | "audio_input"
   | "scheduled_tasks"
-  | "memory";
+  | "memory"
+  | "telegram";
 
 /** A credential or endpoint the user fills in on the capabilities page. */
 export type CapabilityField = {
@@ -160,6 +161,32 @@ export const CAPABILITIES: Capability[] = [
     summary: "Have a prompt run later, or on repeat.",
     tools: ["schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"],
     fields: [],
+  },
+  {
+    id: "telegram",
+    flag: "cap_telegram",
+    label: "Telegram",
+    summary: "Talk to the agent from Telegram, in a DM or in a group.",
+    note: "Each chat becomes its own session here, read-only: the conversation continues in Telegram.",
+    tools: [],
+    fields: [
+      {
+        key: "telegram_bot_token",
+        label: "Bot token",
+        hint: "From @BotFather. Saving it points the bot's webhook at this Worker.",
+        secret: true,
+        required: true,
+        placeholder: "123456:ABC…",
+      },
+      {
+        key: "telegram_bot_username",
+        label: "Bot username",
+        hint: "Without the @. Used for the link back into Telegram, and to spot mentions in groups.",
+        secret: false,
+        required: true,
+        placeholder: "my_agent_bot",
+      },
+    ],
   },
   {
     id: "memory",

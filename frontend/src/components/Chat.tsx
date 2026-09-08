@@ -959,6 +959,7 @@ export function Chat({
   onTurnEnd,
   onFork,
   initialInput = "",
+  continueAt = null,
 }: {
   sessionId: string;
   initialMessages: StoredMessage[];
@@ -970,6 +971,11 @@ export function Chat({
   onFork: (count: number, draft: string) => void;
   /** Text the composer opens with — a forked question waiting to be re-asked. */
   initialInput?: string;
+  /**
+   * A conversation that lives somewhere else. The transcript still reads here, but
+   * there is nothing to type into: the reply has to come from the place it started.
+   */
+  continueAt?: { label: string; href: string } | null;
 }) {
   const [input, setInput] = useState(initialInput);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1250,6 +1256,21 @@ export function Chat({
         <div ref={bottom} />
       </div>
 
+      {continueAt ? (
+        <div className="border-hairline-soft flex items-center justify-between gap-4 border-t px-8 py-6">
+          <p className="text-muted text-[14px] leading-[1.43]">
+            This conversation happens in {continueAt.label}.
+          </p>
+          <a
+            href={continueAt.href}
+            target="_blank"
+            rel="noreferrer"
+            className="bg-ink text-on-primary rounded-full px-5 py-2.5 text-[14px] leading-[1.43]"
+          >
+            Continue in {continueAt.label}
+          </a>
+        </div>
+      ) : (
       <div className="border-hairline-soft border-t px-8 py-6">
         {(attachments.length > 0 || ghosts.length > 0 || uploadError) && (
           <div className="mb-3 space-y-2">
@@ -1408,6 +1429,7 @@ export function Chat({
           )}
         </form>
       </div>
+      )}
     </div>
   );
 }

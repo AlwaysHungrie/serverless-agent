@@ -12,6 +12,13 @@ import {
   type ToolContext,
 } from "./capabilities";
 import { DEFAULT_CONFIG, type Config, type Memory, type SessionRegistry } from "./registry";
+import {
+  Telegram,
+  addressesBot,
+  messageFiles,
+  messageText,
+  type TelegramMessage,
+} from "./telegram";
 
 export type Env = {
   SessionAgent: DurableObjectNamespace<SessionAgent>;
@@ -20,6 +27,8 @@ export type Env = {
   FILES: R2Bucket;
   OPENROUTER_API_KEY: string;
   MODEL: string;
+  /** Telegram's API host. Only set to stand a local Bot API server in its place. */
+  TELEGRAM_API_BASE?: string;
 };
 
 /**
@@ -554,6 +563,8 @@ export class SessionAgent extends Think<Env> {
       } else if (request.method === "POST" && path === "reset") {
         await this.reset();
         body = { ok: true };
+      } else if (request.method === "POST" && path === "telegram") {
+        body = await this.telegramTurn((await request.json()) as TelegramMessage);
       } else if (request.method === "POST" && path === "destroy") {
         // The bucket is swept before the reply, because `destroy()` aborts the
         // isolate: work left running behind it may never finish. Dropping the
@@ -1005,6 +1016,99 @@ export class SessionAgent extends Think<Env> {
         connection: "keep-alive",
       },
     });
+  }
+
+  /* --------------------------------------------------------------- telegram -- */
+
+  /**
+   * One message from Telegram, answered. The chat is a session like any other, so the
+   * turn is the same turn the browser runs: the same settings, tools, memory and
+   * transcript. What is different is the ends — the files arrive from Telegram rather
+   * than from an upload, and the reply is posted back rather than streamed.
+   */
+  private async telegramTurn(message: TelegramMessage): Promise<{ ok: boolean; skipped?: string }> {
+    const config = this.config();
+    if (!enabled(config, "telegram")) return { ok: false, skipped: "telegram is off" };
+    if (!addressesBot(message, config.telegram_bot_username)) {
+      // A group message that does not name the bot is not for it.
+      return { ok: true, skipped: "not addressed" };
+    }
+
+    const bot = new Telegram(config.telegram_bot_token, this.env.TELEGRAM_API_BASE);
+    const chatId = String(message.chat.id);
+    await bot.typing(chatId);
+
+    try {
+      await this.ingestTelegramFiles(bot, message);
+      const text = messageText(message) || "(no text)";
+      const drawnBefore = new Set(this.exec<{ id: string }>(`SELECT id FROM attachments`).map((r) => r.id));
+
+      const result = await this.runTurn({ input: [await this.openTurn(text, false)] });
+      const reply =
+        result.status === "completed"
+          ? textOf(result.message as unknown as UIMessage)
+          : "That turn did not finish. Try again?";
+
+      await bot.send(chatId, reply || "(no reply)", message.message_id);
+      // An image the agent drew during the turn is a file, not a link, in a chat.
+      await this.sendDrawnImages(bot, chatId, drawnBefore);
+      return { ok: true };
+    } catch (err) {
+      await bot
+        .send(chatId, `Something went wrong: ${err instanceof Error ? err.message : String(err)}`)
+        .catch(() => {
+          // The chat is unreachable; the error is already the answer to the request.
+        });
+      return { ok: false };
+    }
+  }
+
+  /**
+   * Pull what the message carried into the workspace, as though it had been uploaded:
+   * the same rows, the same paths, the same capability checks, so the turn that
+   * follows cannot tell the difference.
+   */
+  private async ingestTelegramFiles(bot: Telegram, message: TelegramMessage): Promise<void> {
+    const config = this.config();
+    for (const file of messageFiles(message)) {
+      const isImage = file.mime.startsWith("image/");
+      const isAudio = file.mime.startsWith("audio/") || file.mime.startsWith("video/");
+      const allowed = isImage
+        ? enabled(config, "vision") && modelSeesImages(config.model)
+        : isAudio
+          ? enabled(config, "audio_input")
+          : enabled(config, "file_ingest");
+      if (!allowed) continue;
+
+      const bytes = await bot.download(file.file_id);
+      const id = crypto.randomUUID().slice(0, 12);
+      const path = uploadPath(id, file.name);
+      await this.workspace.writeFileBytes(path, bytes, file.mime);
+      const pdf = isPdf(file.mime, file.name);
+      const textual = !isImage && !isAudio && !pdf;
+      this.insertAttachment({
+        id,
+        kind: isImage ? "image" : pdf ? "pdf" : "text",
+        name: file.name,
+        mime: file.mime,
+        text: textual ? new TextDecoder().decode(bytes).slice(0, MAX_UPLOAD_BYTES.text) : "",
+        path,
+        thumb_path: "",
+        bytes: bytes.byteLength,
+      });
+    }
+  }
+
+  /** Images created during this turn, sent to the chat as photos. */
+  private async sendDrawnImages(bot: Telegram, chatId: string, before: Set<string>): Promise<void> {
+    const drawn = this.exec<Attachment>(
+      `SELECT * FROM attachments WHERE kind = 'image' ORDER BY ts ASC`
+    ).filter((a) => !before.has(a.id));
+    for (const image of drawn) {
+      const bytes = await this.workspace.readFileBytes(image.path);
+      if (!bytes) continue;
+      await bot.sendPhoto(chatId, toArrayBuffer(bytes), image.name, image.text);
+    }
   }
 
   /* ------------------------------------------------------------- transcript -- */

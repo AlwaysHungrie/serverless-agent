@@ -6,6 +6,11 @@ import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
 import type { SessionRow, StoredMessage, Summary } from "@/lib/agent";
 
+/** Where "Continue in Telegram" goes: the bot itself, which is as deep as a link can point. */
+function telegramLink(botUsername: string): string {
+  return botUsername ? `https://t.me/${botUsername}` : "https://t.me";
+}
+
 export default function Home() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -17,6 +22,8 @@ export default function Home() {
   } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The bot's handle, so a Telegram session can link back to the conversation. */
+  const [botUsername, setBotUsername] = useState("");
   /** A forked question handed to one session's composer, waiting to be edited. */
   const [draft, setDraft] = useState<{
     sessionId: string;
@@ -33,6 +40,16 @@ export default function Home() {
     }
     setError(null);
     return payload;
+  }, []);
+
+  // Read once: the link is the only thing this page needs out of the settings.
+  useEffect(() => {
+    void fetch("/api/config")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((payload: { config?: { telegram_bot_username?: string } } | null) =>
+        setBotUsername(payload?.config?.telegram_bot_username ?? ""),
+      )
+      .catch(() => setBotUsername(""));
   }, []);
 
   const loadSessions = useCallback(async () => {
@@ -153,6 +170,13 @@ export default function Home() {
                 initialInput={draft?.sessionId === selected ? draft.text : ""}
                 onFork={(count, text) =>
                   void forkSession(selected, count, text)
+                }
+                // A Telegram chat is read here and answered there: the composer would
+                // send into a conversation the other people in it cannot see.
+                continueAt={
+                  current?.source === "telegram"
+                    ? { label: "Telegram", href: telegramLink(botUsername) }
+                    : null
                 }
               />
             )}

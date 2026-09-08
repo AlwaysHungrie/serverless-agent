@@ -95,3 +95,29 @@ ever changes.
   inside Think and is persisted. The old loop aborted the upstream call.
 - Message ids are UUIDs from the session tree, not the row numbers the old `messages`
   table handed out.
+
+## Telegram
+
+A Telegram chat is a session like any other, which is the whole trick: the webhook
+resolves a chat to its session id and hands the message to that session's own agent,
+so the turn that runs is the turn the browser runs — same settings, same capability
+tools, same memory, same transcript, same cost accounting.
+
+- **One session per chat.** A DM is one chat, a group is another, and the id is
+  `tg-<chat id>` (a group's leading minus becomes `n`). The registry row records
+  `source = "telegram"` and the chat id, so the mapping survives a rename.
+- **Setup is saving the token.** Enabling the Telegram capability with a bot token
+  calls `setWebhook` at this Worker, with a secret derived from the token itself; every
+  update is checked against it before anything is read. Switching the capability off
+  calls `deleteWebhook`.
+- **Groups need to be addressed.** A DM is always for the bot; in a group, only a
+  message naming `@<bot username>` gets an answer.
+- **Files work in both directions.** Photos, documents and voice notes are downloaded
+  into the workspace as though they had been uploaded, subject to the same capability
+  checks; an image the agent draws mid-turn is sent back as a photo.
+- **The browser reads, Telegram answers.** A Telegram session shows its transcript in
+  the app with the composer replaced by a link into the chat. Sending from the web
+  would post into a conversation the other people in it never see.
+
+Telegram retries anything that is not a fast 200, so the webhook acknowledges the
+update and runs the turn behind `waitUntil` rather than under the request.

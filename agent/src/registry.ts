@@ -33,6 +33,7 @@ export type Config = {
   cap_audio_input: number;
   cap_scheduled_tasks: number;
   cap_memory: number;
+  cap_telegram: number;
 
   /** Brave Search API key. Web search cannot run without it. */
   brave_api_key: string;
@@ -40,6 +41,10 @@ export type Config = {
   image_model: string;
   /** OpenRouter model used to transcribe audio uploads; same key, same bill. */
   transcription_model: string;
+  /** Bot token from @BotFather. The bot is the agent's face on Telegram. */
+  telegram_bot_token: string;
+  /** The bot's @handle, without the @: a chat needs it to link back to the bot. */
+  telegram_bot_username: string;
 };
 
 export const DEFAULT_CONFIG: Omit<Config, "model"> = {
@@ -57,10 +62,13 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   cap_audio_input: 0,
   cap_scheduled_tasks: 0,
   cap_memory: 0,
+  cap_telegram: 0,
 
   brave_api_key: "",
   image_model: "google/gemini-2.5-flash-image",
   transcription_model: "google/gemini-2.5-flash-lite",
+  telegram_bot_token: "",
+  telegram_bot_username: "",
 };
 
 /** The config columns, in the order they are written, excluding the primary key. */
@@ -81,9 +89,12 @@ const CONFIG_MIGRATIONS = [
   `cap_audio_input INTEGER NOT NULL DEFAULT 0`,
   `cap_scheduled_tasks INTEGER NOT NULL DEFAULT 0`,
   `cap_memory INTEGER NOT NULL DEFAULT 0`,
+  `cap_telegram INTEGER NOT NULL DEFAULT 0`,
   `brave_api_key TEXT NOT NULL DEFAULT ''`,
   `image_model TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.image_model}'`,
   `transcription_model TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.transcription_model}'`,
+  `telegram_bot_token TEXT NOT NULL DEFAULT ''`,
+  `telegram_bot_username TEXT NOT NULL DEFAULT ''`,
 ];
 
 /** A fact the agent chose to keep. Memories are app-wide, not per session. */
@@ -104,6 +115,10 @@ export type SessionRow = {
    * because it is the `objectId` needed to query Cloudflare's usage analytics by hand.
    */
   object_id: string;
+  /** "web" for a session started in the browser, "telegram" for a chat with the bot. */
+  source: string;
+  /** The Telegram chat this session belongs to. Empty for a browser session. */
+  chat_id: string;
 };
 
 /**
@@ -124,13 +139,21 @@ export class SessionRegistry extends DurableObject {
          title TEXT NOT NULL,
          created_at INTEGER NOT NULL,
          updated_at INTEGER NOT NULL,
-         object_id TEXT NOT NULL DEFAULT ''
+         object_id TEXT NOT NULL DEFAULT '',
+         source TEXT NOT NULL DEFAULT 'web',
+         chat_id TEXT NOT NULL DEFAULT ''
        )`
     );
-    try {
-      this.ctx.storage.sql.exec(`ALTER TABLE sessions ADD COLUMN object_id TEXT NOT NULL DEFAULT ''`);
-    } catch {
-      // Column already present.
+    for (const col of [
+      `object_id TEXT NOT NULL DEFAULT ''`,
+      `source TEXT NOT NULL DEFAULT 'web'`,
+      `chat_id TEXT NOT NULL DEFAULT ''`,
+    ]) {
+      try {
+        this.ctx.storage.sql.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
+      } catch {
+        // Column already present.
+      }
     }
     this.ctx.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS config (
@@ -188,24 +211,47 @@ export class SessionRegistry extends DurableObject {
   list(): SessionRow[] {
     this.ensureSchema();
     return this.ctx.storage.sql
-      .exec(`SELECT id, title, created_at, updated_at, object_id FROM sessions ORDER BY updated_at DESC`)
+      .exec(
+        `SELECT id, title, created_at, updated_at, object_id, source, chat_id
+         FROM sessions ORDER BY updated_at DESC`
+      )
       .toArray() as unknown as SessionRow[];
   }
 
-  create(id: string, title: string, objectId: string): SessionRow {
+  create(
+    id: string,
+    title: string,
+    objectId: string,
+    origin: { source: string; chat_id: string } = { source: "web", chat_id: "" }
+  ): SessionRow {
     this.ensureSchema();
     const now = Date.now();
     this.ctx.storage.sql.exec(
-      `INSERT INTO sessions (id, title, created_at, updated_at, object_id) VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO sessions (id, title, created_at, updated_at, object_id, source, chat_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at,
                                      object_id = excluded.object_id`,
       id,
       title,
       now,
       now,
-      objectId
+      objectId,
+      origin.source,
+      origin.chat_id
     );
-    return { id, title, created_at: now, updated_at: now, object_id: objectId };
+    return { id, title, created_at: now, updated_at: now, object_id: objectId, ...origin };
+  }
+
+  /** The session a Telegram chat maps to, if that chat has one already. */
+  forChat(chatId: string): SessionRow | undefined {
+    this.ensureSchema();
+    return this.ctx.storage.sql
+      .exec(
+        `SELECT id, title, created_at, updated_at, object_id, source, chat_id
+         FROM sessions WHERE chat_id = ? LIMIT 1`,
+        chatId
+      )
+      .toArray()[0] as unknown as SessionRow | undefined;
   }
 
   touch(id: string) {

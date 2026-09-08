@@ -7,6 +7,10 @@ export type SessionRow = {
   created_at: number;
   updated_at: number;
   object_id: string;
+  /** "web", or "telegram" for a chat the bot is in. */
+  source?: string;
+  /** The Telegram chat id behind a telegram session. */
+  chat_id?: string;
 };
 
 export type StoredMessage = {
