@@ -1,73 +1,32 @@
-import { Agent, type Schedule } from "agents";
+import { createOpenAI } from "@ai-sdk/openai";
+import { Workspace } from "@cloudflare/shell";
+import { Think, type StepContext, type TurnConfig, type TurnContext } from "@cloudflare/think";
+import type { Schedule } from "agents";
+import { convertToModelMessages, jsonSchema, tool, type ToolSet, type UIMessage } from "ai";
 import {
   CAPABILITIES,
   enabled,
   runTool,
-  toolDefinitions,
+  toolsFor,
   type ScheduledTask,
   type ToolContext,
 } from "./capabilities";
 import { DEFAULT_CONFIG, type Config, type Memory, type SessionRegistry } from "./registry";
 
 export type Env = {
-  SessionAgent: DurableObjectNamespace;
+  SessionAgent: DurableObjectNamespace<SessionAgent>;
   SessionRegistry: DurableObjectNamespace<SessionRegistry>;
-  ThinkAgent: DurableObjectNamespace<import("./think-agent").ThinkAgent>;
-  /** Object storage for attachment bytes: images, and voice-note clips. */
+  /** Object storage the workspace spills large files into: images, PDFs, clips. */
   FILES: R2Bucket;
   OPENROUTER_API_KEY: string;
   MODEL: string;
 };
 
-/** An OpenRouter message. Content is a string, or parts when an image rides along. */
-type Part =
-  | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } }
-  | { type: "file"; file: { filename: string; file_data: string } };
-type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
-type Msg = {
-  role: "user" | "assistant" | "system" | "tool";
-  content: string | Part[];
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-};
-
-/** A conversation prefix plus its files: what one session hands another on a fork. */
-export type Snapshot = {
-  messages: StoredMessage[];
-  attachments: Attachment[];
-  /** Files of the question the fork dropped: they return to the composer, unsent. */
-  pending?: Attachment[];
-};
-
-export type StoredMessage = {
-  id: number;
-  role: "user" | "assistant";
-  content: string;
-  ts: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  cost_usd: number;
-  ms: number;
-  /** JSON array of attachment ids sent with this message. */
-  attachments: string;
-  /**
-   * JSON array of `TurnStep`: the shape of an assistant turn — what it said, which
-   * tools it ran between saying things, and whether each one succeeded. Empty for
-   * user messages and for assistant turns that used no tools.
-   */
-  steps: string;
-};
-
 /**
- * One segment of an assistant turn, in the order it happened. Stored so a reopened
- * session shows the same tool lines the live stream did, failures included.
+ * A file the user attached, or an image the agent drew. The bytes live in the Think
+ * workspace — a virtual filesystem the model reads with its own tools — and this row
+ * is the metadata the UI needs to draw the file and the turn needs to name it.
  */
-export type TurnStep =
-  | { kind: "text"; text: string }
-  | { kind: "tools"; tools: { name: string; ok: boolean }[] };
-
-/** A file the user attached, or an image the agent drew. */
 export type Attachment = {
   id: string;
   kind: "text" | "image" | "pdf";
@@ -75,16 +34,52 @@ export type Attachment = {
   mime: string;
   /** Extracted text for a text file, a transcript for audio, a prompt for an image. */
   text: string;
-  /** Legacy inline data URL. Rows written before attachments moved to R2. */
-  data: string;
-  /** R2 object key holding the bytes, for images and audio clips. Empty for text. */
-  key: string;
-  /** R2 object key of a PNG of the PDF's first page. Empty for everything else. */
-  thumb_key: string;
+  /** Workspace path holding the bytes. */
+  path: string;
+  /** Workspace path of a PNG of a PDF's first page. Empty for everything else. */
+  thumb_path: string;
   bytes: number;
   ts: number;
   /** 0 until the attachment has been sent with a turn. */
   used: number;
+};
+
+/** An attachment with its bytes, which is how one session hands a file to another. */
+export type PackedAttachment = Attachment & { data: string; thumb: string };
+
+/** A conversation prefix plus its files: what one session hands another on a fork. */
+export type Snapshot = {
+  messages: UIMessage[];
+  attachments: PackedAttachment[];
+  /** Which message carried which file, and what each question actually said. */
+  links: { message_id: string; attachment_id: string }[];
+  texts: { message_id: string; text: string }[];
+  /** Files of the question the fork dropped: they return to the composer, unsent. */
+  pending?: PackedAttachment[];
+};
+
+/**
+ * One segment of an assistant turn, in the order it happened — what it said, and the
+ * tools it ran between saying things. Derived from Think's message parts on read
+ * rather than stored, so the transcript stays the framework's to own.
+ */
+export type TurnStep =
+  | { kind: "text"; text: string }
+  | { kind: "tools"; tools: { name: string; ok: boolean }[] };
+
+/** The shape the frontend reads a transcript in. */
+export type StoredMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  ts: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  ms: number;
+  attachments: ReturnType<typeof publicAttachment>[];
+  /** JSON array of `TurnStep`. Empty for user messages and for tool-free turns. */
+  steps: string;
 };
 
 /** The models the app can be switched between, in the order the settings page lists them. */
@@ -114,34 +109,12 @@ const TITLE_PROMPT =
 /** How many times a single turn may call tools before it must answer. */
 const MAX_TOOL_ROUNDS = 6;
 
-/** Append a run of text to the steps of a turn, merging it into a trailing text step. */
-function pushText(steps: TurnStep[], text: string) {
-  if (!text) return;
-  const last = steps[steps.length - 1];
-  if (last?.kind === "text") last.text += text;
-  else steps.push({ kind: "text", text });
-}
-
 /**
- * What the user reads when a turn burns every tool round without answering. The tool
- * errors from the final round are quoted, because a silent stall is nearly always a
- * tool failing the same way over and over.
- */
-function roundLimitNote(failures: string[]): string {
-  const head = `I stopped after ${MAX_TOOL_ROUNDS} rounds of tool calls without reaching an answer.`;
-  if (failures.length === 0) return head;
-  return `${head} The last attempt failed with:\n\n${failures.map((f) => `- ${f}`).join("\n")}`;
-}
-
-/**
- * Attachment ceilings, per kind. Bytes live in R2, so the limits are about what each
- * kind costs downstream rather than what SQLite will hold: a text file is inlined into
- * every prompt, an image is base64'd into one, and audio is transcribed once.
+ * Attachment ceilings, per kind. Bytes spill to R2, so the limits are about what each
+ * kind costs downstream rather than what SQLite will hold.
  */
 const MAX_UPLOAD_BYTES = {
   text: 1_000_000,
-  // A PDF is base64'd into every prompt that carries it, like an image, and parsing
-  // it costs a page at a time, so the ceiling sits well under the image one.
   pdf: 8_000_000,
   image: 10_000_000,
   audio: 25_000_000,
@@ -153,46 +126,48 @@ const MAX_THUMBNAIL_BYTES = 2_000_000;
 const TEXT_EXTENSIONS =
   /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|log|html?|xml|css|jsx?|tsx?|py|rb|go|rs|java|kt|c|h|cpp|sh|sql)$/i;
 
-/**
- * One Durable Object instance == one agent session.
- * The instance name in the URL (/agents/session-agent/<session-id>) is the session id.
- */
-export class SessionAgent extends Agent<Env> {
+/** Where an attachment's bytes sit in the workspace. */
+function uploadPath(id: string, name: string): string {
+  return `uploads/${id}/${safeName(name)}`;
+}
+
+/** A file name the workspace can hold: no separators, no traversal, never empty. */
+function safeName(name: string): string {
+  const cleaned = name.replace(/[/\\]+/g, "_").replace(/^\.+/, "").trim();
+  return cleaned.slice(0, 100) || "file";
+}
+
+export class SessionAgent extends Think<Env> {
+  /**
+   * Attachment bytes, and anything the model writes, live in one workspace, with R2
+   * taking the large files off SQLite.
+   */
+  override workspace = new Workspace({
+    sql: this.ctx.storage.sql,
+    r2: this.env.FILES,
+    name: () => this.name,
+  });
+
+  /** Six rounds of tools per turn, as before Think owned the loop. */
+  override maxSteps = MAX_TOOL_ROUNDS;
+
   private schemaReady = false;
+  private currentConfig: Config | undefined;
+  private memories: Memory[] = [];
+
+  /** Usage accumulated by `onStepFinish` for the turn that is running now. */
+  private turnUsage = { prompt: 0, completion: 0, cost: 0, started: 0 };
 
   private exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): T[] {
     return this.ctx.storage.sql.exec(query, ...(bindings as never[])).toArray() as T[];
   }
 
+  /**
+   * Think owns the transcript, so these tables hold only what it has no opinion
+   * about: what an attachment is, which message carried it, and what a turn cost.
+   */
   private ensureSchema() {
     if (this.schemaReady) return;
-    this.exec(
-      `CREATE TABLE IF NOT EXISTS messages (
-         id INTEGER PRIMARY KEY AUTOINCREMENT,
-         role TEXT NOT NULL,
-         content TEXT NOT NULL,
-         ts INTEGER NOT NULL,
-         prompt_tokens INTEGER NOT NULL DEFAULT 0,
-         completion_tokens INTEGER NOT NULL DEFAULT 0,
-         cost_usd REAL NOT NULL DEFAULT 0,
-         ms INTEGER NOT NULL DEFAULT 0
-       )`
-    );
-    // Bring forward databases created before the usage and attachment columns existed.
-    for (const col of [
-      "prompt_tokens INTEGER NOT NULL DEFAULT 0",
-      "completion_tokens INTEGER NOT NULL DEFAULT 0",
-      "cost_usd REAL NOT NULL DEFAULT 0",
-      "ms INTEGER NOT NULL DEFAULT 0",
-      "attachments TEXT NOT NULL DEFAULT '[]'",
-      "steps TEXT NOT NULL DEFAULT '[]'",
-    ]) {
-      try {
-        this.exec(`ALTER TABLE messages ADD COLUMN ${col}`);
-      } catch {
-        // Column already present.
-      }
-    }
     this.exec(
       `CREATE TABLE IF NOT EXISTS attachments (
          id TEXT PRIMARY KEY,
@@ -200,23 +175,263 @@ export class SessionAgent extends Agent<Env> {
          name TEXT NOT NULL,
          mime TEXT NOT NULL,
          text TEXT NOT NULL DEFAULT '',
-         data TEXT NOT NULL DEFAULT '',
-         key TEXT NOT NULL DEFAULT '',
-         thumb_key TEXT NOT NULL DEFAULT '',
+         path TEXT NOT NULL DEFAULT '',
+         thumb_path TEXT NOT NULL DEFAULT '',
          bytes INTEGER NOT NULL DEFAULT 0,
          ts INTEGER NOT NULL,
          used INTEGER NOT NULL DEFAULT 0
        )`
     );
-    for (const col of ["key TEXT NOT NULL DEFAULT ''", "thumb_key TEXT NOT NULL DEFAULT ''"]) {
-      try {
-        this.exec(`ALTER TABLE attachments ADD COLUMN ${col}`);
-      } catch {
-        // Column already present.
-      }
-    }
+    this.exec(
+      `CREATE TABLE IF NOT EXISTS message_files (
+         message_id TEXT NOT NULL,
+         attachment_id TEXT NOT NULL,
+         PRIMARY KEY (message_id, attachment_id)
+       )`
+    );
+    // What the user actually typed. The message Think stores also names the files the
+    // turn carried, and that annotation is for the model, not for the chat bubble.
+    this.exec(
+      `CREATE TABLE IF NOT EXISTS message_text (
+         message_id TEXT PRIMARY KEY,
+         text TEXT NOT NULL
+       )`
+    );
+    // One row per assistant message: what the turn spent, which Think does not track.
+    this.exec(
+      `CREATE TABLE IF NOT EXISTS usage (
+         message_id TEXT PRIMARY KEY,
+         prompt_tokens INTEGER NOT NULL DEFAULT 0,
+         completion_tokens INTEGER NOT NULL DEFAULT 0,
+         cost_usd REAL NOT NULL DEFAULT 0,
+         ms INTEGER NOT NULL DEFAULT 0,
+         ts INTEGER NOT NULL DEFAULT 0
+       )`
+    );
     this.schemaReady = true;
   }
+
+  /* ----------------------------------------------------------------- config -- */
+
+  private registry() {
+    return this.env.SessionRegistry.get(this.env.SessionRegistry.idFromName("global"));
+  }
+
+  /**
+   * Settings are read per turn rather than per boot: an object can live for days
+   * between messages, and a stale temperature is a confusing thing to debug.
+   */
+  private async loadConfig() {
+    this.currentConfig = await this.registry().config(this.env.MODEL);
+    this.memories = enabled(this.currentConfig, "memory")
+      ? await this.registry().recall("", 50)
+      : [];
+  }
+
+  private config(): Config {
+    return this.currentConfig ?? { model: this.env.MODEL, ...DEFAULT_CONFIG };
+  }
+
+  private model(): string {
+    return this.config().model;
+  }
+
+  /** OpenRouter through the AI SDK's OpenAI-compatible client. */
+  private openrouter() {
+    return createOpenAI({
+      apiKey: this.env.OPENROUTER_API_KEY,
+      baseURL: "https://openrouter.ai/api/v1",
+    });
+  }
+
+  getModel() {
+    return this.openrouter()(this.model());
+  }
+
+  getSystemPrompt() {
+    return this.systemPrompt();
+  }
+
+  private systemPrompt(): string {
+    const parts = [SYSTEM_PROMPT];
+    const custom = this.config().system_prompt.trim();
+    if (custom) parts.push(custom);
+    if (this.memories.length > 0) {
+      // Memories are injected rather than recalled by tool call, so the model can use
+      // what it knows without spending a round trip to find out that it knows it.
+      parts.push(
+        `What you remember about this user:\n${this.memories.map((m) => `- ${m.text}`).join("\n")}`
+      );
+    }
+    const ready = CAPABILITIES.filter((c) => enabled(this.config(), c.id)).map((c) => c.label);
+    if (ready.length > 0) parts.push(`Capabilities available to you: ${ready.join(", ")}.`);
+    parts.push(
+      "Files the user attaches are written to the workspace under uploads/, and every message names the ones it carries. Open one with the read tool when the question is about it."
+    );
+    return parts.join("\n\n");
+  }
+
+  /**
+   * Every knob the settings page owns, applied per turn: model, prompt, sampling,
+   * reply cap, reasoning effort, context window, and the capability tools that are
+   * ready to run.
+   */
+  override async beforeTurn(_ctx: TurnContext): Promise<TurnConfig> {
+    this.ensureSchema();
+    await this.loadConfig();
+    const config = this.config();
+    this.turnUsage = { prompt: 0, completion: 0, cost: 0, started: Date.now() };
+
+    const limit = config.context_messages;
+    const recent =
+      limit > 0 ? await convertToModelMessages((await this.getMessages()).slice(-limit)) : [];
+    return {
+      model: this.openrouter()(config.model),
+      instructions: this.systemPrompt(),
+      tools: this.capabilityTools(config),
+      temperature: config.temperature,
+      ...(config.max_tokens > 0 ? { maxOutputTokens: config.max_tokens } : {}),
+      ...(config.reasoning_effort !== "off"
+        ? { providerOptions: { openai: { reasoningEffort: config.reasoning_effort } } }
+        : {}),
+      // A long session stops growing its prompt without limit; 0 keeps everything.
+      ...(limit > 0 ? { messages: recent } : {}),
+    };
+  }
+
+  /**
+   * The capability tools, wrapped for the AI SDK. Their JSON Schema is reused as is,
+   * so a tool added in `capabilities.ts` reaches the model with no work here. They
+   * merge with Think's own workspace tools — read, write, edit, grep, bash.
+   */
+  private capabilityTools(config: Config): ToolSet {
+    const context = this.toolContext(config);
+    const tools: ToolSet = {};
+    for (const spec of toolsFor(config)) {
+      tools[spec.name] = tool({
+        description: spec.description,
+        inputSchema: jsonSchema(spec.parameters as never),
+        // A failure is returned rather than thrown, so the model reads what went
+        // wrong and can correct itself on the next round.
+        execute: async (args) =>
+          (await runTool(spec.name, args as Record<string, unknown>, context)).content,
+      });
+    }
+    return tools;
+  }
+
+  private toolContext(config: Config): ToolContext {
+    return {
+      config,
+      sessionId: this.name,
+      openrouterKey: this.env.OPENROUTER_API_KEY,
+      registry: this.registry(),
+      saveImage: async (dataUrl, prompt) => {
+        const id = crypto.randomUUID().slice(0, 12);
+        const mime = dataUrl.match(/^data:([^;]+)/)?.[1] ?? "image/png";
+        const bytes = base64ToBytes(dataUrl.split(",", 2)[1] ?? "");
+        const name = `${prompt.slice(0, 40) || "image"}.png`;
+        const path = uploadPath(id, name);
+        await this.workspace.writeFileBytes(path, bytes, mime);
+        this.insertAttachment({
+          id,
+          kind: "image",
+          name,
+          mime,
+          text: prompt,
+          path,
+          thumb_path: "",
+          bytes: bytes.byteLength,
+        });
+        // Marked used straight away: it belongs to the reply, not to the next turn.
+        this.exec(`UPDATE attachments SET used = 1 WHERE id = ?`, id);
+        return `/agents/session-agent/${encodeURIComponent(this.name)}/files/${id}`;
+      },
+      transcribeAttachment: (id) => this.transcribeAttachment(id),
+      schedule: (when, prompt) => this.scheduleTask(when, prompt),
+      listTasks: () => this.listTasks(),
+      cancelTask: (id) => this.cancelTask(id),
+    };
+  }
+
+  /* ------------------------------------------------------------------ usage -- */
+
+  /** Token counts arrive per step; a turn's cost is their sum. */
+  override onStepFinish(step: StepContext): void {
+    const prompt = step.usage?.inputTokens ?? 0;
+    const completion = step.usage?.outputTokens ?? 0;
+    this.turnUsage.prompt += prompt;
+    this.turnUsage.completion += completion;
+    this.turnUsage.cost += this.priceOf(prompt, completion, openrouterCost(step));
+  }
+
+  /**
+   * The turn is over: bank what it spent against the assistant message Think just
+   * wrote, and name the session if this was its first exchange.
+   */
+  override async onChatResponse(result: {
+    message: UIMessage;
+    status: "completed" | "error" | "aborted";
+  }): Promise<void> {
+    this.ensureSchema();
+    this.exec(
+      `INSERT OR REPLACE INTO usage (message_id, prompt_tokens, completion_tokens, cost_usd, ms, ts)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      result.message.id,
+      this.turnUsage.prompt,
+      this.turnUsage.completion,
+      this.turnUsage.cost,
+      this.turnUsage.started ? Date.now() - this.turnUsage.started : 0,
+      Date.now()
+    );
+
+    const messages = await this.getMessages();
+    const questions = messages.filter((m) => m.role === "user");
+    if (questions.length === 1 && result.status === "completed") {
+      await this.nameSession(textOf(questions[0]), textOf(result.message));
+    }
+  }
+
+  private priceOf(promptTokens: number, completionTokens: number, reported?: number) {
+    if (typeof reported === "number") return reported;
+    const p = MODEL_FALLBACK_PRICE[this.model()];
+    return p ? promptTokens * p.prompt + completionTokens * p.completion : 0;
+  }
+
+  /**
+   * Ask the model for a short name for the session and write it to the registry, so
+   * the sidebar stops showing "New session". Best effort: a failed title must never
+   * fail the turn it was generated from.
+   */
+  private async nameSession(userMessage: string, reply: string) {
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.model(),
+          messages: [
+            { role: "system", content: TITLE_PROMPT },
+            { role: "user", content: `User: ${userMessage}\n\nAssistant: ${reply.slice(0, 500)}` },
+          ],
+        }),
+      });
+      if (!res.ok) return;
+      const json = (await res.json()) as { choices: { message: { content: string } }[] };
+      const title = (json.choices[0]?.message?.content ?? "")
+        .replace(/^["'\s]+|["'\s.]+$/g, "")
+        .slice(0, 60);
+      if (!title) return;
+      await this.registry().rename(this.name, title);
+    } catch {
+      // Leave the placeholder title in place.
+    }
+  }
+
+  /* ----------------------------------------------------------------- routes -- */
 
   async onRequest(request: Request): Promise<Response> {
     this.ensureSchema();
@@ -240,7 +455,7 @@ export class SessionAgent extends Agent<Env> {
       return await this.streamChat(message, retry === true);
     }
 
-    // Attachment bytes are served raw so an <img src> can point straight at them.
+    // Attachment bytes are served raw so an <img> src can point straight at them.
     if (request.method === "GET" && path === "files" && route[1]) {
       return route[2] === "thumb"
         ? await this.serveThumbnail(route[1])
@@ -253,7 +468,7 @@ export class SessionAgent extends Agent<Env> {
 
     try {
       if (request.method === "POST" && path === "chat") {
-        const result = await this.chat(((await request.json()) as { message: string }).message);
+        const result = await this.runChat(((await request.json()) as { message: string }).message);
         body = result.body;
         turn = result.turn;
       } else if (request.method === "POST" && path === "files") {
@@ -263,29 +478,23 @@ export class SessionAgent extends Agent<Env> {
       } else if (request.method === "GET" && path === "files") {
         body = { attachments: this.pendingAttachments().map(publicAttachment) };
       } else if (request.method === "DELETE" && path === "files" && route[1]) {
-        const row = this.attachment(route[1]);
-        this.exec(`DELETE FROM attachments WHERE id = ? AND used = 0`, route[1]);
-        // Only the pending row is deletable, so a surviving row means the bytes stay.
-        if (row?.key && !this.attachment(route[1])) await this.env.FILES.delete(row.key);
+        await this.removeAttachment(route[1]);
         body = { ok: true };
       } else if (request.method === "GET" && path === "tasks") {
         body = { tasks: this.listTasks() };
       } else if (request.method === "DELETE" && path === "tasks" && route[1]) {
-        body = { ok: this.cancelTask(route[1]) };
+        body = { ok: await this.cancelTask(route[1]) };
       } else if (request.method === "GET" && path === "messages") {
-        body = { messages: this.messages() };
+        body = { messages: await this.transcript() };
       } else if (request.method === "GET" && path === "export") {
-        body = this.exportTurns(Number(url.searchParams.get("count") ?? "0"));
+        body = await this.exportTurns(Number(url.searchParams.get("count") ?? "0"));
       } else if (request.method === "POST" && path === "import") {
         await this.importTurns((await request.json()) as Snapshot);
         body = { ok: true };
       } else if (request.method === "GET" && path === "summary") {
-        body = this.summary();
+        body = await this.summary();
       } else if (request.method === "POST" && path === "reset") {
-        this.exec(`DELETE FROM messages`);
-        await this.deleteObjects();
-        this.exec(`DELETE FROM attachments`);
-        for (const task of this.listTasks()) this.cancelTask(task.id);
+        await this.reset();
         body = { ok: true };
       } else {
         status = 404;
@@ -313,106 +522,56 @@ export class SessionAgent extends Agent<Env> {
     return this.exec<Attachment>(`SELECT * FROM attachments WHERE used = 0 ORDER BY ts ASC`);
   }
 
-  /**
-   * Attachment bytes live in R2, so a big image or a long voice note never sits in
-   * the Durable Object's SQLite. Rows written before the move still carry a data URL.
-   */
-  private async serveThumbnail(id: string): Promise<Response> {
-    const row = this.attachment(id);
-    if (!row?.thumb_key) return new Response("not found", { status: 404 });
-    const object = await this.env.FILES.get(row.thumb_key);
-    if (!object) return new Response("not found", { status: 404 });
-    return new Response(object.body, {
-      headers: {
-        "content-type": "image/png",
-        "cache-control": "public, max-age=31536000, immutable",
-      },
-    });
-  }
-
-  private async serveAttachment(id: string): Promise<Response> {
-    const row = this.attachment(id);
-    // Images and voice notes both keep their bytes; text files have none to serve.
-    if (!row || (!row.key && !row.data)) return new Response("not found", { status: 404 });
-
-    const CACHE = { "cache-control": "public, max-age=31536000, immutable" };
-    if (row.key) {
-      const object = await this.env.FILES.get(row.key);
-      if (!object) return new Response("not found", { status: 404 });
-      return new Response(object.body, {
-        headers: { "content-type": row.mime, ...CACHE },
-      });
-    }
-
-    const [meta, base64] = row.data.split(",", 2);
-    const mime = meta?.match(/^data:([^;]+)/)?.[1] ?? row.mime;
-    const binary = Uint8Array.from(atob(base64 ?? ""), (c) => c.charCodeAt(0));
-    return new Response(binary, { headers: { "content-type": mime, ...CACHE } });
-  }
-
-  /**
-   * Store the PNG of a PDF's first page. The browser renders it, so a malformed or
-   * oversized image is dropped rather than trusted: the card falls back to its name.
-   */
-  private async putThumbnail(id: string, thumbnail: unknown): Promise<string> {
-    const file = thumbnail as File | null;
-    if (!file || typeof file === "string" || file.size === 0) return "";
-    if (file.size > MAX_THUMBNAIL_BYTES) return "";
-    const key = `${this.name}/${id}-thumb`;
-    await this.env.FILES.put(key, await file.arrayBuffer(), {
-      httpMetadata: { contentType: "image/png" },
-    });
-    return key;
-  }
-
-  /** Put an upload's bytes in the bucket, namespaced by session, and hand back its key. */
-  private async putObject(id: string, body: ArrayBuffer | Blob, mime: string): Promise<string> {
-    const key = `${this.name}/${id}`;
-    await this.env.FILES.put(key, body, { httpMetadata: { contentType: mime } });
-    return key;
-  }
-
-  /**
-   * Drop every object this session holds in the bucket. The bucket is swept by key
-   * prefix rather than by what the attachments table remembers, so a row lost to a
-   * failed write or an interrupted delete cannot leave its bytes behind for good.
-   */
-  private async deleteObjects(): Promise<void> {
-    let cursor: string | undefined;
-    do {
-      const page = await this.env.FILES.list({ prefix: `${this.name}/`, cursor });
-      // R2 takes up to 1000 keys per delete call, and a page holds at most 1000.
-      const keys = page.objects.map((o) => o.key);
-      if (keys.length > 0) await this.env.FILES.delete(keys);
-      cursor = page.truncated ? page.cursor : undefined;
-    } while (cursor);
-  }
-
-  /** The bytes behind an attachment, as the data URL OpenRouter wants. */
-  private async dataUrlOf(a: Attachment): Promise<string> {
-    if (!a.key) return a.data;
-    const object = await this.env.FILES.get(a.key);
-    if (!object) return "";
-    return `data:${a.mime};base64,${bytesToBase64(await object.arrayBuffer())}`;
-  }
-
   private insertAttachment(row: Omit<Attachment, "ts" | "used">): Attachment {
     const full: Attachment = { ...row, ts: Date.now(), used: 0 };
     this.exec(
-      `INSERT INTO attachments (id, kind, name, mime, text, data, key, thumb_key, bytes, ts, used)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO attachments (id, kind, name, mime, text, path, thumb_path, bytes, ts, used)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       full.id,
       full.kind,
       full.name,
       full.mime,
       full.text,
-      full.data,
-      full.key,
-      full.thumb_key,
+      full.path,
+      full.thumb_path,
       full.bytes,
       full.ts
     );
     return full;
+  }
+
+  /** Only an unsent attachment can be dropped; a sent one belongs to its message. */
+  private async removeAttachment(id: string) {
+    const row = this.attachment(id);
+    if (!row || row.used === 1) return;
+    this.exec(`DELETE FROM attachments WHERE id = ? AND used = 0`, id);
+    if (row.path) await this.workspace.rm(`uploads/${id}`, { recursive: true, force: true });
+  }
+
+  private async serveAttachment(id: string): Promise<Response> {
+    const row = this.attachment(id);
+    if (!row?.path) return new Response("not found", { status: 404 });
+    const stream = await this.workspace.readFileStream(row.path);
+    if (!stream) return new Response("not found", { status: 404 });
+    return new Response(stream, {
+      headers: {
+        "content-type": row.mime,
+        "cache-control": "public, max-age=31536000, immutable",
+      },
+    });
+  }
+
+  private async serveThumbnail(id: string): Promise<Response> {
+    const row = this.attachment(id);
+    if (!row?.thumb_path) return new Response("not found", { status: 404 });
+    const stream = await this.workspace.readFileStream(row.thumb_path);
+    if (!stream) return new Response("not found", { status: 404 });
+    return new Response(stream, {
+      headers: {
+        "content-type": "image/png",
+        "cache-control": "public, max-age=31536000, immutable",
+      },
+    });
   }
 
   /**
@@ -430,6 +589,7 @@ export class SessionAgent extends Agent<Env> {
     const config = this.config();
     const mime = file.type || "application/octet-stream";
     const id = crypto.randomUUID().slice(0, 12);
+    const path = uploadPath(id, file.name);
 
     const limit = isPdf(mime, file.name)
       ? MAX_UPLOAD_BYTES.pdf
@@ -451,19 +611,18 @@ export class SessionAgent extends Agent<Env> {
       if (!enabled(config, "file_ingest")) {
         return { body: { error: "File ingest is off. Turn it on under Capabilities." }, status: 400 };
       }
-      // Nothing is extracted here: the pages ride to OpenRouter as a file part and its
-      // file-parser plugin turns them into text, which keeps a PDF parser out of the
-      // Worker and out of the upload path. The card's first-page image is rendered by
-      // the browser for the same reason and arrives beside the file.
+      // Nothing is extracted here: the file lands in the workspace whole, and the
+      // read tool hands its pages to the model when a question needs them. The card's
+      // first-page image is rendered by the browser and arrives beside the file.
+      await this.workspace.writeFileBytes(path, await file.arrayBuffer(), "application/pdf");
       const attachment = this.insertAttachment({
         id,
         kind: "pdf",
         name: file.name,
         mime: "application/pdf",
         text: "",
-        data: "",
-        key: await this.putObject(id, await file.arrayBuffer(), "application/pdf"),
-        thumb_key: await this.putThumbnail(id, form.get("thumbnail")),
+        path,
+        thumb_path: await this.putThumbnail(id, form.get("thumbnail")),
         bytes: file.size,
       });
       return { body: { attachment: publicAttachment(attachment) }, status: 200 };
@@ -473,8 +632,8 @@ export class SessionAgent extends Agent<Env> {
       if (!enabled(config, "vision")) {
         return { body: { error: "Image input is off. Turn it on under Capabilities." }, status: 400 };
       }
-      // Refuse here rather than at turn time: OpenRouter's own refusal is a bare 404,
-      // and by then the message and the attachment have already been stored.
+      // Refuse here rather than at turn time: by the time the model refuses, the
+      // message and the attachment have already been stored.
       if (!modelSeesImages(config.model)) {
         return {
           body: {
@@ -483,15 +642,15 @@ export class SessionAgent extends Agent<Env> {
           status: 400,
         };
       }
+      await this.workspace.writeFileBytes(path, await file.arrayBuffer(), mime);
       const attachment = this.insertAttachment({
         id,
         kind: "image",
         name: file.name,
         mime,
         text: "",
-        data: "",
-        key: await this.putObject(id, await file.arrayBuffer(), mime),
-        thumb_key: "",
+        path,
+        thumb_path: "",
         bytes: file.size,
       });
       return { body: { attachment: publicAttachment(attachment) }, status: 200 };
@@ -506,15 +665,15 @@ export class SessionAgent extends Agent<Env> {
       }
       // Not transcribed here: the clip is stored as-is and the model decides whether
       // it needs the words, by calling transcribe_audio with this attachment's id.
+      await this.workspace.writeFileBytes(path, await file.arrayBuffer(), mime);
       const attachment = this.insertAttachment({
         id,
         kind: "text",
         name: file.name,
         mime,
         text: "",
-        data: "",
-        key: await this.putObject(id, await file.arrayBuffer(), mime),
-        thumb_key: "",
+        path,
+        thumb_path: "",
         bytes: file.size,
       });
       return { body: { attachment: publicAttachment(attachment) }, status: 200 };
@@ -529,19 +688,32 @@ export class SessionAgent extends Agent<Env> {
         status: 415,
       };
     }
+    const text = await file.text();
+    await this.workspace.writeFile(path, text, mime);
     const attachment = this.insertAttachment({
       id,
       kind: "text",
       name: file.name,
       mime,
-      text: await file.text(),
-      data: "",
-      // Kept as an object too, so the chat can offer the original file back.
-      key: await this.putObject(id, await file.arrayBuffer(), mime),
-      thumb_key: "",
+      text,
+      path,
+      thumb_path: "",
       bytes: file.size,
     });
     return { body: { attachment: publicAttachment(attachment) }, status: 200 };
+  }
+
+  /**
+   * Store the PNG of a PDF's first page. The browser renders it, so a malformed or
+   * oversized image is dropped rather than trusted: the card falls back to its name.
+   */
+  private async putThumbnail(id: string, thumbnail: unknown): Promise<string> {
+    const file = thumbnail as File | null;
+    if (!file || typeof file === "string" || file.size === 0) return "";
+    if (file.size > MAX_THUMBNAIL_BYTES) return "";
+    const path = `uploads/${id}/thumb.png`;
+    await this.workspace.writeFileBytes(path, await file.arrayBuffer(), "image/png");
+    return path;
   }
 
   /**
@@ -549,8 +721,8 @@ export class SessionAgent extends Agent<Env> {
    * its models take audio as a chat input part, so this spends the key the Worker
    * already holds rather than asking the user for a second provider.
    */
-  private async transcribe(file: File): Promise<string> {
-    const format = audioFormat(file.type, file.name);
+  private async transcribe(bytes: ArrayBuffer, mime: string, name: string): Promise<string> {
+    const format = audioFormat(mime, name);
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -567,19 +739,14 @@ export class SessionAgent extends Agent<Env> {
                 type: "text",
                 text: "Transcribe this audio verbatim. Reply with the transcript alone — no preamble, no commentary, no quotation marks.",
               },
-              {
-                type: "input_audio",
-                input_audio: { data: await base64(file), format },
-              },
+              { type: "input_audio", input_audio: { data: bytesToBase64(bytes), format } },
             ],
           },
         ],
       }),
     });
     if (!res.ok) throw new Error(`transcription ${res.status}: ${await res.text()}`);
-    const json = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
+    const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     return (json.choices?.[0]?.message?.content ?? "").trim();
   }
 
@@ -590,377 +757,364 @@ export class SessionAgent extends Agent<Env> {
   private async transcribeAttachment(id: string): Promise<string> {
     const row = this.attachment(id);
     if (!row) return `No attachment with id ${id}.`;
-    if (!row.mime.startsWith("audio/") && !row.mime.startsWith("video/")) {
-      return `${row.name} is not audio.`;
-    }
+    if (!isAudioAttachment(row)) return `${row.name} is not audio.`;
     if (row.text.trim()) return row.text;
     if (!enabled(this.config(), "audio_input")) {
       return "Audio input is off. Turn it on under Capabilities.";
     }
-    const object = row.key ? await this.env.FILES.get(row.key) : null;
-    if (!object) return `The bytes for ${row.name} are gone.`;
-    const file = new File([await object.arrayBuffer()], row.name, { type: row.mime });
-    const transcript = await this.transcribe(file);
+    const bytes = row.path ? await this.workspace.readFileBytes(row.path) : null;
+    if (!bytes) return `The bytes for ${row.name} are gone.`;
+    const transcript = await this.transcribe(toArrayBuffer(bytes), row.mime, row.name);
     this.exec(`UPDATE attachments SET text = ? WHERE id = ?`, transcript, id);
     return transcript;
   }
 
-  /* ------------------------------------------------------------- transcript -- */
+  /* ------------------------------------------------------------------ turns -- */
 
-  private rows(): StoredMessage[] {
-    return this.exec<StoredMessage>(
-      `SELECT id, role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments, steps
-       FROM messages ORDER BY id ASC`
-    );
+  /**
+   * The user's turn: their words, plus a note naming every file they attached and
+   * where it sits in the workspace. The bytes are not inlined — the model opens what
+   * it needs with the read tool, so a PDF is not re-sent with every later message.
+   */
+  private userText(message: string, attachments: Attachment[]): string {
+    if (attachments.length === 0) return message;
+    const notes = attachments.map((a) => {
+      if (isAudioAttachment(a)) {
+        return a.text.trim()
+          ? `--- attached audio: ${a.name} (id ${a.id}), already transcribed ---\n${a.text}`
+          : `--- attached audio: ${a.name} (id ${a.id}), not transcribed. Call transcribe_audio with attachment_id "${a.id}" if you need the words. ---`;
+      }
+      const kind = a.kind === "pdf" ? "PDF" : a.kind === "image" ? "image" : "file";
+      return `--- attached ${kind}: ${a.name}, in the workspace at ${a.path} ---`;
+    });
+    return [message, ...notes].filter((part) => part.trim() !== "").join("\n\n");
   }
 
   /**
-   * The transcript as the API serves it: each row's attachment ids resolved to the
-   * metadata the UI needs to draw them, so reopening a session shows the files and
-   * images that were sent with each message.
+   * The message a turn sends, and the files it claims: the pending ones, or — on a
+   * retry — the ones the question being asked again came with.
    */
-  private messages() {
-    return this.rows().map((row) => ({
-      ...row,
-      attachments: this.attachmentsOf(row).map(publicAttachment),
-    }));
+  private async openTurn(message: string, retry: boolean): Promise<UIMessage> {
+    const attachments = retry ? await this.rewind() : this.pendingAttachments();
+    const id = crypto.randomUUID();
+    for (const a of attachments) {
+      this.exec(`UPDATE attachments SET used = 1 WHERE id = ?`, a.id);
+      this.exec(
+        `INSERT OR REPLACE INTO message_files (message_id, attachment_id) VALUES (?, ?)`,
+        id,
+        a.id
+      );
+    }
+    // The user row exists only for its timestamp; the reply's row carries the cost.
+    this.exec(`INSERT OR REPLACE INTO usage (message_id, ts) VALUES (?, ?)`, id, Date.now());
+    this.exec(`INSERT OR REPLACE INTO message_text (message_id, text) VALUES (?, ?)`, id, message);
+    return {
+      id,
+      role: "user",
+      parts: [{ type: "text", text: this.userText(message, attachments) }],
+    };
   }
 
-  private attachmentsOf(row: StoredMessage): Attachment[] {
-    return (JSON.parse(row.attachments || "[]") as string[])
-      .map((id) => this.attachment(id))
+  /**
+   * Undo the last exchange so it can be asked again: the trailing assistant messages
+   * and the question that prompted them are deleted from the session, and that
+   * question's attachments are handed back so the retry carries the same files.
+   */
+  private async rewind(): Promise<Attachment[]> {
+    const messages = await this.getMessages();
+    let cut = messages.length;
+    while (cut > 0 && messages[cut - 1].role === "assistant") cut--;
+    const question = cut > 0 && messages[cut - 1].role === "user" ? messages[cut - 1] : null;
+    if (question) cut--;
+
+    const dropped = messages.slice(cut);
+    if (dropped.length > 0) await this.session.deleteMessages(dropped.map((m) => m.id));
+    for (const message of dropped) {
+      this.exec(`DELETE FROM usage WHERE message_id = ?`, message.id);
+      this.exec(`DELETE FROM message_files WHERE message_id = ?`, message.id);
+      this.exec(`DELETE FROM message_text WHERE message_id = ?`, message.id);
+    }
+    if (!question) return [];
+
+    // They are already marked used, so `pendingAttachments` would never find them.
+    const attachments = this.attachmentsOf(question.id);
+    for (const a of attachments) this.exec(`UPDATE attachments SET used = 0 WHERE id = ?`, a.id);
+    return attachments;
+  }
+
+  /** A whole turn, without streaming. */
+  private async runChat(message: string, retry = false) {
+    const userMessage = await this.openTurn(message, retry);
+    const result = await this.runTurn({ input: [userMessage] });
+    const reply =
+      result.status === "completed" ? textOf(result.message as unknown as UIMessage) : "";
+    const usage = this.exec<{ cost_usd: number; ms: number }>(
+      `SELECT cost_usd, ms FROM usage WHERE message_id = ?`,
+      result.message?.id ?? ""
+    )[0];
+
+    return {
+      body: { reply },
+      turn: { cost_usd: usage?.cost_usd ?? 0, llm_ms: usage?.ms ?? 0 },
+    };
+  }
+
+  /**
+   * Stream a reply as SSE, in the event shape the browser already speaks. Think owns
+   * the loop and the persistence; this translates its UI message chunks into the
+   * `delta` / `tool` / `tool_done` / `usage` protocol the chat client reads.
+   *
+   * The object stays resident — and billable — for the whole stream. A stopped reply
+   * keeps its partial text and its token cost, because the tokens were generated.
+   */
+  private async streamChat(message: string, retry = false): Promise<Response> {
+    const userMessage = await this.openTurn(message, retry);
+    const encoder = new TextEncoder();
+    const self = this;
+    // Tool events name the call by id; the name arrives once, when it starts.
+    const toolNames = new Map<string, string>();
+
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (event: Record<string, unknown>) => {
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          } catch {
+            // The client is gone. The turn still finishes, and is still persisted.
+          }
+        };
+
+        try {
+          await self.runTurn({
+            mode: "stream",
+            input: [userMessage],
+            callback: {
+              onStart() {},
+              onEvent(json: string) {
+                const chunk = JSON.parse(json) as {
+                  type: string;
+                  delta?: string;
+                  toolCallId?: string;
+                  toolName?: string;
+                };
+                if (chunk.type === "text-delta" && chunk.delta) {
+                  send({ type: "delta", text: chunk.delta });
+                } else if (chunk.type === "tool-input-start" && chunk.toolCallId) {
+                  toolNames.set(chunk.toolCallId, chunk.toolName ?? "tool");
+                  send({ type: "tool", name: chunk.toolName ?? "tool" });
+                } else if (chunk.type === "tool-output-available" && chunk.toolCallId) {
+                  send({ type: "tool_done", name: toolNames.get(chunk.toolCallId) ?? "tool", ok: true });
+                } else if (chunk.type === "tool-output-error" && chunk.toolCallId) {
+                  send({ type: "tool_done", name: toolNames.get(chunk.toolCallId) ?? "tool", ok: false });
+                }
+              },
+              onDone() {},
+              onError(error: string) {
+                send({ type: "error", error });
+              },
+            },
+          });
+
+          send({
+            type: "usage",
+            prompt_tokens: self.turnUsage.prompt,
+            completion_tokens: self.turnUsage.completion,
+            cost_usd: self.turnUsage.cost,
+            llm_ms: self.turnUsage.started ? Date.now() - self.turnUsage.started : 0,
+          });
+        } catch (err) {
+          send({ type: "error", error: err instanceof Error ? err.message : String(err) });
+        }
+        controller.close();
+      },
+    });
+
+    return new Response(body, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
+    });
+  }
+
+  /* ------------------------------------------------------------- transcript -- */
+
+  /**
+   * The transcript as the API serves it: Think's messages, plus what only this agent
+   * knows — the files each question carried, and what each reply cost.
+   */
+  private async transcript(): Promise<StoredMessage[]> {
+    const messages = await this.getMessages();
+    return messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => {
+        const usage = this.exec<{
+          prompt_tokens: number;
+          completion_tokens: number;
+          cost_usd: number;
+          ms: number;
+          ts: number;
+        }>(`SELECT * FROM usage WHERE message_id = ?`, m.id)[0];
+        const steps = stepsOf(m);
+        const toolLines = steps.some((s) => s.kind === "tools");
+        return {
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: this.spokenText(m),
+          ts: usage?.ts ?? 0,
+          prompt_tokens: usage?.prompt_tokens ?? 0,
+          completion_tokens: usage?.completion_tokens ?? 0,
+          cost_usd: usage?.cost_usd ?? 0,
+          ms: usage?.ms ?? 0,
+          attachments: this.attachmentsOf(m.id).map(publicAttachment),
+          steps: toolLines ? JSON.stringify(steps) : "[]",
+        };
+      });
+  }
+
+  /**
+   * What the message said, as a person wrote it: the file annotations the turn added
+   * for the model are dropped, so the bubble and a forked draft read the way they did
+   * when they were typed.
+   */
+  private spokenText(message: UIMessage): string {
+    const typed = this.exec<{ text: string }>(
+      `SELECT text FROM message_text WHERE message_id = ?`,
+      message.id
+    )[0];
+    return typed ? typed.text : textOf(message);
+  }
+
+  private attachmentsOf(messageId: string): Attachment[] {
+    return this.exec<{ attachment_id: string }>(
+      `SELECT attachment_id FROM message_files WHERE message_id = ?`,
+      messageId
+    )
+      .map((row) => this.attachment(row.attachment_id))
       .filter((a): a is Attachment => !!a);
   }
 
+  /* ---------------------------------------------------------------- forking -- */
+
   /**
-   * The transcript to resend, newest-last. A context window of N keeps only the last
-   * N messages, so a long session stops growing its prompt (and its per-turn cost)
-   * without limit; 0 keeps everything.
+   * The first `count` messages with every attachment they reference, bytes included,
+   * so the fork can stand on its own.
    */
-  private async history(): Promise<Msg[]> {
-    const limit = this.config().context_messages;
-    const rows = this.rows();
-    const kept = limit > 0 ? rows.slice(-limit) : rows;
-    return Promise.all(
-      kept.map(async (row) => ({ role: row.role, content: await this.contentOf(row) }))
+  private async exportTurns(count: number): Promise<Snapshot> {
+    const visible = (await this.getMessages()).filter(
+      (m) => m.role === "user" || m.role === "assistant"
     );
-  }
+    const kept = visible.slice(0, Math.max(0, count));
+    const keep = new Set(kept.map((m) => m.id));
 
-  /** Rebuild a stored row's content, putting its images back as image parts. */
-  private async contentOf(row: StoredMessage): Promise<string | Part[]> {
-    const attached = this.attachmentsOf(row);
-    const text = withAudioNotes(row.content, attached);
-    const images = attached.filter((a) => a.kind === "image");
-    const pdfs = attached.filter((a) => a.kind === "pdf");
-    if (images.length === 0 && pdfs.length === 0) return text;
-    return [
-      { type: "text", text },
-      ...(await this.imageParts(images)),
-      ...(await this.pdfParts(pdfs)),
-    ];
-  }
-
-  /** Image attachments as OpenRouter parts, with their bytes read back from R2. */
-  private async imageParts(images: Attachment[]): Promise<Part[]> {
-    const urls = await Promise.all(images.map((a) => this.dataUrlOf(a)));
-    return urls
-      .filter((url) => url !== "")
-      .map((url) => ({ type: "image_url" as const, image_url: { url } }));
-  }
-
-  /** PDF attachments as OpenRouter file parts; the file-parser plugin reads them. */
-  private async pdfParts(pdfs: Attachment[]): Promise<Part[]> {
-    const urls = await Promise.all(pdfs.map((a) => this.dataUrlOf(a)));
-    return pdfs
-      .map((a, i) => ({ a, url: urls[i] }))
-      .filter(({ url }) => url !== "")
-      .map(({ a, url }) => ({
-        type: "file" as const,
-        file: { filename: a.name, file_data: url },
-      }));
-  }
-
-  private systemPrompt(): string {
-    const parts = [SYSTEM_PROMPT];
-    const custom = this.config().system_prompt.trim();
-    if (custom) parts.push(custom);
-    if (this.memories.length > 0) {
-      // Memories are injected rather than recalled by tool call, so the model can use
-      // what it knows without spending a round trip to find out that it knows it.
-      parts.push(
-        `What you remember about this user:\n${this.memories.map((m) => `- ${m.text}`).join("\n")}`
+    const pack = async (ids: string[]): Promise<PackedAttachment[]> =>
+      await Promise.all(
+        ids
+          .map((id) => this.attachment(id))
+          .filter((a): a is Attachment => !!a)
+          .map(async (a) => ({
+            ...a,
+            data: await this.readBase64(a.path),
+            thumb: await this.readBase64(a.thumb_path),
+          }))
       );
-    }
-    const ready = CAPABILITIES.filter((c) => enabled(this.config(), c.id)).map((c) => c.label);
-    if (ready.length > 0) parts.push(`Capabilities available to you: ${ready.join(", ")}.`);
-    return parts.join("\n\n");
-  }
 
-  /**
-   * The user's turn: their text, plus whatever they attached. Text files are inlined
-   * into the message so any model can read them; images become parts, which only a
-   * multimodal model will accept.
-   */
-  private async userMessage(message: string, attachments: Attachment[]): Promise<Msg> {
-    const documents = attachments.filter(
-      (a) => a.kind === "text" && !isAudioAttachment(a) && a.text.trim() !== ""
-    );
-    const withDocs = documents.length
-      ? [
-          message,
-          ...documents.map((d) => `--- attached file: ${d.name} ---\n${d.text}`),
-        ].join("\n\n")
-      : message;
-    const text = withAudioNotes(withDocs, attachments);
-
-    const images = attachments.filter((a) => a.kind === "image");
-    const pdfs = attachments.filter((a) => a.kind === "pdf");
-    if (images.length === 0 && pdfs.length === 0) return { role: "user", content: text };
-    return {
-      role: "user",
-      content: [
-        { type: "text", text },
-        ...(await this.imageParts(images)),
-        ...(await this.pdfParts(pdfs)),
-      ],
-    };
-  }
-
-  private async modelMessages(message: string, attachments: Attachment[]): Promise<Msg[]> {
-    return [
-      { role: "system", content: this.systemPrompt() },
-      ...(await this.history()),
-      await this.userMessage(message, attachments),
-    ];
-  }
-
-  private priceOf(promptTokens: number, completionTokens: number, reported?: number) {
-    if (typeof reported === "number") return reported;
-    const p = MODEL_FALLBACK_PRICE[this.model()];
-    return p ? promptTokens * p.prompt + completionTokens * p.completion : 0;
-  }
-
-  /**
-   * Undo the last exchange so it can be asked again: the trailing assistant replies
-   * and the question that prompted them are dropped, and that question's attachments
-   * are handed back so the retry carries the same files. They are already marked
-   * used, so `pendingAttachments` would never find them.
-   */
-  private rewind(): Attachment[] {
-    const rows = this.rows();
-    let cut = rows.length;
-    while (cut > 0 && rows[cut - 1].role === "assistant") cut--;
-    const question = cut > 0 && rows[cut - 1].role === "user" ? rows[cut - 1] : null;
-    if (question) cut--;
-    for (const row of rows.slice(cut)) this.exec(`DELETE FROM messages WHERE id = ?`, row.id);
-    return question ? this.attachmentsOf(question) : [];
-  }
-
-  private saveUser(content: string, attachments: Attachment[]) {
-    this.exec(
-      `INSERT INTO messages (role, content, ts, attachments) VALUES ('user', ?, ?, ?)`,
-      content,
-      Date.now(),
-      JSON.stringify(attachments.map((a) => a.id))
-    );
-    // An attachment belongs to the turn that sent it: it must not ride along again.
-    for (const a of attachments) this.exec(`UPDATE attachments SET used = 1 WHERE id = ?`, a.id);
-  }
-
-  private saveAssistant(
-    content: string,
-    promptTokens: number,
-    completionTokens: number,
-    cost: number,
-    ms: number,
-    attachmentIds: string[] = [],
-    steps: TurnStep[] = []
-  ) {
-    this.exec(
-      `INSERT INTO messages (role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments, steps)
-       VALUES ('assistant', ?, ?, ?, ?, ?, ?, ?, ?)`,
-      content,
-      Date.now(),
-      promptTokens,
-      completionTokens,
-      cost,
-      ms,
-      JSON.stringify(attachmentIds),
-      JSON.stringify(steps)
-    );
-  }
-
-  /**
-   * The first `count` messages with every attachment they reference, bytes included
-   * by key. This is what a fork copies: enough to replay the conversation in a new
-   * session without reaching back into this one.
-   */
-  private exportTurns(count: number): Snapshot {
-    const all = this.rows();
-    const rows = all.slice(0, Math.max(0, count));
-    const attachmentsOf = (of: StoredMessage[]) => {
-      const ids = new Set(of.flatMap((row) => JSON.parse(row.attachments || "[]") as string[]));
-      return [...ids].map((id) => this.attachment(id)).filter((a): a is Attachment => !!a);
-    };
+    const carried = kept.flatMap((m) => this.attachmentsOf(m.id).map((a) => a.id));
     // The message just past the cut is the question a fork hands back for editing;
     // its files travel too, so the new session's composer opens with the same chips.
-    const dropped = all[Math.max(0, count)];
+    const dropped = visible[Math.max(0, count)];
+    const pending =
+      dropped?.role === "user" ? this.attachmentsOf(dropped.id).map((a) => a.id) : [];
+
     return {
-      messages: rows,
-      attachments: attachmentsOf(rows),
-      pending: dropped?.role === "user" ? attachmentsOf([dropped]) : [],
+      messages: (await this.getMessages()).filter((m) => keep.has(m.id)),
+      attachments: await pack(carried),
+      links: this.exec<{ message_id: string; attachment_id: string }>(
+        `SELECT message_id, attachment_id FROM message_files`
+      ).filter((row) => keep.has(row.message_id)),
+      texts: this.exec<{ message_id: string; text: string }>(
+        `SELECT message_id, text FROM message_text`
+      ).filter((row) => keep.has(row.message_id)),
+      pending: await pack(pending),
     };
+  }
+
+  private async readBase64(path: string): Promise<string> {
+    if (!path) return "";
+    const bytes = await this.workspace.readFileBytes(path);
+    return bytes ? bytesToBase64(toArrayBuffer(bytes)) : "";
   }
 
   /**
    * Replay a snapshot into this (empty) session. Attachment ids are kept, so the
-   * copied messages still point at their files, but the bytes are copied to keys
-   * under this session so deleting either side leaves the other intact.
+   * copied messages still name their files, but the bytes are written into this
+   * session's own workspace so deleting either side leaves the other intact.
    */
   private async importTurns(snapshot: Snapshot): Promise<void> {
     const carried = (snapshot.attachments ?? []).map((a) => [a, 1] as const);
     // Copied unsent (used = 0), so they show as chips and ride the next turn.
     const pending = (snapshot.pending ?? []).map((a) => [a, 0] as const);
+
     for (const [a, used] of [...carried, ...pending]) {
-      let key = "";
-      if (a.key) {
-        const object = await this.env.FILES.get(a.key);
-        if (object) key = await this.putObject(a.id, await object.arrayBuffer(), a.mime);
+      let path = "";
+      if (a.data) {
+        path = uploadPath(a.id, a.name);
+        await this.workspace.writeFileBytes(path, base64ToBytes(a.data), a.mime);
       }
       // The first-page image is copied the same way: a fork that lost its thumbnails
       // would redraw every PDF card as a bare name.
-      let thumbKey = "";
-      if (a.thumb_key) {
-        const object = await this.env.FILES.get(a.thumb_key);
-        if (object) thumbKey = await this.putThumbnail(a.id, new File([await object.blob()], "thumb.png"));
+      let thumb = "";
+      if (a.thumb) {
+        thumb = `uploads/${a.id}/thumb.png`;
+        await this.workspace.writeFileBytes(thumb, base64ToBytes(a.thumb), "image/png");
       }
       this.exec(
-        `INSERT OR REPLACE INTO attachments (id, kind, name, mime, text, data, key, thumb_key, bytes, ts, used)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO attachments (id, kind, name, mime, text, path, thumb_path, bytes, ts, used)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         a.id,
         a.kind,
         a.name,
         a.mime,
         a.text,
-        key ? "" : a.data,
-        key,
-        thumbKey,
+        path,
+        thumb,
         a.bytes,
         a.ts,
         used
       );
     }
-    for (const row of snapshot.messages ?? []) {
+
+    const messages = snapshot.messages ?? [];
+    if (messages.length > 0) await this.addMessages(messages);
+
+    // Ids are preserved across the copy, so which question carried which file — and
+    // what each question actually said — travels as its own rows.
+    for (const link of snapshot.links ?? []) {
       this.exec(
-        `INSERT INTO messages (role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments, steps)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        row.role,
-        row.content,
-        row.ts,
-        row.prompt_tokens,
-        row.completion_tokens,
-        row.cost_usd,
-        row.ms,
-        row.attachments || "[]",
-        row.steps || "[]"
+        `INSERT OR REPLACE INTO message_files (message_id, attachment_id) VALUES (?, ?)`,
+        link.message_id,
+        link.attachment_id
+      );
+    }
+    for (const row of snapshot.texts ?? []) {
+      this.exec(
+        `INSERT OR REPLACE INTO message_text (message_id, text) VALUES (?, ?)`,
+        row.message_id,
+        row.text
       );
     }
   }
 
-  private registry() {
-    return this.env.SessionRegistry.get(this.env.SessionRegistry.idFromName("global"));
-  }
-
-  /* ----------------------------------------------------------------- config -- */
-
-  /**
-   * Model, tuning and capabilities, taken from app settings rather than this object,
-   * so a change on the settings or capabilities page applies everywhere. Read once
-   * per request and cached for that request, because the sync code paths (pricing,
-   * summary, message assembly) cannot await an RPC.
-   */
-  private currentConfig: Config | null = null;
-  private memories: Memory[] = [];
-
-  private async loadConfig() {
-    const config = await this.registry().config(this.env.MODEL);
-    this.currentConfig = {
-      ...config,
-      model: MODELS.some((m) => m.id === config.model) ? config.model : this.env.MODEL,
-    };
-    this.memories = enabled(this.currentConfig, "memory")
-      ? ((await this.registry().recall("", 20)) as Memory[])
-      : [];
-  }
-
-  private config(): Config {
-    return this.currentConfig ?? { model: this.env.MODEL, ...DEFAULT_CONFIG };
-  }
-
-  private model(): string {
-    return this.config().model;
-  }
-
-  /* ------------------------------------------------------------------ tools -- */
-
-  private toolContext(): ToolContext {
-    return {
-      config: this.config(),
-      sessionId: this.name,
-      openrouterKey: this.env.OPENROUTER_API_KEY,
-      registry: this.registry(),
-      saveImage: async (dataUrl, prompt) => {
-        const id = crypto.randomUUID().slice(0, 12);
-        const mime = dataUrl.match(/^data:([^;]+)/)?.[1] ?? "image/png";
-        const bytes = base64ToBytes(dataUrl.split(",", 2)[1] ?? "");
-        this.insertAttachment({
-          id,
-          kind: "image",
-          name: `${prompt.slice(0, 40)}.png`,
-          mime,
-          text: prompt,
-          data: "",
-          key: await this.putObject(id, bytes, mime),
-          thumb_key: "",
-          bytes: bytes.byteLength,
-        });
-        // Marked used straight away: it belongs to the reply, not to the next turn.
-        this.exec(`UPDATE attachments SET used = 1 WHERE id = ?`, id);
-        return `/agents/session-agent/${encodeURIComponent(this.name)}/files/${id}`;
-      },
-      transcribeAttachment: (id) => this.transcribeAttachment(id),
-      schedule: (when, prompt) => this.scheduleTask(when, prompt),
-      listTasks: () => this.listTasks(),
-      cancelTask: (id) => this.cancelTask(id),
-    };
-  }
-
-  /** Run every tool the model asked for, and shape the results as `tool` messages. */
-  private async runToolCalls(
-    calls: ToolCall[]
-  ): Promise<{
-    messages: Msg[];
-    names: string[];
-    failures: string[];
-    outcomes: { name: string; ok: boolean }[];
-  }> {
-    const ctx = this.toolContext();
-    const messages: Msg[] = [];
-    const failures: string[] = [];
-    const outcomes: { name: string; ok: boolean }[] = [];
-    for (const call of calls) {
-      let args: Record<string, unknown> = {};
-      try {
-        args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-      } catch {
-        // A malformed argument blob is the model's mistake to see and correct.
-      }
-      const result = await runTool(call.function.name, args, ctx);
-      if (!result.ok) failures.push(result.content);
-      outcomes.push({ name: call.function.name, ok: result.ok });
-      messages.push({ role: "tool", tool_call_id: call.id, content: result.content });
-    }
-    return { messages, names: calls.map((c) => c.function.name), failures, outcomes };
+  /** Drop everything this session holds: transcript, files, and pending tasks. */
+  private async reset(): Promise<void> {
+    await this.session.clearMessages();
+    this.exec(`DELETE FROM usage`);
+    this.exec(`DELETE FROM message_files`);
+    this.exec(`DELETE FROM message_text`);
+    this.exec(`DELETE FROM attachments`);
+    await this.workspace.rm("uploads", { recursive: true, force: true });
+    for (const task of this.listTasks()) await this.cancelTask(task.id);
   }
 
   /* ------------------------------------------------------------- scheduling -- */
@@ -988,361 +1142,38 @@ export class SessionAgent extends Agent<Env> {
     return describeSchedule(schedule as Schedule<{ prompt: string }>);
   }
 
+  /**
+   * The user's scheduled prompts. Think keeps schedules of its own — recovery and
+   * turn continuations — so only this agent's own callback is listed.
+   */
   private listTasks(): ScheduledTask[] {
-    return [...this.getSchedules<{ prompt: string }>()].map(describeSchedule);
+    return [...this.getSchedules<{ prompt: string }>()]
+      .filter((s) => s.callback === "runScheduledTask")
+      .map(describeSchedule);
   }
 
-  private cancelTask(id: string): boolean {
-    return this.cancelSchedule(id) as unknown as boolean;
+  private async cancelTask(id: string): Promise<boolean> {
+    return await this.cancelSchedule(id);
   }
 
   /**
    * A scheduled task runs a turn with nobody watching: the prompt is stored as the
    * user message and the reply lands in the transcript, so the session reads as a
-   * conversation when the user comes back to it.
+   * conversation when the user comes back to it. It is submitted rather than awaited,
+   * because an alarm has nowhere to stream to and a submission survives a restart.
    */
   async runScheduledTask(payload: { prompt: string }) {
     this.ensureSchema();
     await this.loadConfig();
-    await this.chat(`[scheduled task] ${payload.prompt}`);
-  }
-
-  /* ------------------------------------------------------------- OpenRouter -- */
-
-  /**
-   * One OpenRouter call. `capabilities: false` sends a bare request — used for the
-   * title call, which must not inherit the user's tuning or the agent's tools.
-   */
-  private openrouter(messages: Msg[], stream: boolean, signal?: AbortSignal, capabilities = true) {
-    const config = this.config();
-    const body: Record<string, unknown> = {
-      model: this.model(),
-      messages,
-      stream,
-      usage: { include: true },
-    };
-
-    if (capabilities) {
-      body.temperature = config.temperature;
-      if (config.max_tokens > 0) body.max_tokens = config.max_tokens;
-      if (config.reasoning_effort !== "off") body.reasoning = { effort: config.reasoning_effort };
-      const tools = toolDefinitions(config);
-      if (tools.length > 0) body.tools = tools;
-    }
-
-    // pdf-text is the free engine: it lifts the embedded text layer and only falls
-    // short on scanned pages, which no engine reads without paying for OCR.
-    if (messages.some(hasFilePart)) {
-      body.plugins = [{ id: "file-parser", pdf: { engine: "pdf-text" } }];
-    }
-
-    return fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
-  }
-
-  /**
-   * The first user message is what names the session. Before it is stored the
-   * transcript is empty, so an empty table means "this turn is the first one".
-   */
-  private isFirstTurn() {
-    return (this.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM messages`)[0]?.n ?? 0) === 0;
-  }
-
-  /** Only the first turn names the session; later turns leave the title alone. */
-  private shouldName() {
-    return this.isFirstTurn();
-  }
-
-  /**
-   * Ask the model for a short name for the session and write it to the registry, so
-   * the sidebar stops showing "New session". Best effort: a failed title must never
-   * fail the turn it was generated from.
-   */
-  private async nameSession(userMessage: string, reply: string) {
-    try {
-      const res = await this.openrouter(
-        [
-          { role: "system", content: TITLE_PROMPT },
-          { role: "user", content: `User: ${userMessage}\n\nAssistant: ${reply.slice(0, 500)}` },
-        ],
-        false,
-        undefined,
-        false
-      );
-      if (!res.ok) return;
-      const json = (await res.json()) as { choices: { message: { content: string } }[] };
-      const title = (json.choices[0]?.message?.content ?? "")
-        .replace(/^["'\s]+|["'\s.]+$/g, "")
-        .slice(0, 60);
-      if (!title) return;
-      await this.registry().rename(this.name, title);
-    } catch {
-      // Leave the placeholder title in place.
-    }
-  }
-
-  /**
-   * A whole turn, without streaming: call the model, run any tools it asks for, call
-   * it again with the results, and keep going until it answers or runs out of rounds.
-   */
-  private async chat(message: string, retry = false) {
-    const attachments = retry ? this.rewind() : this.pendingAttachments();
-    const convo = await this.modelMessages(message, attachments);
-    const first = this.shouldName();
-    this.saveUser(message, attachments);
-
-    const llmStart = Date.now();
-    let promptTokens = 0;
-    let completionTokens = 0;
-    let cost = 0;
-    let reply = "";
-    const toolsUsed: string[] = [];
-    let lastFailures: string[] = [];
-    let exhausted = false;
-    const steps: TurnStep[] = [];
-
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const res = await this.openrouter(convo, false);
-      if (!res.ok) throw new Error(`openrouter ${res.status}: ${await res.text()}`);
-
-      const json = (await res.json()) as {
-        choices: { message: { content: string | null; tool_calls?: ToolCall[] } }[];
-        usage?: { prompt_tokens: number; completion_tokens: number; cost?: number };
-      };
-      promptTokens += json.usage?.prompt_tokens ?? 0;
-      completionTokens += json.usage?.completion_tokens ?? 0;
-      cost += this.priceOf(
-        json.usage?.prompt_tokens ?? 0,
-        json.usage?.completion_tokens ?? 0,
-        json.usage?.cost
-      );
-
-      const choice = json.choices[0]?.message;
-      reply = choice?.content ?? "";
-      const calls = choice?.tool_calls ?? [];
-      if (calls.length === 0) break;
-
-      pushText(steps, reply);
-      convo.push({ role: "assistant", content: reply, tool_calls: calls });
-      const { messages, names, failures, outcomes } = await this.runToolCalls(calls);
-      convo.push(...messages);
-      steps.push({ kind: "tools", tools: outcomes });
-      toolsUsed.push(...names);
-      lastFailures = failures;
-      exhausted = round === MAX_TOOL_ROUNDS - 1;
-    }
-
-    // The model was still calling tools when it ran out of rounds, so it never wrote
-    // an answer. Say so rather than banking an empty reply.
-    if (exhausted) reply = (reply ? reply + "\n\n" : "") + roundLimitNote(lastFailures);
-    // The final round's text closes the turn; every earlier one was pushed before its
-    // tools ran, so the steps read in order.
-    pushText(steps, exhausted ? roundLimitNote(lastFailures) : reply);
-
-    const llmMs = Date.now() - llmStart;
-    this.saveAssistant(reply, promptTokens, completionTokens, cost, llmMs, [], steps);
-    if (first) await this.nameSession(message, reply);
-
-    return {
-      body: { reply, tools: toolsUsed },
-      turn: {
-        llm_ms: llmMs,
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        llm_cost_usd: cost,
-        tools: toolsUsed,
-      },
-    };
-  }
-
-  /**
-   * Stream a reply as SSE. The object stays resident — and billable — for the whole
-   * stream, so duration is metered when the stream ends, whether it completed or the
-   * client stopped it. A stopped reply keeps its partial text and its token cost,
-   * because OpenRouter has already generated (and charged for) what arrived.
-   *
-   * Tool calls stream too: when a round ends in tool calls, the tools run, a `tool`
-   * event tells the client what is happening, and the next round starts. Text from
-   * every round is forwarded as it arrives.
-   */
-  private async streamChat(message: string, retry = false): Promise<Response> {
-    const attachments = retry ? this.rewind() : this.pendingAttachments();
-    const convo = await this.modelMessages(message, attachments);
-    const first = this.shouldName();
-    this.saveUser(message, attachments);
-
-    const encoder = new TextEncoder();
-    const upstream = new AbortController();
-    const llmStart = Date.now();
-
-    let text = "";
-    let promptTokens = 0;
-    let completionTokens = 0;
-    let cost = 0;
-    let finished = false;
-    const steps: TurnStep[] = [];
-
-    const finish = (aborted: boolean) => {
-      if (finished) return;
-      finished = true;
-      const llmMs = Date.now() - llmStart;
-      if (aborted) pushText(steps, "\n\n_(stopped)_");
-      this.saveAssistant(
-        text + (aborted ? "\n\n_(stopped)_" : ""),
-        promptTokens,
-        completionTokens,
-        cost,
-        llmMs,
-        [],
-        steps
-      );
-      return { cost, llmMs };
-    };
-
-    const self = this;
-    const body = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        const send = (event: Record<string, unknown>) =>
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-
-        try {
-          for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-            const res = await self.openrouter(convo, true, upstream.signal);
-            if (!res.ok || !res.body) {
-              send({ type: "error", error: `openrouter ${res.status}: ${await res.text()}` });
-              finish(false);
-              controller.close();
-              return;
-            }
-
-            const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-            const calls = new Map<number, ToolCall>();
-            let roundText = "";
-            let buffer = "";
-
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              buffer += value;
-
-              // OpenRouter sends SSE frames separated by a blank line.
-              let cut: number;
-              while ((cut = buffer.indexOf("\n\n")) !== -1) {
-                const frame = buffer.slice(0, cut);
-                buffer = buffer.slice(cut + 2);
-                const line = frame.split("\n").find((l) => l.startsWith("data: "));
-                if (!line) continue;
-                const payload = line.slice(6).trim();
-                if (payload === "[DONE]") continue;
-
-                const chunk = JSON.parse(payload) as {
-                  choices?: {
-                    delta?: {
-                      content?: string;
-                      tool_calls?: {
-                        index: number;
-                        id?: string;
-                        function?: { name?: string; arguments?: string };
-                      }[];
-                    };
-                  }[];
-                  usage?: { prompt_tokens: number; completion_tokens: number; cost?: number };
-                };
-
-                const delta = chunk.choices?.[0]?.delta;
-                if (delta?.content) {
-                  roundText += delta.content;
-                  text += delta.content;
-                  pushText(steps, delta.content);
-                  send({ type: "delta", text: delta.content });
-                }
-                // Tool calls arrive in fragments keyed by index: name first, then the
-                // argument JSON a few characters at a time.
-                for (const part of delta?.tool_calls ?? []) {
-                  const call = calls.get(part.index) ?? {
-                    id: "",
-                    type: "function" as const,
-                    function: { name: "", arguments: "" },
-                  };
-                  if (part.id) call.id = part.id;
-                  if (part.function?.name) call.function.name = part.function.name;
-                  if (part.function?.arguments) call.function.arguments += part.function.arguments;
-                  calls.set(part.index, call);
-                }
-                if (chunk.usage) {
-                  promptTokens += chunk.usage.prompt_tokens;
-                  completionTokens += chunk.usage.completion_tokens;
-                  cost += self.priceOf(
-                    chunk.usage.prompt_tokens,
-                    chunk.usage.completion_tokens,
-                    chunk.usage.cost
-                  );
-                }
-              }
-            }
-
-            const pending = [...calls.values()].filter((c) => c.function.name);
-            if (pending.length === 0) break;
-
-            for (const call of pending) send({ type: "tool", name: call.function.name });
-            convo.push({ role: "assistant", content: roundText, tool_calls: pending });
-            const { messages, failures, outcomes } = await self.runToolCalls(pending);
-            convo.push(...messages);
-            steps.push({ kind: "tools", tools: outcomes });
-            for (const outcome of outcomes)
-              send({ type: "tool_done", name: outcome.name, ok: outcome.ok });
-
-            // Out of rounds with tools still pending: the model never gets to write an
-            // answer, so the note is the reply the user sees.
-            if (round === MAX_TOOL_ROUNDS - 1) {
-              const note = (text ? "\n\n" : "") + roundLimitNote(failures);
-              text += note;
-              pushText(steps, note);
-              send({ type: "delta", text: note });
-            }
-          }
-
-          const result = finish(false);
-          // Name the session before the client is told the turn is over, so its
-          // refresh of the session list picks the new title up.
-          if (first) await self.nameSession(message, text);
-          send({
-            type: "usage",
-            prompt_tokens: promptTokens,
-            completion_tokens: completionTokens,
-            cost_usd: result?.cost ?? 0,
-            llm_ms: result?.llmMs ?? 0,
-          });
-          send({ type: "done" });
-          controller.close();
-        } catch (err) {
-          if (!finished) {
-            send({ type: "error", error: err instanceof Error ? err.message : String(err) });
-            finish(false);
-          }
-          controller.close();
-        }
-      },
-      // The client hit stop: drop the upstream call and bank what we already have.
-      cancel() {
-        upstream.abort();
-        finish(true);
-      },
-    });
-
-    return new Response(body, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      },
+    await this.runTurn({
+      mode: "submit",
+      input: [
+        {
+          id: crypto.randomUUID(),
+          role: "user",
+          parts: [{ type: "text", text: `[scheduled task] ${payload.prompt}` }],
+        },
+      ],
     });
   }
 
@@ -1354,18 +1185,18 @@ export class SessionAgent extends Agent<Env> {
    * docs/cloudflare-durable-object-costs.md for how to read them from the GraphQL
    * Analytics API, and why measuring them from inside the object does not work.
    */
-  private summary() {
-    const row = this.exec<{ n: number; prompt: number; completion: number; cost: number }>(
-      `SELECT COUNT(*) AS n,
-              COALESCE(SUM(prompt_tokens), 0) AS prompt,
+  private async summary() {
+    const row = this.exec<{ prompt: number; completion: number; cost: number }>(
+      `SELECT COALESCE(SUM(prompt_tokens), 0) AS prompt,
               COALESCE(SUM(completion_tokens), 0) AS completion,
               COALESCE(SUM(cost_usd), 0) AS cost
-       FROM messages`
+       FROM usage`
     )[0];
+    const messages = await this.getMessages();
 
     return {
       session: this.name,
-      messages: row?.n ?? 0,
+      messages: messages.filter((m) => m.role === "user" || m.role === "assistant").length,
       llm: {
         model: this.model(),
         prompt_tokens: row?.prompt ?? 0,
@@ -1378,24 +1209,10 @@ export class SessionAgent extends Agent<Env> {
   }
 }
 
-/** Attachment rows carry a whole image; the API sends everything except the bytes. */
+/* ---------------------------------------------------------------------- utils -- */
+
 function isAudioAttachment(a: Attachment): boolean {
   return a.mime.startsWith("audio/") || a.mime.startsWith("video/");
-}
-
-/**
- * Audio rides along as a clip, not as words: the message names each one and hands the
- * model its id, so it can call transcribe_audio when the words actually matter.
- */
-function withAudioNotes(text: string, attachments: Attachment[]): string {
-  const clips = attachments.filter(isAudioAttachment);
-  if (clips.length === 0) return text;
-  const notes = clips.map((a) =>
-    a.text.trim()
-      ? `--- attached audio: ${a.name} (id ${a.id}), already transcribed ---\n${a.text}`
-      : `--- attached audio: ${a.name} (id ${a.id}), not transcribed. Call transcribe_audio with attachment_id "${a.id}" if you need the words. ---`
-  );
-  return [text, ...notes].filter((part) => part.trim() !== "").join("\n\n");
 }
 
 /** A PDF by mime, or by name when the browser sends no type at all. */
@@ -1403,10 +1220,7 @@ function isPdf(mime: string, name: string): boolean {
   return mime === "application/pdf" || /\.pdf$/i.test(name);
 }
 
-function hasFilePart(m: Msg): boolean {
-  return Array.isArray(m.content) && m.content.some((p) => p.type === "file");
-}
-
+/** Attachment rows carry a whole file; the API sends everything except the bytes. */
 function publicAttachment(a: Attachment) {
   return {
     id: a.id,
@@ -1418,8 +1232,52 @@ function publicAttachment(a: Attachment) {
     // Enough of the text (or of an audio transcript, once one exists) for the UI.
     preview: a.kind === "text" ? a.text.slice(0, 400) : "",
     /** Whether a first-page image exists to draw on the file card. */
-    thumb: a.thumb_key !== "",
+    thumb: a.thumb_path !== "",
   };
+}
+
+/** Every text part of a message, joined — what the transcript API calls its content. */
+function textOf(message: UIMessage | undefined): string {
+  if (!message) return "";
+  return message.parts
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+}
+
+/**
+ * How a turn unfolded, read back off the message Think stored: text it wrote, and the
+ * tools it ran between writing. A tool part carries its own outcome, so a failed tool
+ * still draws as a failed line when the session is reopened.
+ */
+function stepsOf(message: UIMessage): TurnStep[] {
+  const steps: TurnStep[] = [];
+  for (const part of message.parts) {
+    if (part.type === "text") {
+      const last = steps[steps.length - 1];
+      if (last?.kind === "text") last.text += part.text;
+      else steps.push({ kind: "text", text: part.text });
+      continue;
+    }
+    if (!part.type.startsWith("tool-") && part.type !== "dynamic-tool") continue;
+    const called = part as { type: string; toolName?: string; state?: string };
+    const name = called.toolName ?? called.type.replace(/^tool-/, "");
+    const ok = called.state !== "output-error";
+    const last = steps[steps.length - 1];
+    if (last?.kind === "tools") last.tools.push({ name, ok });
+    else steps.push({ kind: "tools", tools: [{ name, ok }] });
+  }
+  return steps;
+}
+
+/**
+ * OpenRouter reports the exact dollar cost of a call, and the AI SDK passes the raw
+ * usage object through untouched, which is where it lands.
+ */
+function openrouterCost(step: StepContext): number | undefined {
+  const raw = (step.usage as { raw?: Record<string, unknown> } | undefined)?.raw;
+  const cost = raw?.cost;
+  return typeof cost === "number" ? cost : undefined;
 }
 
 function describeSchedule(schedule: Schedule<{ prompt: string }>): ScheduledTask {
@@ -1439,8 +1297,11 @@ function isTextLike(mime: string, name: string): boolean {
   );
 }
 
-async function base64(file: File): Promise<string> {
-  return bytesToBase64(await file.arrayBuffer());
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength
+  ) as ArrayBuffer;
 }
 
 function base64ToBytes(encoded: string): ArrayBuffer {

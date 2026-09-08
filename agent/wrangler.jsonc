@@ -9,14 +9,12 @@
   "durable_objects": {
     "bindings": [
       { "name": "SessionAgent", "class_name": "SessionAgent" },
-      { "name": "SessionRegistry", "class_name": "SessionRegistry" },
-      { "name": "ThinkAgent", "class_name": "ThinkAgent" }
+      { "name": "SessionRegistry", "class_name": "SessionRegistry" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["SessionAgent"] },
-    { "tag": "v2", "new_sqlite_classes": ["SessionRegistry"] },
-    { "tag": "v3", "new_sqlite_classes": ["ThinkAgent"] }
+    { "tag": "v2", "new_sqlite_classes": ["SessionRegistry"] }
   ],
   "r2_buckets": [
     { "binding": "FILES", "bucket_name": "serverless-agent-files" }

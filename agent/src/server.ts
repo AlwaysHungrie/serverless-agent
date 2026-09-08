@@ -5,7 +5,6 @@ import type { Config } from "./registry";
 
 export { SessionAgent } from "./agent";
 export { SessionRegistry } from "./registry";
-export { ThinkAgent } from "./think-agent";
 
 const CORS = {
   "access-control-allow-origin": "*",

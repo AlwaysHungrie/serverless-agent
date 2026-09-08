@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",
+    "@cloudflare/shell": "^0.4.3",
     "@cloudflare/think": "^0.17.0",
     "agents": "^0.22.0",
     "ai": "^7.0.93",

@@ -208,7 +208,7 @@ export type ToolContext = {
   transcribeAttachment: (id: string) => Promise<string>;
   schedule: (when: string, prompt: string) => Promise<ScheduledTask>;
   listTasks: () => ScheduledTask[];
-  cancelTask: (id: string) => boolean;
+  cancelTask: (id: string) => Promise<boolean>;
 };
 
 export type ToolSpec = {
@@ -399,7 +399,7 @@ export const TOOLS: ToolSpec[] = [
     },
     async run(args, ctx) {
       const id = str(args.id).trim();
-      return ctx.cancelTask(id) ? `Cancelled ${id}.` : `No task with id ${id}.`;
+      return (await ctx.cancelTask(id)) ? `Cancelled ${id}.` : `No task with id ${id}.`;
     },
   },
   {

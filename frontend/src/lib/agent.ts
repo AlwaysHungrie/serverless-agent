@@ -10,7 +10,8 @@ export type SessionRow = {
 };
 
 export type StoredMessage = {
-  id: number;
+  /** The session-tree message id: a UUID, not a row number. */
+  id: string;
   role: "user" | "assistant";
   content: string;
   ts: number;
