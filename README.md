@@ -33,21 +33,21 @@ no CORS and no key exposure.
 
 - **Left sidebar** — every session. Each one is a separate Durable Object with its own
   SQLite database. Creating a session registers it; deleting one wipes its storage.
-- **Header** — the session's running **LLM cost** and **Cloudflare cost**, plus a
-  breakdown of duration, requests, rows read/written and storage, and how many sessions
-  of this size fit free inside the Workers Paid plan.
-- **Each assistant message** — tokens in/out, dollar cost, model latency, how long the
-  Durable Object stayed active for that turn, and rows written.
+- **Header** — the model, message count, tokens, and the LLM spend for that session.
+- **Each assistant message** — tokens in and out, dollar cost, and model latency.
 - **Stop** — cancels the stream. The partial reply is kept, along with the tokens
   OpenRouter already billed for, and the Durable Object stops accruing duration.
 
 The model is `deepseek/deepseek-v4-flash` on OpenRouter, set by the `MODEL` var in
 `agent/wrangler.jsonc`.
 
-## Where the money goes
+## Costs
 
-`agent/README.md` has the full breakdown, but the short version: a Durable Object is
-billed for 128 MB of memory for as long as it is active, and *waiting on the model
-counts as active*. A three-second reply costs three seconds of duration. An idle session
-hibernates and costs nothing but its stored bytes. Token cost still dominates by about an
-order of magnitude.
+The app shows LLM cost only, which OpenRouter reports exactly per call. Cloudflare's
+costs are not shown: they cannot be measured honestly from inside the object, and their
+analytics lag by minutes.
+
+[docs/cloudflare-durable-object-costs.md](docs/cloudflare-durable-object-costs.md) has
+the full picture — roughly **$0.00005 per message**, about 78% of it tokens and most of
+the rest the Durable Object sitting awake waiting for the model. It also documents how to
+query the real numbers, and the traps involved.

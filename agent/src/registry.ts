@@ -5,7 +5,10 @@ export type SessionRow = {
   title: string;
   created_at: number;
   updated_at: number;
-  /** Hex id of this session's Durable Object, used to filter Cloudflare analytics. */
+  /**
+   * Hex id of this session's Durable Object. Nothing in the app reads it; it is kept
+   * because it is the `objectId` needed to query Cloudflare's usage analytics by hand.
+   */
   object_id: string;
 };
 

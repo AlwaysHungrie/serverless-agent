@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Chat } from "@/components/Chat";
-import { CostHeader } from "@/components/CostHeader";
+import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
-import type { ActualUsage, SessionRow, StoredMessage, Summary } from "@/lib/agent";
+import type { SessionRow, StoredMessage, Summary } from "@/lib/agent";
 
 export default function Home() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -13,8 +13,6 @@ export default function Home() {
   // session's transcript, without having to null it out on every selection change.
   const [loaded, setLoaded] = useState<{ sessionId: string; messages: StoredMessage[] } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [actual, setActual] = useState<ActualUsage | null>(null);
-  const [actualError, setActualError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   /** Reads a proxy response, surfacing the Worker-unreachable message as an error. */
@@ -42,22 +40,6 @@ export default function Home() {
     [readJson]
   );
 
-  /**
-   * Cloudflare's analytics are the billing authority, but they lag, so this is a
-   * separate on-demand fetch rather than something refreshed after every message.
-   */
-  const loadActualUsage = useCallback(async (id: string) => {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/usage`);
-    const payload = (await res.json().catch(() => null)) as (ActualUsage & { error?: string }) | null;
-    if (!res.ok || !payload || payload.error) {
-      setActual(null);
-      setActualError(payload?.error ?? `Cloudflare usage unavailable (${res.status}).`);
-      return;
-    }
-    setActual(payload);
-    setActualError(null);
-  }, []);
-
   useEffect(() => {
     void (async () => {
       const list = await loadSessions();
@@ -74,9 +56,8 @@ export default function Home() {
       if (!payload) return;
       setLoaded({ sessionId: selected, messages: payload.messages });
       await loadSummary(selected);
-      await loadActualUsage(selected);
     })();
-  }, [selected, loadSummary, loadActualUsage, readJson]);
+  }, [selected, loadSummary, readJson]);
 
   const createSession = async () => {
     const res = await fetch("/api/sessions", {
@@ -119,13 +100,7 @@ export default function Home() {
         )}
         {selected ? (
           <>
-            <CostHeader
-              sessionId={selected}
-              summary={summary}
-              actual={actual}
-              actualError={actualError}
-              onRefreshUsage={() => loadActualUsage(selected)}
-            />
+            <SessionHeader sessionId={selected} summary={summary} />
             {loaded?.sessionId !== selected ? (
               <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light">
                 Waking Durable Object…

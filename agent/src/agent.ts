@@ -1,5 +1,4 @@
 import { Agent } from "agents";
-import { MODEL_FALLBACK_PRICE } from "./pricing";
 import type { SessionRegistry } from "./registry";
 
 export type Env = {
@@ -7,9 +6,6 @@ export type Env = {
   SessionRegistry: DurableObjectNamespace<SessionRegistry>;
   OPENROUTER_API_KEY: string;
   MODEL: string;
-  /** Cloudflare API token with Account Analytics: Read, for real usage lookups. */
-  CF_ANALYTICS_TOKEN?: string;
-  CF_ACCOUNT_ID?: string;
 };
 
 type Msg = { role: "user" | "assistant" | "system"; content: string };
@@ -23,6 +19,11 @@ export type StoredMessage = {
   completion_tokens: number;
   cost_usd: number;
   ms: number;
+};
+
+/** Fallback per-token pricing, used when OpenRouter does not return a cost. */
+const MODEL_FALLBACK_PRICE: Record<string, { prompt: number; completion: number }> = {
+  "deepseek/deepseek-v4-flash": { prompt: 0.000000088606, completion: 0.000000177212 },
 };
 
 const SYSTEM_PROMPT = "You are a concise assistant running inside a Cloudflare Durable Object.";
@@ -129,7 +130,7 @@ export class SessionAgent extends Agent<Env> {
 
   private priceOf(promptTokens: number, completionTokens: number, reported?: number) {
     if (typeof reported === "number") return reported;
-    const p = MODEL_FALLBACK_PRICE[this.env.MODEL as keyof typeof MODEL_FALLBACK_PRICE];
+    const p = MODEL_FALLBACK_PRICE[this.env.MODEL];
     return p ? promptTokens * p.prompt + completionTokens * p.completion : 0;
   }
 
@@ -299,8 +300,11 @@ export class SessionAgent extends Agent<Env> {
 
   /**
    * What this session knows about itself: the transcript and the LLM spend, which
-   * OpenRouter reports exactly. Cloudflare's own usage is not tracked here — it is
-   * read back from the Analytics API, which is the billing authority.
+   * OpenRouter reports exactly per call.
+   *
+   * Cloudflare's own costs are deliberately absent. See
+   * docs/cloudflare-durable-object-costs.md for how to read them from the GraphQL
+   * Analytics API, and why measuring them from inside the object does not work.
    */
   private summary() {
     const row = this.exec<{ n: number; prompt: number; completion: number; cost: number }>(

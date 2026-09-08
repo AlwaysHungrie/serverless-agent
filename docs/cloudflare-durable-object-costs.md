@@ -1,0 +1,252 @@
+# What a Durable Object agent costs, and how to find out
+
+Findings from instrumenting this project, deployed on Cloudflare with one Durable
+Object per chat session and DeepSeek V4 Flash behind OpenRouter.
+
+---
+
+## Summary: roughly $0.00005 per message
+
+For a short exchange (~25 tokens in, ~130 out, ~4 seconds of streaming):
+
+| | Per message | Share |
+|---|---|---|
+| **LLM tokens** (OpenRouter, DeepSeek V4 Flash) | ~$0.000040 | ~78% |
+| **DO duration** (~4s awake × 128 MB = 0.5 GB-s) | ~$0.0000063 | ~12% |
+| **SQLite rows written** (~4 rows) | ~$0.0000040 | ~8% |
+| **Requests** (~3 calls, billed by both Worker and DO) | ~$0.0000014 | ~3% |
+| **SQLite rows read** (~20 rows) | ~$0.00000002 | negligible |
+| **Storage** (~48 KB, charged monthly not per message) | ~$0.00001/month | negligible |
+| **Total** | **~$0.00005** | |
+
+**About 20,000 messages per dollar.** The model costs roughly four times the
+infrastructure, and most of the infrastructure cost is the Durable Object sitting awake
+waiting for the model to finish streaming.
+
+On the **Free plan you pay nothing at all** — there is no overage, the object simply
+stops serving past the daily caps (100,000 requests, 13,000 GB-s, 100,000 rows written,
+5,000,000 rows read per day). At ~4 seconds per message that is roughly 26,000 messages a
+day before anything cuts out.
+
+---
+
+## How Cloudflare calculates the bill
+
+Six charges, five of them on the Durable Object and one on the Worker in front.
+
+### 1. Requests — $0.15 per million
+
+Every call into the object: an HTTP request, an RPC call, a WebSocket message, or an
+alarm firing. Incoming WebSocket messages are billed at a 20:1 ratio.
+
+### 2. Duration — $12.50 per million GB-seconds
+
+The one that surprises people. A Durable Object is billed for a **fixed 128 MB of
+memory** for as long as it is *active*, no matter how little it actually uses. One second
+awake costs 0.125 GB-s.
+
+Active means:
+
+- running JavaScript, **and**
+- **waiting on a subrequest** — the seconds spent waiting for the model to stream tokens
+  are billed, even though the object is doing nothing, **and**
+- any time a non-hibernatable WebSocket is open. `accept()` bills for the socket's entire
+  lifetime; the WebSocket Hibernation API avoids this.
+- an outbound `connect()` keeps it resident for up to 15 minutes.
+
+Not active: idle and eligible for hibernation. Billing stops **immediately** when the
+object goes idle, before the runtime actually hibernates it. There is no billed grace
+period, so an open browser tab costs nothing.
+
+This is why streaming dominates: a slow model is billed twice, once in tokens and once in
+the seconds your object spends waiting for it.
+
+### 3. SQLite rows written — $1.00 per million
+
+Every row inserted or updated. **A thousand times more expensive than reads**, which
+makes write-heavy patterns the thing to watch.
+
+### 4. SQLite rows read — $0.001 per million
+
+Effectively free. Reading a whole transcript on every page load costs nothing.
+
+### 5. Stored data — $0.20 per GB-month
+
+A rate, not accumulated spend. Charged for holding bytes, whether or not you touch them.
+
+### 6. Worker requests — $0.30 per million
+
+The Worker routing to the object bills separately from the object itself. The same call
+appears twice in a breakdown: once as a Worker request, once as a DO request.
+
+### Not billed separately
+
+**CPU time.** It is reported in analytics and is useful for spotting hot code, but it is
+already inside duration. Counting it again double-counts.
+
+### Plan allowances
+
+| | Free | Paid ($5/month) |
+|---|---|---|
+| DO requests | 100,000/day | 1,000,000/month, then $0.15/M |
+| DO duration | 13,000 GB-s/day | 400,000 GB-s/month, then $12.50/M |
+| Rows written | 100,000/day | 50,000,000/month, then $1.00/M |
+| Rows read | 5,000,000/day | 25,000,000,000/month, then $0.001/M |
+| Storage | 5 GB total | 5 GB, then $0.20/GB-month |
+| Past the limit | **stops serving** | billed as overage |
+
+---
+
+## How to calculate it yourself
+
+Do **not** instrument your own code — see the traps below. Ask Cloudflare, through the
+GraphQL Analytics API at `https://api.cloudflare.com/client/v4/graphql`. A token with
+**Account · Account Analytics · Read** is enough.
+
+### The datasets and fields that matter
+
+```graphql
+query ActualUsage($account: String!, $since: Time!, $sinceDate: Date!, $objectId: String) {
+  viewer {
+    accounts(filter: { accountTag: $account }) {
+
+      # Requests and errors. Filterable per object.
+      durableObjectsInvocationsAdaptiveGroups(
+        limit: 10000
+        filter: { datetime_geq: $since, objectId: $objectId }
+      ) {
+        dimensions { namespaceId scriptName }
+        sum { requests errors }
+        avg { sampleInterval }
+      }
+
+      # Duration, CPU, and SQLite row counts. Filterable per object.
+      durableObjectsPeriodicGroups(
+        limit: 10000
+        filter: { datetime_geq: $since, objectId: $objectId }
+      ) {
+        sum { activeTime cpuTime subrequests rowsRead rowsWritten }
+        avg { sampleInterval }
+      }
+
+      # Stored bytes for SQLite-backed objects. Per namespace and per day only.
+      durableObjectsSqlStorageGroups(limit: 1000, filter: { date_geq: $sinceDate }) {
+        dimensions { date namespaceId }
+        max { storedBytes }
+      }
+    }
+  }
+}
+```
+
+### Turning units into dollars
+
+```
+gbSeconds       = (activeTime_microseconds / 1e6) * 0.125
+durationUsd     = (gbSeconds   / 1e6) * 12.50
+doRequestsUsd   = (requests    / 1e6) * 0.15
+workerReqUsd    = (requests    / 1e6) * 0.30
+rowsWrittenUsd  = (rowsWritten / 1e6) * 1.00
+rowsReadUsd     = (rowsRead    / 1e6) * 0.001
+storageUsdMonth = (storedBytes / 1e9) * 0.20
+```
+
+`activeTime` is in **microseconds**. `storedBytes` is a daily snapshot — take the most
+recent day, never a sum across days.
+
+### Mapping a session to an object
+
+`objectId` is the Durable Object's hex id, which you get from
+`env.MyNamespace.idFromName(name).toString()`. Record it when the session is created;
+you cannot recover it from analytics alone, and namespaces are not enumerable.
+
+---
+
+## Traps, all of which cost me a wrong answer first
+
+### 1. Instrumenting yourself is wrong and expensive
+
+The first version counted its own requests, wall clock and rows, then priced them. Two
+problems. It was **wrong**: handler wall-clock is not residency, concurrent requests
+double-count, and SQL issued by the framework never passes through your own wrapper, so
+row counts are a floor. And it was **expensive**: six counter upserts per request meant
+every page refresh wrote ~12 rows, so the meter cost several times more than the work it
+measured — $1.2e-5 per refresh, against ~$9e-7 of real work. Collapsing it to one row
+write per request cut that 4×, and deleting it entirely was better still.
+
+There is a deeper version of this: **reading the bill changed the bill**, because the
+metrics endpoint wrote its own counters.
+
+### 2. The KV field names silently return zero on SQLite
+
+Durable Objects have two storage backends, and the analytics schema kept the older
+key-value names alongside the SQLite ones:
+
+| Looks right | Actually for | On a SQLite object |
+|---|---|---|
+| `storageReadUnits` | key-value backend | always `0` |
+| `storageWriteUnits` | key-value backend | always `0` |
+| `rowsRead` | SQLite | the real number |
+| `rowsWritten` | SQLite | the real number |
+
+The KV fields **do not error**. They return `0`, which reads as "this is free" rather
+than "you asked the wrong question". Rows written was reported as $0 for a while when it
+was in fact the largest Cloudflare line item.
+
+### 3. The same trap again, at the dataset level
+
+| Dataset | Covers | On a SQLite object |
+|---|---|---|
+| `durableObjectsStorageGroups` | key-value backend | returns **no rows at all** |
+| `durableObjectsSqlStorageGroups` | SQLite | the real bytes |
+
+An empty array is not a zero. It means "wrong dataset" or "no snapshot yet", and the two
+are indistinguishable without checking a namespace you know has data.
+
+### 4. Unfiltered queries return other people's numbers
+
+`durableObjectsSqlStorageGroups` has a `namespaceId` dimension but **no `objectId`**. An
+unfiltered query returned 49,152 bytes and I reported it as this project's storage. It
+belonged to an unrelated, older namespace on the same account — zero requests, data
+predating the project. The coincidence that hid it: 48 KB is SQLite's minimum allocation,
+so the local database was exactly the same size.
+
+Always filter storage by the `namespaceId` your own invocations report.
+
+### 5. Introspection is disabled
+
+`__type` returns `null`. The documentation does not enumerate the fields either. Every
+field name here was confirmed by sending a query with one candidate field and checking
+whether it errored. If you are guessing field names, verify them this way rather than
+trusting a blog post.
+
+### 6. Cloudflare's own numbers are sampled
+
+Both adaptive datasets expose `avg { sampleInterval }`. Sums must be scaled by it. "Real"
+here means *authoritative for billing*, not *exact*.
+
+### 7. Analytics lag, so per-message cost is impossible
+
+The datasets trail by minutes. A per-message Cloudflare figure cannot exist — by the time
+the number is available, the message is long gone. Only per-session or per-day totals are
+honest. Token cost is different: OpenRouter returns it in the response, so that one is
+exact and immediate.
+
+### 8. Deploy first, and note what deploying does not prove
+
+Analytics only exist for a deployed Worker; `wrangler dev` traffic is never metered.
+And a successful deploy does **not** prove you are on a paid plan — SQLite-backed
+Durable Objects run on the Free plan too.
+
+### 9. Query windows are capped
+
+The API refuses ranges wider than **4 weeks 4 days**.
+
+---
+
+## Sources
+
+- https://developers.cloudflare.com/durable-objects/platform/pricing/
+- https://developers.cloudflare.com/workers/platform/pricing/
+- https://developers.cloudflare.com/durable-objects/observability/graphql-analytics/
+- https://developers.cloudflare.com/analytics/graphql-api/

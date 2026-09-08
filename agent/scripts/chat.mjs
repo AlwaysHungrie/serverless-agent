@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 /**
- * Talk to a session and print what it cost.
+ * Talk to a session from the terminal.
  *   node scripts/chat.mjs <session-id> "your message"
- *   node scripts/chat.mjs <session-id> --metrics
+ *   node scripts/chat.mjs <session-id> --summary | --history | --reset
+ *
+ * Cloudflare's own costs are not reported here. See
+ * docs/cloudflare-durable-object-costs.md for how to read them from the analytics API.
  */
 const BASE = process.env.AGENT_URL ?? "http://localhost:8787";
 const [session = "demo", ...rest] = process.argv.slice(2);
@@ -18,42 +21,25 @@ async function call(path, init) {
   return json;
 }
 
-function printMetrics(m) {
-  const u = m.usage;
-  const c = m.cost;
-  console.log(`\nsession: ${m.session}   messages: ${m.messages}   model: ${c.model}`);
-  console.log("\nresources consumed");
+function printSummary(s) {
+  console.log(`\nsession: ${s.session}   messages: ${s.messages}   model: ${s.llm.model}`);
   console.table({
-    "DO requests": u.do_requests,
-    "DO wall clock (ms)": u.do_wall_clock_ms,
-    "DO handler active (ms)": u.do_handler_active_ms,
-    "DO GB-seconds": c.gbSeconds.toFixed(9),
-    "SQLite rows read": u.do_rows_read,
-    "SQLite rows written": u.do_rows_written,
-    "SQLite bytes stored": u.sqlite_bytes,
-    "prompt tokens": u.prompt_tokens,
-    "completion tokens": u.completion_tokens,
+    "prompt tokens": s.llm.prompt_tokens,
+    "completion tokens": s.llm.completion_tokens,
+    "LLM cost": usd(s.llm.cost_usd),
+    "SQLite bytes": s.sqlite_bytes,
   });
-  console.log("cost if this ran on Cloudflare (marginal rates)");
-  console.table(Object.fromEntries(Object.entries(c.marginalUsd).map(([k, v]) => [k, usd(v)])));
-  console.log(`Cloudflare subtotal: ${usd(c.cloudflareUsd)}`);
-  console.log(`LLM (OpenRouter):    ${usd(c.marginalUsd.llm)}`);
-  console.log(`TOTAL:               ${usd(c.totalUsd)}`);
-  console.log(
-    `\n${c.note}\nSessions like this one that fit in the included allowances: ` +
-      `${m.capacity.sessions === null ? "unbounded (no usage yet)" : m.capacity.sessions.toLocaleString("en-US") + "/month (limited by " + m.capacity.bindingLimit + ")"}.`
-  );
 }
 
-if (arg === "--metrics") {
-  printMetrics(await call("/metrics"));
+if (arg === "--summary") {
+  printSummary(await call("/summary"));
 } else if (arg === "--reset") {
   console.log(await call("/reset", { method: "POST" }));
 } else if (arg === "--history") {
-  console.log((await call("/history")).messages);
+  console.log((await call("/messages")).messages);
 } else {
   if (!arg) {
-    console.error('usage: node scripts/chat.mjs <session-id> "message" | --metrics | --history | --reset');
+    console.error('usage: node scripts/chat.mjs <session-id> "message" | --summary | --history | --reset');
     process.exit(1);
   }
   const res = await call("/chat", {
@@ -64,9 +50,8 @@ if (arg === "--metrics") {
   console.log(`\n${res.reply}\n`);
   const r = res._meta.request;
   console.log(
-    `this turn: ${r.active_ms}ms active, ${r.llm_ms}ms in the LLM, ` +
-      `${r.rows_read} rows read / ${r.rows_written} written, ` +
+    `this turn: ${r.llm_ms}ms in the model, ` +
       `${r.prompt_tokens}+${r.completion_tokens} tokens, ${usd(r.llm_cost_usd)}`
   );
-  printMetrics(await call("/metrics"));
+  printSummary(await call("/summary"));
 }

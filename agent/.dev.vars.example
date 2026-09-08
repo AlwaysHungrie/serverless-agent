@@ -1,3 +1,1 @@
 OPENROUTER_API_KEY=sk-or-v1-...
-CF_ANALYTICS_TOKEN=cfut_...   # Cloudflare API token, Account Analytics: Read
-CF_ACCOUNT_ID=...             # 32-hex account id

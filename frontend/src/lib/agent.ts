@@ -41,34 +41,6 @@ export type Summary = {
   sqlite_bytes: number;
 };
 
-/** Durable Object usage as reported by Cloudflare, priced at published rates. */
-export type ActualUsage = {
-  session: string;
-  usage: {
-    requests: number;
-    errors: number;
-    activeTimeUs: number;
-    cpuTimeUs: number;
-    subrequests: number;
-    rowsRead: number;
-    rowsWritten: number;
-    storedBytesNamespace: number | null;
-    sampled: boolean;
-  };
-  cost: {
-    gbSeconds: number;
-    lines: {
-      doRequests: number;
-      doDuration: number;
-      doRowsRead: number;
-      doRowsWritten: number;
-      workerRequests: number;
-    };
-    cloudflareUsd: number;
-    namespaceStorageUsdPerMonth: number | null;
-  };
-};
-
 export function agentUrl(sessionId: string, path: string) {
   return `${AGENT_URL}/agents/session-agent/${encodeURIComponent(sessionId)}/${path}`;
 }
