@@ -5,11 +5,16 @@ import { DefaultChatTransport } from "ai";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  Check,
+  Copy,
+  Download,
   FileText,
+  GitBranch,
   Mic,
   Paperclip,
   Pause,
   Play,
+  RotateCcw,
   Square,
   X,
 } from "lucide-react";
@@ -18,6 +23,7 @@ import remarkGfm from "remark-gfm";
 import type {
   ChatUIMessage,
   FilesData,
+  MetaData,
   ToolData,
 } from "@/app/api/sessions/[id]/chat/route";
 import {
@@ -180,6 +186,14 @@ function clock(seconds: number) {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
+/** The wall-clock time a message was sent, without the date the sidebar already shows. */
+function timeOfDay(ts: number) {
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 /**
  * A fixed bar pattern per clip. Real amplitudes would mean decoding the whole file in
  * the browser; a stable pseudo-random figure reads the same way and costs nothing.
@@ -253,7 +267,7 @@ function VoiceNote({
 
         <div
           onClick={seek}
-          className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-[2px]"
+          className="flex h-9 min-w-0 flex-1 cursor-pointer gap-px items-center max-w-48"
         >
           {shape.map((h, i) => (
             <span
@@ -273,6 +287,16 @@ function VoiceNote({
         >
           {clock(playing || at > 0 ? total - at : total)}
         </span>
+
+        <DownloadLink
+          sessionId={sessionId}
+          attachment={attachment}
+          className={
+            isUser
+              ? "hover:bg-white/15"
+              : "text-muted hover:text-ink hover:bg-black/[0.04]"
+          }
+        />
       </div>
 
       {attachment.preview && (
@@ -422,6 +446,15 @@ function MessageDocs({
                 </span>
               )}
             </span>
+            <DownloadLink
+              sessionId={sessionId}
+              attachment={a}
+              className={
+                isUser
+                  ? "hover:bg-white/15"
+                  : "text-muted hover:text-ink hover:bg-black/[0.04]"
+              }
+            />
           </div>
         ),
       )}
@@ -443,19 +476,25 @@ function MessageMedia({
   if (images.length === 0) return null;
   const single = images.length === 1;
   return (
-    <div className={single ? "" : "grid grid-cols-2 gap-0.5"}>
+    <div className={single ? "" : "grid grid-cols-2 gap-1"}>
       {images.map((a) => (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          key={a.id}
-          src={fileUrl(sessionId, a.id)}
-          alt={a.name}
-          className={
-            single
-              ? "block max-h-[360px] w-full bg-black/[0.06] object-contain"
-              : "block aspect-square w-full bg-black/[0.06] object-cover"
-          }
-        />
+        <span key={a.id} className="group relative block">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={fileUrl(sessionId, a.id)}
+            alt={a.name}
+            className={`block w-full rounded-[16px] bg-black/[0.06] ${
+              single
+                ? "max-h-[360px] object-contain"
+                : "aspect-square object-cover"
+            }`}
+          />
+          <DownloadLink
+            sessionId={sessionId}
+            attachment={a}
+            className="absolute top-2 right-2 bg-black/55 text-white opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+          />
+        </span>
       ))}
     </div>
   );
@@ -490,12 +529,135 @@ function SystemNotice({
   );
 }
 
+/** Pull an attachment down. Same-origin, so the browser saves it under its own name. */
+function DownloadLink({
+  sessionId,
+  attachment,
+  className = "",
+}: {
+  sessionId: string;
+  attachment: Attachment;
+  className?: string;
+}) {
+  return (
+    <a
+      href={fileUrl(sessionId, attachment.id)}
+      download={attachment.name}
+      title={`Download ${attachment.name}`}
+      aria-label={`Download ${attachment.name}`}
+      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${className}`}
+    >
+      <Download size={13} strokeWidth={1.75} />
+    </a>
+  );
+}
+
+/** Three dots, while the agent has been asked something but has not started writing. */
+function Thinking() {
+  return (
+    <span className="flex h-[1.38em] items-center gap-1">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="bg-muted h-1.5 w-1.5 animate-bounce rounded-full"
+          style={{ animationDelay: `${i * 140}ms`, animationDuration: "900ms" }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/**
+ * What sits under a message: when it was sent, and what can be done with it. Kept
+ * outside the bubble so the bubble stays the message and nothing else.
+ */
+function MessageActions({
+  text,
+  at,
+  isUser,
+  onFork,
+  onRetry,
+}: {
+  text: string;
+  at: number | null;
+  isUser: boolean;
+  onFork?: () => void;
+  onRetry?: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Clipboard access denied: nothing useful to say, and nothing to undo.
+    }
+  };
+
+  const action =
+    "text-faint hover:text-ink flex items-center gap-1 rounded-full px-1.5 py-0.5";
+
+  return (
+    <div
+      className={`text-faint flex items-center gap-1 px-1 text-[12px] leading-[1.33] ${
+        isUser ? "justify-end" : "justify-start"
+      }`}
+    >
+      {onRetry && (
+        <button onClick={onRetry} className={action} title="Ask again">
+          <RotateCcw size={13} strokeWidth={1.75} />
+        </button>
+      )}
+      {at !== null && <span className="tnum pr-1.5">{timeOfDay(at)}</span>}
+      {text.trim() !== "" && (
+        <button
+          onClick={() => void copy()}
+          className={action}
+          title="Copy message"
+        >
+          {copied ? (
+            <Check size={13} strokeWidth={2} />
+          ) : (
+            <Copy size={13} strokeWidth={1.75} />
+          )}
+        </button>
+      )}
+      {onFork && (
+        <button
+          onClick={onFork}
+          className={action}
+          title="Start a new session from the conversation up to this reply"
+        >
+          <GitBranch size={13} strokeWidth={1.75} />
+          <span>Fork</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One message: its files above, the bubble itself, and its actions below. Voice notes
+ * and documents sit outside the bubble — a clip with nothing said alongside it should
+ * not be dressed up as a sentence — while images stay inside it, inset from the edge.
+ */
 function Bubble({
   message,
   sessionId,
+  at,
+  pending = false,
+  onFork,
+  onRetry,
 }: {
   message: ChatUIMessage;
   sessionId: string;
+  at: number | null;
+  /** The turn is in flight: the bubble stands even before the first token lands. */
+  pending?: boolean;
+  onFork?: () => void;
+  onRetry?: () => void;
 }) {
   const isUser = message.role === "user";
   const text = message.parts
@@ -503,73 +665,90 @@ function Bubble({
     .map((p) => p.text)
     .join("");
   const usage = message.parts.find((p) => p.type === "data-usage") as
-    { type: "data-usage"; data: UsageData } | undefined;
+    | { type: "data-usage"; data: UsageData }
+    | undefined;
   const tools = message.parts.filter(
     (p): p is { type: "data-tool"; id?: string; data: ToolData } =>
       p.type === "data-tool",
   );
   const files = message.parts.find((p) => p.type === "data-files") as
-    { type: "data-files"; data: FilesData } | undefined;
+    | { type: "data-files"; data: FilesData }
+    | undefined;
 
   const attachments = files?.data.attachments ?? [];
   const images = attachments.filter((a) => a.kind === "image");
   const docs = attachments.filter((a) => a.kind !== "image");
-  const hasBody =
+  // The bubble is for what was said. Files carry themselves.
+  const hasBubble =
     text.length > 0 ||
     tools.length > 0 ||
-    docs.length > 0 ||
-    (!isUser && usage !== undefined);
+    images.length > 0 ||
+    (!isUser && (usage !== undefined || pending));
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-2xl overflow-hidden rounded-[24px] text-[16px] leading-[1.38] ${
-          isUser
-            ? "bg-ink text-on-primary"
-            : "bg-canvas border-hairline-soft text-ink border"
-        }`}
-      >
-        <MessageMedia images={images} sessionId={sessionId} />
+    <div
+      className={`flex flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}
+    >
+      {docs.length > 0 && (
+        <div className="w-full max-w-2xl">
+          <MessageDocs docs={docs} isUser={false} sessionId={sessionId} />
+        </div>
+      )}
 
-        {hasBody && (
-          <div className={`px-6 py-5 ${images.length > 0 ? "pt-4" : ""}`}>
-            {docs.length > 0 && (
-              <div className="mb-3">
-                <MessageDocs
-                  docs={docs}
-                  isUser={isUser}
-                  sessionId={sessionId}
-                />
-              </div>
-            )}
+      {hasBubble && (
+        <div
+          className={`max-w-2xl overflow-hidden rounded-[24px] text-[16px] leading-[1.38] ${
+            isUser
+              ? "bg-ink text-on-primary"
+              : "bg-canvas border-hairline-soft text-ink border"
+          }`}
+        >
+          {images.length > 0 && (
+            <div className={text.length > 0 ? "p-2 pb-0" : "p-2"}>
+              <MessageMedia images={images} sessionId={sessionId} />
+            </div>
+          )}
 
-            {tools.length > 0 && (
-              <div className="text-faint mb-3 space-y-1 text-[12px] leading-[1.33]">
-                {tools.map((t, i) => (
-                  <div key={t.id ?? i}>{toolLabel(t.data)}</div>
-                ))}
-              </div>
-            )}
+          {(text.length > 0 ||
+            tools.length > 0 ||
+            (!isUser && (usage || pending))) && (
+            <div className="px-6 py-5">
+              {tools.length > 0 && (
+                <div className="text-faint mb-3 space-y-1 text-[12px] leading-[1.33]">
+                  {tools.map((t, i) => (
+                    <div key={t.id ?? i}>{toolLabel(t.data)}</div>
+                  ))}
+                </div>
+              )}
 
-            {isUser ? (
-              text.length > 0 && (
-                <div className="whitespace-pre-wrap">{text}</div>
-              )
-            ) : text ? (
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={MARKDOWN_COMPONENTS(sessionId)}
-              >
-                {text}
-              </ReactMarkdown>
-            ) : (
-              "…"
-            )}
+              {isUser ? (
+                text.length > 0 && (
+                  <div className="whitespace-pre-wrap">{text}</div>
+                )
+              ) : text ? (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={MARKDOWN_COMPONENTS(sessionId)}
+                >
+                  {text}
+                </ReactMarkdown>
+              ) : (
+                <Thinking />
+              )}
 
-            {!isUser && usage && <UsageLine usage={usage.data} />}
-          </div>
-        )}
-      </div>
+              {!isUser && usage && <UsageLine usage={usage.data} />}
+            </div>
+          )}
+        </div>
+      )}
+
+      <MessageActions
+        text={text}
+        at={at}
+        isUser={isUser}
+        onFork={onFork}
+        onRetry={onRetry}
+      />
     </div>
   );
 }
@@ -582,6 +761,7 @@ function toUIMessages(rows: StoredMessage[]): ChatUIMessage[] {
     parts:
       row.role === "assistant"
         ? [
+            { type: "data-meta" as const, data: { ts: row.ts } },
             { type: "text" as const, text: row.content },
             {
               type: "data-usage" as const,
@@ -594,6 +774,7 @@ function toUIMessages(rows: StoredMessage[]): ChatUIMessage[] {
             },
           ]
         : [
+            { type: "data-meta" as const, data: { ts: row.ts } },
             ...(row.attachments?.length
               ? [
                   {
@@ -632,10 +813,13 @@ export function Chat({
   sessionId,
   initialMessages,
   onTurnEnd,
+  onFork,
 }: {
   sessionId: string;
   initialMessages: StoredMessage[];
   onTurnEnd: () => void;
+  /** Branch the conversation: the first `count` messages become a new session. */
+  onFork: (count: number) => void;
 }) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -648,6 +832,10 @@ export function Chat({
   >([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [ready, setReady] = useState<Set<string>>(new Set());
+  // A message streamed in this session has no stored timestamp yet, so the arrival
+  // time is recorded once, when the message first appears. It lives in a plain map
+  // rather than in state: writing it must not itself cause a render.
+  const [seen] = useState(() => new Map<string, number>());
   const bottom = useRef<HTMLDivElement>(null);
   const picker = useRef<HTMLInputElement>(null);
 
@@ -702,6 +890,12 @@ export function Chat({
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Stamp anything the transcript did not arrive with a time for.
+  useEffect(() => {
+    const now = Date.now();
+    for (const m of messages) if (!seen.has(m.id)) seen.set(m.id, now);
+  }, [messages, seen]);
 
   // Advance the counter once a second while a take is running, and never otherwise.
   useEffect(() => {
@@ -817,9 +1011,42 @@ export function Chat({
             for the seconds it stays awake.
           </p>
         )}
-        {messages.map((m) => (
-          <Bubble key={m.id} message={m} sessionId={sessionId} />
-        ))}
+        {messages.map((m, i) => {
+          const stored = m.parts.find((p) => p.type === "data-meta") as
+            | { type: "data-meta"; data: MetaData }
+            | undefined;
+          const at = stored?.data.ts ?? seen.get(m.id) ?? null;
+          const last = i === messages.length - 1;
+          return (
+            <Bubble
+              key={m.id}
+              message={m}
+              sessionId={sessionId}
+              at={streaming && last ? null : at}
+              pending={streaming && last && m.role === "assistant"}
+              // A fork replays what came before the reply, so the branch starts from
+              // the same question with the answer still to be written.
+              onFork={
+                m.role === "assistant" && !streaming
+                  ? () => onFork(i)
+                  : undefined
+              }
+              onRetry={
+                m.role === "assistant" && last && !streaming
+                  ? () => void regenerate()
+                  : undefined
+              }
+            />
+          );
+        })}
+        {/* The reply has been asked for but the assistant message has not arrived yet. */}
+        {streaming && messages[messages.length - 1]?.role === "user" && (
+          <div className="flex justify-start">
+            <div className="bg-canvas border-hairline-soft rounded-[24px] border px-6 py-5">
+              <Thinking />
+            </div>
+          </div>
+        )}
         {error && (
           <SystemNotice
             text={error.message}

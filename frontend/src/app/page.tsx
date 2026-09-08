@@ -11,13 +11,17 @@ export default function Home() {
   const [selected, setSelected] = useState<string | null>(null);
   // Keyed by session so switching sessions shows a loader instead of the previous
   // session's transcript, without having to null it out on every selection change.
-  const [loaded, setLoaded] = useState<{ sessionId: string; messages: StoredMessage[] } | null>(null);
+  const [loaded, setLoaded] = useState<{
+    sessionId: string;
+    messages: StoredMessage[];
+  } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   /** Reads a proxy response, surfacing the Worker-unreachable message as an error. */
   const readJson = useCallback(async <T,>(res: Response): Promise<T | null> => {
-    const payload = (await res.json().catch(() => null)) as (T & { error?: string }) | null;
+    const payload = (await res.json().catch(() => null)) as
+      (T & { error?: string }) | null;
     if (!res.ok || !payload) {
       setError(payload?.error ?? `Request failed with ${res.status}.`);
       return null;
@@ -27,17 +31,21 @@ export default function Home() {
   }, []);
 
   const loadSessions = useCallback(async () => {
-    const payload = await readJson<{ sessions: SessionRow[] }>(await fetch("/api/sessions"));
+    const payload = await readJson<{ sessions: SessionRow[] }>(
+      await fetch("/api/sessions"),
+    );
     setSessions(payload?.sessions ?? []);
     return payload?.sessions ?? [];
   }, [readJson]);
 
   const loadSummary = useCallback(
     async (id: string) => {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/summary`);
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(id)}/summary`,
+      );
       setSummary(await readJson<Summary>(res));
     },
-    [readJson]
+    [readJson],
   );
 
   useEffect(() => {
@@ -51,7 +59,9 @@ export default function Home() {
   useEffect(() => {
     if (!selected) return;
     void (async () => {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(selected)}/messages`);
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(selected)}/messages`,
+      );
       const payload = await readJson<{ messages: StoredMessage[] }>(res);
       if (!payload) return;
       setLoaded({ sessionId: selected, messages: payload.messages });
@@ -69,8 +79,26 @@ export default function Home() {
     setSelected(row.id);
   };
 
+  /**
+   * Branch a conversation: the first `count` messages are copied into a fresh
+   * session, which then opens. The original is left exactly as it was.
+   */
+  const forkSession = async (id: string, count: number) => {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/fork`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count }),
+    });
+    const row = await readJson<SessionRow>(res);
+    if (!row) return;
+    await loadSessions();
+    setSelected(row.id);
+  };
+
   const deleteSession = async (id: string) => {
-    await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
     const list = await loadSessions();
     if (selected === id) setSelected(list[0]?.id ?? null);
   };
@@ -115,6 +143,7 @@ export default function Home() {
                 sessionId={selected}
                 initialMessages={loaded.messages}
                 onTurnEnd={onTurnEnd}
+                onFork={(count) => void forkSession(selected, count)}
               />
             )}
           </>

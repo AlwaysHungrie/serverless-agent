@@ -141,6 +141,47 @@ export default {
         const objectId = env.SessionAgent.idFromName(sessionId).toString();
         return withCors(Response.json(await reg.create(sessionId, title ?? "New session", objectId)));
       }
+      // Fork: a new session seeded with the first `count` messages of an existing one,
+      // so a conversation can be branched without disturbing the original.
+      if (request.method === "POST" && id && segments[3] === "fork") {
+        const { count, title } = (await request.json().catch(() => ({}))) as {
+          count?: number;
+          title?: string;
+        };
+        const exported = await routeAgentRequest(
+          new Request(
+            `${url.origin}/agents/session-agent/${encodeURIComponent(id)}/export?count=${Number(count ?? 0)}`
+          ),
+          env
+        );
+        if (!exported?.ok) {
+          return withCors(Response.json({ error: "could not read the source session" }, { status: 502 }));
+        }
+        const snapshot = await exported.text();
+
+        const forkId = crypto.randomUUID().slice(0, 8);
+        const objectId = env.SessionAgent.idFromName(forkId).toString();
+        const source = (await reg.list()).find((s) => s.id === id);
+        const row = await reg.create(
+          forkId,
+          title ?? `${source?.title ?? "Session"} (fork)`,
+          objectId
+        );
+        const imported = await routeAgentRequest(
+          new Request(`${url.origin}/agents/session-agent/${forkId}/import`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: snapshot,
+          }),
+          env
+        );
+        if (!imported?.ok) {
+          await reg.remove(forkId);
+          return withCors(Response.json({ error: "could not seed the fork" }, { status: 502 }));
+        }
+        return withCors(Response.json(row));
+      }
+
       if (request.method === "PATCH" && id) {
         const { title } = (await request.json()) as { title: string };
         await reg.rename(id, title);
@@ -173,6 +214,7 @@ export default {
         Response.json({
           routes: {
             sessions: "GET|POST /api/sessions, PATCH|DELETE /api/sessions/:id",
+            fork: "POST /api/sessions/:id/fork  { count }",
             config: "GET|PATCH /api/config",
             stream: "POST /agents/session-agent/:id/stream  { message }  -> SSE",
             chat: "POST /agents/session-agent/:id/chat  { message }",

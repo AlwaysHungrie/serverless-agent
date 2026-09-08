@@ -28,6 +28,9 @@ type Msg = {
   tool_call_id?: string;
 };
 
+/** A conversation prefix plus its files: what one session hands another on a fork. */
+export type Snapshot = { messages: StoredMessage[]; attachments: Attachment[] };
+
 export type StoredMessage = {
   id: number;
   role: "user" | "assistant";
@@ -204,6 +207,11 @@ export class SessionAgent extends Agent<Env> {
         body = { ok: this.cancelTask(route[1]) };
       } else if (request.method === "GET" && path === "messages") {
         body = { messages: this.messages() };
+      } else if (request.method === "GET" && path === "export") {
+        body = this.exportTurns(Number(url.searchParams.get("count") ?? "0"));
+      } else if (request.method === "POST" && path === "import") {
+        await this.importTurns((await request.json()) as Snapshot);
+        body = { ok: true };
       } else if (request.method === "GET" && path === "summary") {
         body = this.summary();
       } else if (request.method === "POST" && path === "reset") {
@@ -580,6 +588,62 @@ export class SessionAgent extends Agent<Env> {
       ms,
       JSON.stringify(attachmentIds)
     );
+  }
+
+  /**
+   * The first `count` messages with every attachment they reference, bytes included
+   * by key. This is what a fork copies: enough to replay the conversation in a new
+   * session without reaching back into this one.
+   */
+  private exportTurns(count: number): Snapshot {
+    const rows = this.rows().slice(0, Math.max(0, count));
+    const ids = new Set(rows.flatMap((row) => JSON.parse(row.attachments || "[]") as string[]));
+    const attachments = [...ids]
+      .map((id) => this.attachment(id))
+      .filter((a): a is Attachment => !!a);
+    return { messages: rows, attachments };
+  }
+
+  /**
+   * Replay a snapshot into this (empty) session. Attachment ids are kept, so the
+   * copied messages still point at their files, but the bytes are copied to keys
+   * under this session so deleting either side leaves the other intact.
+   */
+  private async importTurns(snapshot: Snapshot): Promise<void> {
+    for (const a of snapshot.attachments ?? []) {
+      let key = "";
+      if (a.key) {
+        const object = await this.env.FILES.get(a.key);
+        if (object) key = await this.putObject(a.id, await object.arrayBuffer(), a.mime);
+      }
+      this.exec(
+        `INSERT OR REPLACE INTO attachments (id, kind, name, mime, text, data, key, bytes, ts, used)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        a.id,
+        a.kind,
+        a.name,
+        a.mime,
+        a.text,
+        key ? "" : a.data,
+        key,
+        a.bytes,
+        a.ts
+      );
+    }
+    for (const row of snapshot.messages ?? []) {
+      this.exec(
+        `INSERT INTO messages (role, content, ts, prompt_tokens, completion_tokens, cost_usd, ms, attachments)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        row.role,
+        row.content,
+        row.ts,
+        row.prompt_tokens,
+        row.completion_tokens,
+        row.cost_usd,
+        row.ms,
+        row.attachments || "[]"
+      );
+    }
   }
 
   private registry() {

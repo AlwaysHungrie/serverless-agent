@@ -14,9 +14,12 @@ export type ToolData = { name: string; done: boolean };
 /** The attachments sent with a user message, so the bubble can show them. */
 export type FilesData = { attachments: Attachment[] };
 
+/** When a message was written, for restored transcripts. Live ones are timed locally. */
+export type MetaData = { ts: number };
+
 export type ChatUIMessage = UIMessage<
   never,
-  { usage: UsageData; tool: ToolData; files: FilesData }
+  { usage: UsageData; tool: ToolData; files: FilesData; meta: MetaData }
 >;
 
 /**
