@@ -188,11 +188,14 @@ export default {
       }
       if (request.method === "DELETE" && id) {
         await reg.remove(id);
-        // Drop the session's own Durable Object storage too.
+        // Destroy the object itself, not just its rows: a Durable Object is billed
+        // for the bytes it stores, so a cleared-but-living session still costs.
         await routeAgentRequest(
-          new Request(`${url.origin}/agents/session-agent/${id}/reset`, { method: "POST" }),
+          new Request(`${url.origin}/agents/session-agent/${id}/destroy`, { method: "POST" }),
           env
-        );
+        ).catch(() => {
+          // `destroy()` aborts the isolate, which can surface as a broken response.
+        });
         return withCors(Response.json({ ok: true }));
       }
     }

@@ -64,6 +64,28 @@ writes one `usage` row against the assistant message Think just persisted.
   `message_files` / `message_text` rows, then replays them into a new session with
   `addMessages()`. Message ids are preserved, so the links land on the right rows.
 
+## Deleting a session
+
+Clearing rows does not stop the bill: a Durable Object is charged for the bytes it
+stores, and the workspace's spilled objects live in R2, which outlives the object that
+wrote them. `DELETE /api/sessions/:id` therefore calls `/destroy`, which:
+
+1. Sweeps every R2 key under the session's prefix, by prefix rather than by what the
+   workspace remembers, so a row lost to a failed write cannot strand its bytes. This
+   happens before the reply, because the next step aborts the isolate.
+2. Calls the Agent's own `destroy()`: every table dropped, the alarm cleared (so no
+   scheduled task can wake the object and bill duration again), all storage deleted.
+
+`/reset` still exists for clearing a session in place. It now also removes whatever the
+model wrote for itself, not just `uploads/` — the workspace is a filesystem the model
+can write anywhere in.
+
+Two things deliberately survive a delete: memories, which are app-wide by design, and
+the registry row's absence, which is all the sidebar needs. `summary` reports
+`sub_agents`, which is always 0 here — nothing creates a facet, and facet storage is
+the one thing `destroy()` on the root does not reach, so it is worth watching if that
+ever changes.
+
 ## Known trade-offs
 
 - The system prompt is larger: Think's workspace tool definitions ride on every turn.

@@ -554,6 +554,13 @@ export class SessionAgent extends Think<Env> {
       } else if (request.method === "POST" && path === "reset") {
         await this.reset();
         body = { ok: true };
+      } else if (request.method === "POST" && path === "destroy") {
+        // The bucket is swept before the reply, because `destroy()` aborts the
+        // isolate: work left running behind it may never finish. Dropping the
+        // object's own storage is what waits, and the runtime completes that.
+        await this.sweepBucket();
+        this.ctx.waitUntil(this.destroy());
+        body = { ok: true };
       } else {
         status = 404;
         body = { error: `no route for ${request.method} ${url.pathname}` };
@@ -1168,7 +1175,24 @@ export class SessionAgent extends Think<Env> {
     }
   }
 
-  /** Drop everything this session holds: transcript, files, and pending tasks. */
+  /**
+   * Every object this session spilled into the bucket. It is swept by key prefix
+   * rather than by what the workspace remembers, so a row lost to a failed write or
+   * an interrupted delete cannot leave its bytes behind for good.
+   */
+  private async sweepBucket(): Promise<void> {
+    let cursor: string | undefined;
+    do {
+      const page = await this.env.FILES.list({ prefix: `${this.name}/`, cursor });
+      // R2 takes up to 1000 keys per delete call, and a page holds at most 1000.
+      if (page.objects.length > 0) {
+        await this.env.FILES.delete(page.objects.map((o) => o.key));
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+  }
+
+  /** Clear the session in place: transcript, files, and pending tasks. */
   private async reset(): Promise<void> {
     await this.session.clearMessages();
     this.exec(`DELETE FROM usage`);
@@ -1176,6 +1200,10 @@ export class SessionAgent extends Think<Env> {
     this.exec(`DELETE FROM message_text`);
     this.exec(`DELETE FROM attachments`);
     await this.workspace.rm("uploads", { recursive: true, force: true });
+    // Anything the model wrote for itself goes too, bytes in the bucket included.
+    for (const entry of await this.workspace.readDir("/")) {
+      await this.workspace.rm(entry.path, { recursive: true, force: true });
+    }
     for (const task of this.listTasks()) await this.cancelTask(task.id);
   }
 
@@ -1267,6 +1295,9 @@ export class SessionAgent extends Think<Env> {
       },
       tasks: this.listTasks(),
       sqlite_bytes: this.ctx.storage.sql.databaseSize,
+      // Facets keep their own storage, which the object's own destroy does not
+      // reach. Nothing here creates one; this is the tripwire if that changes.
+      sub_agents: this.listSubAgents().length,
     };
   }
 }
