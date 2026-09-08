@@ -792,14 +792,14 @@ function Bubble({
       className={`flex flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}
     >
       {docs.length > 0 && (
-        <div className="max-w-2xl">
+        <div className="max-w-full md:max-w-2xl">
           <MessageDocs docs={docs} isUser={false} sessionId={sessionId} />
         </div>
       )}
 
       {hasBubble && (
         <div
-          className={`max-w-2xl overflow-hidden rounded-[24px] text-[16px] leading-[1.38] ${
+          className={`max-w-full overflow-hidden rounded-[24px] text-[16px] leading-[1.38] md:max-w-2xl ${
             isUser
               ? "bg-ink text-on-primary"
               : "bg-canvas border-hairline-soft text-ink border"
@@ -1240,7 +1240,7 @@ export function Chat({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex-1 space-y-6 overflow-y-auto px-8 py-10">
+      <div className="flex-1 space-y-6 overflow-y-auto px-4 py-6 md:px-8 md:py-10">
         {messages.length === 0 && (
           <p className="text-muted mx-auto max-w-md pt-20 text-center text-[20px] font-light leading-[1.38]">
             Agent is online. Send a message.
@@ -1292,7 +1292,7 @@ export function Chat({
       </div>
 
       {continueAt ? (
-        <div className="bg-gradient-to-t from-[#229ED9]/18 to-transparent px-8 py-7 text-center">
+        <div className="bg-gradient-to-t from-[#229ED9]/18 to-transparent px-5 py-6 text-center md:px-8 md:py-7">
           <p className="text-muted text-[14px] leading-[1.43]">
             Continue this conversation in{" "}
             <a
@@ -1314,7 +1314,7 @@ export function Chat({
           </p>
         </div>
       ) : (
-        <div className="border-hairline-soft border-t px-8 py-6">
+        <div className="border-hairline-soft border-t px-4 py-4 md:px-8 md:py-6">
           {(attachments.length > 0 || ghosts.length > 0 || uploadError) && (
             <div className="mb-3 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -1373,7 +1373,7 @@ export function Chat({
             </div>
           )}
 
-          <form onSubmit={submit} className="flex gap-3">
+          <form onSubmit={submit} className="flex gap-2 md:gap-3">
             {canAttach && (
               <>
                 <input
@@ -1414,7 +1414,7 @@ export function Chat({
             )}
 
             {recording ? (
-              <div className="bg-field flex h-12 flex-1 items-center gap-3 rounded-[16px] px-4">
+              <div className="bg-field flex h-12 min-w-0 flex-1 items-center gap-3 rounded-[16px] px-4">
                 <span className="bg-ink h-2.5 w-2.5 shrink-0 animate-pulse rounded-full" />
                 <span className="text-ink tnum text-[16px]">
                   {clock(recordedFor ?? 0)}
@@ -1437,7 +1437,7 @@ export function Chat({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder={uploading ? "Uploading…" : "Message the agent…"}
-                className="bg-field placeholder:text-faint text-ink focus:ring-ink h-12 flex-1 rounded-[16px] px-4 text-[16px] outline-none focus:ring-2"
+                className="bg-field placeholder:text-faint text-ink focus:ring-ink h-12 min-w-0 flex-1 rounded-[16px] px-4 text-[16px] outline-none focus:ring-2"
               />
             )}
             {recording ? (

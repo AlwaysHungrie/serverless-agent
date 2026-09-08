@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Menu } from "lucide-react";
 import { Chat } from "@/components/Chat";
 import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
@@ -29,6 +30,8 @@ export default function Home() {
     sessionId: string;
     text: string;
   } | null>(null);
+  /** Whether the sidebar drawer is showing. Only used below the md breakpoint. */
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   /** Reads a proxy response, surfacing the Worker-unreachable message as an error. */
   const readJson = useCallback(async <T,>(res: Response): Promise<T | null> => {
@@ -120,6 +123,17 @@ export default function Home() {
     setSelected(row.id);
   };
 
+  /** Rename a session in place. The sidebar row follows from the reloaded list. */
+  const renameSession = async (id: string, title: string) => {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!(await readJson<{ ok: boolean }>(res))) return;
+    await loadSessions();
+  };
+
   const deleteSession = async (id: string) => {
     await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -136,18 +150,20 @@ export default function Home() {
   const current = sessions.find((s) => s.id === selected) ?? null;
 
   return (
-    <div className="bg-canvas text-ink flex h-screen">
+    <div className="bg-canvas text-ink flex h-[100dvh]">
       <Sidebar
         sessions={sessions}
         selected={selected}
         onSelect={setSelected}
         onCreate={createSession}
         onDelete={deleteSession}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
         {error && (
-          <div className="bg-canvas-soft text-ink border-hairline-soft border-b px-8 py-4 text-[14px] leading-[1.43]">
+          <div className="bg-canvas-soft text-ink border-hairline-soft border-b px-5 py-4 text-[14px] md:px-8 leading-[1.43]">
             {error}
           </div>
         )}
@@ -157,6 +173,8 @@ export default function Home() {
               title={current?.title ?? "New session"}
               createdAt={current?.created_at ?? null}
               summary={summary}
+              onRename={(title) => renameSession(selected, title)}
+              onOpenSidebar={() => setSidebarOpen(true)}
             />
             {loaded?.sessionId !== selected ? (
               <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light">
@@ -186,9 +204,19 @@ export default function Home() {
             )}
           </>
         ) : (
-          <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light">
-            Create a session to start.
-          </div>
+          <>
+            {/* With no session there is no header, so the drawer needs its own way open. */}
+            <button
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open sessions"
+              className="text-ink hover:bg-canvas-soft m-3 flex h-9 w-9 items-center justify-center rounded-full transition md:hidden"
+            >
+              <Menu size={20} strokeWidth={1.75} />
+            </button>
+            <div className="text-muted flex flex-1 items-center justify-center px-6 text-center text-[20px] font-light">
+              Create a session to start.
+            </div>
+          </>
         )}
       </main>
     </div>

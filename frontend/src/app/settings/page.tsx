@@ -131,7 +131,7 @@ export default function Settings() {
 
   return (
     <div className="bg-canvas text-ink min-h-screen">
-      <div className="mx-auto w-full max-w-2xl px-8 py-14">
+      <div className="mx-auto w-full max-w-2xl px-5 py-10 md:px-8 md:py-14">
         <Link
           href="/"
           className="text-muted hover:text-ink mb-10 inline-flex items-center gap-2 text-[14px] transition"
