@@ -11,7 +11,29 @@ export type SessionRow = {
   source?: string;
   /** The Telegram chat id behind a telegram session. */
   chat_id?: string;
+  /** private, group, supergroup or channel. */
+  chat_type?: string;
+  /** A public chat's @handle, without the @. */
+  chat_username?: string;
 };
+
+/**
+ * Where "Continue in Telegram" points. Telegram has a link for every chat, but a
+ * different one per kind:
+ *
+ * - A public group or channel is reachable by its @handle.
+ * - A private supergroup is reachable at `t.me/c/<id>/1`, where the id is the chat id
+ *   with Telegram's `-100` prefix stripped. It only opens for people already in it,
+ *   which is exactly right: it is a link back to a conversation, not an invite.
+ * - A DM with the bot is the bot's own handle.
+ */
+export function telegramLink(session: SessionRow, botUsername: string): string {
+  if (session.chat_username) return `https://t.me/${session.chat_username}`;
+  const id = session.chat_id ?? "";
+  if (id.startsWith("-100")) return `https://t.me/c/${id.slice(4)}/1`;
+  // A basic group (not a supergroup) has no link of its own; the bot is the way in.
+  return botUsername ? `https://t.me/${botUsername}` : "https://t.me";
+}
 
 export type StoredMessage = {
   /** The session-tree message id: a UUID, not a row number. */

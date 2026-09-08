@@ -169,6 +169,9 @@ async function handleWebhook(
     await reg.create(sessionId, chatTitle(message), env.SessionAgent.idFromName(sessionId).toString(), {
       source: "telegram",
       chat_id: chatId,
+      chat_type: message.chat.type,
+      // A public group links by handle; a private one links by its internal id.
+      chat_username: message.chat.type === "private" ? "" : (message.chat.username ?? ""),
     });
   }
   await reg.touch(sessionId);

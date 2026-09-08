@@ -119,6 +119,10 @@ export type SessionRow = {
   source: string;
   /** The Telegram chat this session belongs to. Empty for a browser session. */
   chat_id: string;
+  /** Telegram's own chat type: private, group, supergroup, channel. */
+  chat_type: string;
+  /** A public chat's @handle, without the @. Empty for a private one. */
+  chat_username: string;
 };
 
 /**
@@ -141,13 +145,17 @@ export class SessionRegistry extends DurableObject {
          updated_at INTEGER NOT NULL,
          object_id TEXT NOT NULL DEFAULT '',
          source TEXT NOT NULL DEFAULT 'web',
-         chat_id TEXT NOT NULL DEFAULT ''
+         chat_id TEXT NOT NULL DEFAULT '',
+         chat_type TEXT NOT NULL DEFAULT '',
+         chat_username TEXT NOT NULL DEFAULT ''
        )`
     );
     for (const col of [
       `object_id TEXT NOT NULL DEFAULT ''`,
       `source TEXT NOT NULL DEFAULT 'web'`,
       `chat_id TEXT NOT NULL DEFAULT ''`,
+      `chat_type TEXT NOT NULL DEFAULT ''`,
+      `chat_username TEXT NOT NULL DEFAULT ''`,
     ]) {
       try {
         this.ctx.storage.sql.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
@@ -212,7 +220,8 @@ export class SessionRegistry extends DurableObject {
     this.ensureSchema();
     return this.ctx.storage.sql
       .exec(
-        `SELECT id, title, created_at, updated_at, object_id, source, chat_id
+        `SELECT id, title, created_at, updated_at, object_id, source, chat_id, chat_type,
+                chat_username
          FROM sessions ORDER BY updated_at DESC`
       )
       .toArray() as unknown as SessionRow[];
@@ -222,13 +231,19 @@ export class SessionRegistry extends DurableObject {
     id: string,
     title: string,
     objectId: string,
-    origin: { source: string; chat_id: string } = { source: "web", chat_id: "" }
+    origin: Pick<SessionRow, "source" | "chat_id" | "chat_type" | "chat_username"> = {
+      source: "web",
+      chat_id: "",
+      chat_type: "",
+      chat_username: "",
+    }
   ): SessionRow {
     this.ensureSchema();
     const now = Date.now();
     this.ctx.storage.sql.exec(
-      `INSERT INTO sessions (id, title, created_at, updated_at, object_id, source, chat_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO sessions (id, title, created_at, updated_at, object_id, source, chat_id,
+                             chat_type, chat_username)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at,
                                      object_id = excluded.object_id`,
       id,
@@ -237,7 +252,9 @@ export class SessionRegistry extends DurableObject {
       now,
       objectId,
       origin.source,
-      origin.chat_id
+      origin.chat_id,
+      origin.chat_type,
+      origin.chat_username
     );
     return { id, title, created_at: now, updated_at: now, object_id: objectId, ...origin };
   }
@@ -247,7 +264,8 @@ export class SessionRegistry extends DurableObject {
     this.ensureSchema();
     return this.ctx.storage.sql
       .exec(
-        `SELECT id, title, created_at, updated_at, object_id, source, chat_id
+        `SELECT id, title, created_at, updated_at, object_id, source, chat_id, chat_type,
+                chat_username
          FROM sessions WHERE chat_id = ? LIMIT 1`,
         chatId
       )

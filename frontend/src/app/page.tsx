@@ -4,12 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Chat } from "@/components/Chat";
 import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
-import type { SessionRow, StoredMessage, Summary } from "@/lib/agent";
-
-/** Where "Continue in Telegram" goes: the bot itself, which is as deep as a link can point. */
-function telegramLink(botUsername: string): string {
-  return botUsername ? `https://t.me/${botUsername}` : "https://t.me";
-}
+import { telegramLink, type SessionRow, type StoredMessage, type Summary } from "@/lib/agent";
 
 export default function Home() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -175,7 +170,7 @@ export default function Home() {
                 // send into a conversation the other people in it cannot see.
                 continueAt={
                   current?.source === "telegram"
-                    ? { label: "Telegram", href: telegramLink(botUsername) }
+                    ? { label: "Telegram", href: telegramLink(current, botUsername) }
                     : null
                 }
               />

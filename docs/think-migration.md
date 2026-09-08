@@ -119,5 +119,11 @@ tools, same memory, same transcript, same cost accounting.
   the app with the composer replaced by a link into the chat. Sending from the web
   would post into a conversation the other people in it never see.
 
+The link is per chat, because Telegram addresses each kind differently: a public group
+or channel by its `@handle`, a private supergroup at `t.me/c/<id>/1` with the `-100`
+prefix stripped off the chat id (which opens only for people already in it — a way
+back, not an invite), and a DM by the bot's own handle. The chat type and handle are
+recorded on the session row when the chat is first seen.
+
 Telegram retries anything that is not a fast 200, so the webhook acknowledges the
 update and runs the turn behind `waitUntil` rather than under the request.
