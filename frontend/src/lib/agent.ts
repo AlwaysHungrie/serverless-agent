@@ -139,6 +139,8 @@ export type CapabilityField = {
 
 export type Capability = {
   id: string;
+  /** The capability is always on and has no switch of its own. */
+  alwaysOn?: boolean;
   flag: keyof Config;
   label: string;
   summary: string;
@@ -152,7 +154,8 @@ export function capabilityReady(
   capability: Capability,
   config: Config,
 ): boolean {
-  if (!config[capability.flag]) return false;
+  // A capability with no switch is on regardless of what the stored flag says.
+  if (!capability.alwaysOn && !config[capability.flag]) return false;
   return capability.fields.every(
     (f) => !f.required || String(config[f.key] ?? "").trim() !== "",
   );

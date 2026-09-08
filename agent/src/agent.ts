@@ -243,7 +243,7 @@ export class SessionAgent extends Think<Env> {
     this.memories = enabled(this.currentConfig, "memory")
       ? await this.registry().recall("", 50)
       : [];
-    this.mcpServers = this.currentConfig.cap_mcp ? await this.registry().mcpServers() : [];
+    this.mcpServers = enabled(this.currentConfig, "mcp") ? await this.registry().mcpServers() : [];
   }
 
   private config(): Config {
@@ -313,7 +313,7 @@ export class SessionAgent extends Think<Env> {
     if (ready.length > 0) parts.push(`Capabilities available to you: ${ready.join(", ")}.`);
     // A connected MCP server's tools are named after it, so naming the servers tells
     // the model which prefix belongs to which provider.
-    const connected = this.config().cap_mcp ? this.mcpServers.filter(mcpServerReady) : [];
+    const connected = enabled(this.config(), "mcp") ? this.mcpServers.filter(mcpServerReady) : [];
     if (connected.length > 0) {
       parts.push(
         `Connected MCP servers, whose tools are prefixed with their name: ${connected
@@ -425,7 +425,7 @@ export class SessionAgent extends Think<Env> {
     // The built-in capability tools, plus whatever the connected MCP servers offer.
     const specs = [
       ...toolsFor(config),
-      ...(config.cap_mcp ? mcpToolSpecs(this.mcpServers) : []),
+      ...(enabled(config, "mcp") ? mcpToolSpecs(this.mcpServers) : []),
     ];
     for (const spec of specs) {
       tools[spec.name] = tool({

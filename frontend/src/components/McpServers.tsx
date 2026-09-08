@@ -5,21 +5,20 @@ import { Check, Link2, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { SECRET_MASK, type McpAuth, type McpServer } from "@/lib/agent";
 import { Toggle } from "@/components/CapabilitySection";
 
-const AUTH_MODES: { id: McpAuth; label: string; hint: string }[] = [
+const AUTH_MODES: { id: McpAuth; label: string; hint?: string }[] = [
   {
     id: "none",
     label: "None",
-    hint: "An open server, or one whose key is already in its URL.",
   },
   {
     id: "headers",
     label: "API key",
-    hint: "Sent as headers on every call — how MetaMCP and most key-based servers authenticate.",
+    hint: "Configure authentication headers that will be sent with every request.",
   },
   {
     id: "oauth",
     label: "OAuth",
-    hint: "Approve the agent at the provider. Nothing to paste — how Notion authenticates.",
+    hint: "You will be redirected to the external provider and asked to authenticate via your account.",
   },
 ];
 
@@ -37,9 +36,9 @@ const objectFrom = (pairs: HeaderPair[]): Record<string, string> =>
   );
 
 const input =
-  "bg-field placeholder:text-faint text-ink w-full min-w-0 rounded-[16px] px-4 py-3 text-[14px] outline-none";
+  "bg-canvas border-hairline placeholder:text-faint text-ink w-full min-w-0 rounded-[16px] border px-4 py-3 text-[14px] outline-none";
 const button =
-  "border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-4 py-2.5 text-[13px] font-semibold transition disabled:opacity-40";
+  "bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-4 py-2.5 text-[13px] font-semibold transition disabled:opacity-40";
 
 function AuthPicker({
   value,
@@ -50,14 +49,14 @@ function AuthPicker({
 }) {
   return (
     <div>
-      <div className="bg-field inline-flex rounded-full p-1">
+      <div className="bg-canvas border-hairline inline-flex rounded-full border p-1">
         {AUTH_MODES.map((mode) => (
           <button
             key={mode.id}
             onClick={() => onChange(mode.id)}
             className={`rounded-full px-4 py-1.5 text-[13px] font-semibold transition ${
               value === mode.id
-                ? "bg-canvas text-ink shadow-sm"
+                ? "bg-ink text-canvas"
                 : "text-muted hover:text-ink"
             }`}
           >
@@ -65,7 +64,7 @@ function AuthPicker({
           </button>
         ))}
       </div>
-      <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+      <p className="text-muted mt-2 text-[12px] leading-[1.33]">
         {AUTH_MODES.find((m) => m.id === value)?.hint}
       </p>
     </div>
@@ -159,7 +158,7 @@ function ServerCard({
         : `${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`;
 
   return (
-    <div className="border-hairline-soft rounded-[20px] border p-4">
+    <div className="bg-canvas border-hairline rounded-[20px] border p-4">
       <div className="flex items-start justify-between gap-4">
         <button
           onClick={() => setOpen(!open)}
@@ -320,7 +319,7 @@ function AddServer({
     return (
       <button
         onClick={() => setOpen(true)}
-        className="border-hairline text-ink hover:bg-canvas-soft w-full rounded-[20px] border border-dashed py-4 text-[14px] font-semibold transition"
+        className="border-ink-soft/20 text-ink hover:bg-canvas w-full rounded-[20px] border border-dashed py-4 text-[14px] font-semibold transition"
       >
         <span className="inline-flex items-center gap-2">
           <Plus size={16} strokeWidth={2} />
@@ -331,7 +330,7 @@ function AddServer({
   }
 
   return (
-    <div className="border-hairline-soft space-y-4 rounded-[20px] border p-4">
+    <div className="bg-canvas border-hairline space-y-4 rounded-[20px] border p-4">
       <input
         value={name}
         placeholder="Notion"
@@ -488,13 +487,13 @@ export function McpServers() {
   return (
     <div className="space-y-4">
       {notice && (
-        <p className="bg-canvas-soft flex items-center gap-2 rounded-[16px] px-4 py-3 text-[13px] leading-[1.33]">
+        <p className="bg-canvas border-hairline flex items-center gap-2 rounded-[16px] border px-4 py-3 text-[13px] leading-[1.33]">
           <Check size={14} strokeWidth={2} />
           {notice}
         </p>
       )}
       {error && (
-        <p className="bg-canvas-soft border-hairline-soft rounded-[16px] border px-4 py-3 text-[13px] leading-[1.33]">
+        <p className="bg-canvas border-hairline rounded-[16px] border px-4 py-3 text-[13px] leading-[1.33]">
           {error}
         </p>
       )}
@@ -524,8 +523,8 @@ export function McpServers() {
 
       {redirectUri && (
         <p className="text-faint text-[12px] leading-[1.33]">
-          Expect external providers to redirect to the following URL:{" "}
-          <span className="break-all font-bold">{redirectUri}</span>
+          Expect external providers to redirect to the following URL to complete
+          OAuth flow: <span className="break-all font-bold">{redirectUri}</span>
         </p>
       )}
     </div>

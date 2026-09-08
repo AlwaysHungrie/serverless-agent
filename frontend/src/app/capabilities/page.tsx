@@ -10,6 +10,9 @@ import {
 import { McpServers } from "@/components/McpServers";
 import type { Capability, Config, ModelOption } from "@/lib/agent";
 
+/** The MCP section's wash. */
+const EMBER = "#FF6A1A";
+
 export default function Capabilities() {
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -33,8 +36,14 @@ export default function Capabilities() {
         return;
       }
       setConfig(payload.config);
-      // Telegram is connection setup, not a tool the agent calls: it lives in Settings.
-      setCapabilities(payload.capabilities.filter((c) => c.id !== "telegram"));
+      // Telegram is connection setup, not a tool the agent calls: it lives in
+      // Settings. MCP goes first: it is the one capability the user builds out
+      // themselves, so it is what they come back to this page for.
+      setCapabilities(
+        payload.capabilities
+          .filter((c) => c.id !== "telegram")
+          .sort((a, b) => Number(b.id === "mcp") - Number(a.id === "mcp")),
+      );
       setModels(payload.models);
     })();
   }, []);
@@ -123,6 +132,9 @@ export default function Capabilities() {
                 // until the chosen model is one of those.
                 blocked={capability.id === "vision" && !model?.vision}
                 blockedNote={visionBlockedNote(model?.label ?? "This model")}
+                // MCP is the one section the user builds out themselves, so it is
+                // marked the way the Telegram section is, in ember.
+                tint={capability.id === "mcp" ? EMBER : undefined}
               >
                 {/* MCP is configured by the servers themselves, not by fields. */}
                 {capability.id === "mcp" && <McpServers />}

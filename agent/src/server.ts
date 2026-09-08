@@ -280,6 +280,22 @@ function validateMcpBody(body: Record<string, unknown>): Partial<McpServerRow> {
 }
 
 /**
+ * Names have to be distinct: a server's name is the prefix its tools reach the model
+ * under, so two servers called the same thing would offer the model two different
+ * tools under one name.
+ */
+async function assertNameFree(
+  reg: ReturnType<typeof registry>,
+  name: string,
+  exceptId?: string
+): Promise<void> {
+  const taken = (await reg.mcpServers()).some(
+    (s) => s.id !== exceptId && s.name.toLowerCase() === name.toLowerCase()
+  );
+  if (taken) throw new Error(`there is already a server called "${name}"`);
+}
+
+/**
  * Merge a headers patch over what is stored, so a value the browser sent back as the
  * mask is left alone — the same contract the config secrets follow.
  */
@@ -439,6 +455,11 @@ async function handleMcp(
     if (!patch.name || !patch.url) {
       return withCors(Response.json({ error: "name and url are required" }, { status: 400 }));
     }
+    try {
+      await assertNameFree(reg, patch.name);
+    } catch (err) {
+      return withCors(Response.json({ error: (err as Error).message }, { status: 409 }));
+    }
     const row: McpServerRow = {
       ...EMPTY_MCP_SERVER,
       id: crypto.randomUUID().slice(0, 8),
@@ -500,6 +521,13 @@ async function handleMcp(
       patch = validateMcpBody(body);
     } catch (err) {
       return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+    }
+    if (patch.name && patch.name !== existing.name) {
+      try {
+        await assertNameFree(reg, patch.name, id);
+      } catch (err) {
+        return withCors(Response.json({ error: (err as Error).message }, { status: 409 }));
+      }
     }
     if (patch.headers !== undefined) patch.headers = mergeHeaders(existing.headers, patch.headers);
     // Pointing the server somewhere else invalidates the tokens issued for the old

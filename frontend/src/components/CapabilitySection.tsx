@@ -85,8 +85,8 @@ function ListField({
           {entries.map((entry) => (
             <span
               key={entry}
-              className={`bg-field text-ink flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[13px] leading-[1.35] ${
-                bordered ? "border-hairline border" : ""
+              className={`text-ink flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[13px] leading-[1.35] ${
+                bordered ? "bg-canvas border-hairline border" : "bg-field"
               }`}
             >
               <span className="max-w-[220px] truncate">{entry}</span>
@@ -118,22 +118,24 @@ function ListField({
             if (e.key === "Escape") setDraft("");
           }}
           aria-label={field.label}
-          className={`bg-field placeholder:text-faint min-w-0 flex-1 rounded-[16px] px-4 py-3 text-[14px] outline-none ${
-            bordered ? "border-hairline border" : ""
+          className={`placeholder:text-faint min-w-0 flex-1 rounded-[16px] px-4 py-3 text-[14px] outline-none ${
+            bordered ? "bg-canvas border-hairline border" : "bg-field"
           }`}
         />
         <button
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => add(draft)}
           disabled={draft.trim() === ""}
-          className="border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-5 text-[14px] font-semibold transition disabled:opacity-40"
+          className="bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-5 text-[14px] font-semibold transition disabled:opacity-40"
         >
           Add
         </button>
       </div>
 
       {entries.length === 0 && (
-        <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+        <p
+          className={`mt-2 text-[12px] leading-[1.33] ${bordered ? "text-muted" : "text-faint"}`}
+        >
           *Empty list allows everyone.
         </p>
       )}
@@ -196,8 +198,8 @@ export function Field({
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className={`bg-field text-ink mt-2 w-full appearance-none rounded-[16px] px-4 py-3 text-[14px] outline-none ${
-            bordered ? "border-hairline border" : ""
+          className={`text-ink mt-2 w-full appearance-none rounded-[16px] px-4 py-3 text-[14px] outline-none ${
+            bordered ? "bg-canvas border-hairline border" : "bg-field"
           }`}
         >
           {field.options.map((o) => (
@@ -232,8 +234,8 @@ export function Field({
               e.currentTarget.blur();
             }
           }}
-          className={`bg-field placeholder:text-faint mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none ${
-            bordered ? "border-hairline border" : ""
+          className={`placeholder:text-faint mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none ${
+            bordered ? "bg-canvas border-hairline border" : "bg-field"
           }`}
         />
       )}
@@ -252,7 +254,7 @@ export function CapabilitySection({
   set,
   blocked = false,
   blockedNote,
-  tinted = false,
+  tint,
   children,
 }: {
   capability: Capability;
@@ -261,21 +263,32 @@ export function CapabilitySection({
   /** The switch is dead: something else has to change before this can be used. */
   blocked?: boolean;
   blockedNote?: React.ReactNode;
-  /** Wash the section in Telegram's blue, the way a Telegram chat is marked. */
-  tinted?: boolean;
+  /**
+   * Wash the section in a brand colour, the way a Telegram chat is marked — Telegram
+   * blue for the bot, ember for MCP. A tinted section sits on a tint rather than on
+   * the canvas, so its inputs are outlined to stay legible.
+   */
+  tint?: string;
   /**
    * An editor of the capability's own, shown under its fields. Some capabilities are
    * configured by more than a list of values — MCP is a set of servers, not settings.
    */
   children?: React.ReactNode;
 }) {
-  const on = !!config[capability.flag];
+  // A capability marked alwaysOn has no switch: its own configuration is what
+  // decides whether it does anything.
+  const on = capability.alwaysOn || !!config[capability.flag];
   const ready = capabilityReady(capability, config);
   return (
     <section
+      style={
+        // The gradient's colour is per-section, so it is a variable Tailwind reads
+        // rather than a class it would have to know every brand up front.
+        tint ? ({ "--tint": tint } as React.CSSProperties) : undefined
+      }
       className={`${
-        tinted
-          ? "mb-2 rounded-[24px] bg-gradient-to-b from-[#229ED9]/18 to-transparent px-5 py-6"
+        tint
+          ? "mb-2 rounded-[24px] bg-gradient-to-b from-[var(--tint)]/18 to-transparent px-5 py-6"
           : "border-hairline-soft border-t py-7"
       } ${blocked ? "opacity-50" : ""}`}
     >
@@ -293,11 +306,13 @@ export function CapabilitySection({
             {capability.summary}
           </p>
         </div>
-        <Toggle
-          on={on && !blocked}
-          disabled={blocked}
-          onChange={(v) => set({ [capability.flag]: v ? 1 : 0 })}
-        />
+        {!capability.alwaysOn && (
+          <Toggle
+            on={on && !blocked}
+            disabled={blocked}
+            onChange={(v) => set({ [capability.flag]: v ? 1 : 0 })}
+          />
+        )}
       </div>
 
       {blocked && blockedNote && (
@@ -314,20 +329,24 @@ export function CapabilitySection({
               field={field}
               value={String(config[field.key] ?? "")}
               onChange={(v) => set({ [field.key]: v })}
-              bordered={tinted}
+              bordered={!!tint}
             />
           ))}
 
           {children}
 
           {capability.note && (
-            <p className="text-faint text-[12px] leading-[1.33]">
+            <p className={`text-[12px] leading-[1.33] ${tint ? "text-muted" : "text-faint"}`}>
               {capability.note}
             </p>
           )}
 
           {!ready && capability.fields.length > 0 && (
-            <p className="bg-canvas-soft rounded-[16px] px-4 py-3 text-[12px] leading-[1.33]">
+            <p
+              className={`rounded-[16px] px-4 py-3 text-[12px] leading-[1.33] ${
+                tint ? "bg-canvas border-hairline border" : "bg-canvas-soft"
+              }`}
+            >
               Fill in the fields above to start using this.
             </p>
           )}

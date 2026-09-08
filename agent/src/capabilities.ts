@@ -59,6 +59,11 @@ export type CapabilityField = {
 
 export type Capability = {
   id: CapabilityId;
+  /**
+   * The capability is always on and has no switch. Its own configuration decides
+   * whether it does anything — MCP does nothing until a server is connected.
+   */
+  alwaysOn?: boolean;
   /** The config column that switches it on. */
   flag: keyof Config;
   label: string;
@@ -233,6 +238,7 @@ export const CAPABILITIES: Capability[] = [
   {
     id: "mcp",
     flag: "cap_mcp",
+    alwaysOn: true,
     label: "MCP servers",
     summary: "Connect to external tools and websites hosted elsewhere — Notion, Clickup, etc.",
     // The servers are rows, not settings, so this capability's editor is its own
@@ -257,7 +263,8 @@ export const CAPABILITY_BY_ID = new Map(CAPABILITIES.map((c) => [c.id, c]));
 
 /** Whether a capability is switched on *and* has everything it needs to run. */
 export function capabilityReady(capability: Capability, config: Config): boolean {
-  if (!config[capability.flag]) return false;
+  // A capability with no switch is on regardless of what an older config row says.
+  if (!capability.alwaysOn && !config[capability.flag]) return false;
   return capability.fields.every((f) => !f.required || String(config[f.key] ?? "").trim() !== "");
 }
 

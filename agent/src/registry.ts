@@ -75,7 +75,9 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   cap_scheduled_tasks: 0,
   cap_memory: 0,
   cap_telegram: 0,
-  cap_mcp: 0,
+  // On from the start: an MCP server is only reachable once it has been added and
+  // connected, so the switch guards nothing the servers do not already guard.
+  cap_mcp: 1,
 
   brave_api_key: "",
   image_model: "google/gemini-2.5-flash-image",
@@ -112,7 +114,7 @@ const CONFIG_MIGRATIONS = [
   `telegram_bot_username TEXT NOT NULL DEFAULT ''`,
   `telegram_user_whitelist TEXT NOT NULL DEFAULT ''`,
   `telegram_group_whitelist TEXT NOT NULL DEFAULT ''`,
-  `cap_mcp INTEGER NOT NULL DEFAULT 0`,
+  `cap_mcp INTEGER NOT NULL DEFAULT 1`,
 ];
 
 /** The `mcp_servers` columns, in write order, excluding the primary key. */
