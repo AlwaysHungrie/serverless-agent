@@ -9,15 +9,15 @@ Object per chat session and DeepSeek V4 Flash behind OpenRouter.
 
 For a short exchange (~25 tokens in, ~130 out, ~4 seconds of streaming):
 
-| | Per message | Share |
-|---|---|---|
-| **LLM tokens** (OpenRouter, DeepSeek V4 Flash) | ~$0.000040 | ~78% |
-| **DO duration** (~4s awake × 128 MB = 0.5 GB-s) | ~$0.0000063 | ~12% |
-| **SQLite rows written** (~4 rows) | ~$0.0000040 | ~8% |
-| **Requests** (~3 calls, billed by both Worker and DO) | ~$0.0000014 | ~3% |
-| **SQLite rows read** (~20 rows) | ~$0.00000002 | negligible |
+|                                                       | Per message     | Share      |
+| ----------------------------------------------------- | --------------- | ---------- |
+| **LLM tokens** (OpenRouter, DeepSeek V4 Flash)        | ~$0.000040      | ~78%       |
+| **DO duration** (~4s awake × 128 MB = 0.5 GB-s)       | ~$0.0000063     | ~12%       |
+| **SQLite rows written** (~4 rows)                     | ~$0.0000040     | ~8%        |
+| **Requests** (~3 calls, billed by both Worker and DO) | ~$0.0000014     | ~3%        |
+| **SQLite rows read** (~20 rows)                       | ~$0.00000002    | negligible |
 | **Storage** (~48 KB, charged monthly not per message) | ~$0.00001/month | negligible |
-| **Total** | **~$0.00005** | |
+| **Total**                                             | **~$0.00005**   |            |
 
 **About 20,000 messages per dollar.** The model costs roughly four times the
 infrastructure, and most of the infrastructure cost is the Durable Object sitting awake
@@ -42,7 +42,7 @@ alarm firing. Incoming WebSocket messages are billed at a 20:1 ratio.
 ### 2. Duration — $12.50 per million GB-seconds
 
 The one that surprises people. A Durable Object is billed for a **fixed 128 MB of
-memory** for as long as it is *active*, no matter how little it actually uses. One second
+memory** for as long as it is _active_, no matter how little it actually uses. One second
 awake costs 0.125 GB-s.
 
 Active means:
@@ -86,14 +86,14 @@ already inside duration. Counting it again double-counts.
 
 ### Plan allowances
 
-| | Free | Paid ($5/month) |
-|---|---|---|
-| DO requests | 100,000/day | 1,000,000/month, then $0.15/M |
-| DO duration | 13,000 GB-s/day | 400,000 GB-s/month, then $12.50/M |
-| Rows written | 100,000/day | 50,000,000/month, then $1.00/M |
-| Rows read | 5,000,000/day | 25,000,000,000/month, then $0.001/M |
-| Storage | 5 GB total | 5 GB, then $0.20/GB-month |
-| Past the limit | **stops serving** | billed as overage |
+|                | Free              | Paid ($5/month)                     |
+| -------------- | ----------------- | ----------------------------------- |
+| DO requests    | 100,000/day       | 1,000,000/month, then $0.15/M       |
+| DO duration    | 13,000 GB-s/day   | 400,000 GB-s/month, then $12.50/M   |
+| Rows written   | 100,000/day       | 50,000,000/month, then $1.00/M      |
+| Rows read      | 5,000,000/day     | 25,000,000,000/month, then $0.001/M |
+| Storage        | 5 GB total        | 5 GB, then $0.20/GB-month           |
+| Past the limit | **stops serving** | billed as overage                   |
 
 ---
 
@@ -106,18 +106,30 @@ GraphQL Analytics API at `https://api.cloudflare.com/client/v4/graphql`. A token
 ### The datasets and fields that matter
 
 ```graphql
-query ActualUsage($account: String!, $since: Time!, $sinceDate: Date!, $objectId: String) {
+query ActualUsage(
+  $account: String!
+  $since: Time!
+  $sinceDate: Date!
+  $objectId: String
+) {
   viewer {
     accounts(filter: { accountTag: $account }) {
-
       # Requests and errors. Filterable per object.
       durableObjectsInvocationsAdaptiveGroups(
         limit: 10000
         filter: { datetime_geq: $since, objectId: $objectId }
       ) {
-        dimensions { namespaceId scriptName }
-        sum { requests errors }
-        avg { sampleInterval }
+        dimensions {
+          namespaceId
+          scriptName
+        }
+        sum {
+          requests
+          errors
+        }
+        avg {
+          sampleInterval
+        }
       }
 
       # Duration, CPU, and SQLite row counts. Filterable per object.
@@ -125,14 +137,30 @@ query ActualUsage($account: String!, $since: Time!, $sinceDate: Date!, $objectId
         limit: 10000
         filter: { datetime_geq: $since, objectId: $objectId }
       ) {
-        sum { activeTime cpuTime subrequests rowsRead rowsWritten }
-        avg { sampleInterval }
+        sum {
+          activeTime
+          cpuTime
+          subrequests
+          rowsRead
+          rowsWritten
+        }
+        avg {
+          sampleInterval
+        }
       }
 
       # Stored bytes for SQLite-backed objects. Per namespace and per day only.
-      durableObjectsSqlStorageGroups(limit: 1000, filter: { date_geq: $sinceDate }) {
-        dimensions { date namespaceId }
-        max { storedBytes }
+      durableObjectsSqlStorageGroups(
+        limit: 1000
+        filter: { date_geq: $sinceDate }
+      ) {
+        dimensions {
+          date
+          namespaceId
+        }
+        max {
+          storedBytes
+        }
       }
     }
   }
@@ -182,12 +210,12 @@ metrics endpoint wrote its own counters.
 Durable Objects have two storage backends, and the analytics schema kept the older
 key-value names alongside the SQLite ones:
 
-| Looks right | Actually for | On a SQLite object |
-|---|---|---|
-| `storageReadUnits` | key-value backend | always `0` |
-| `storageWriteUnits` | key-value backend | always `0` |
-| `rowsRead` | SQLite | the real number |
-| `rowsWritten` | SQLite | the real number |
+| Looks right         | Actually for      | On a SQLite object |
+| ------------------- | ----------------- | ------------------ |
+| `storageReadUnits`  | key-value backend | always `0`         |
+| `storageWriteUnits` | key-value backend | always `0`         |
+| `rowsRead`          | SQLite            | the real number    |
+| `rowsWritten`       | SQLite            | the real number    |
 
 The KV fields **do not error**. They return `0`, which reads as "this is free" rather
 than "you asked the wrong question". Rows written was reported as $0 for a while when it
@@ -195,10 +223,10 @@ was in fact the largest Cloudflare line item.
 
 ### 3. The same trap again, at the dataset level
 
-| Dataset | Covers | On a SQLite object |
-|---|---|---|
-| `durableObjectsStorageGroups` | key-value backend | returns **no rows at all** |
-| `durableObjectsSqlStorageGroups` | SQLite | the real bytes |
+| Dataset                          | Covers            | On a SQLite object         |
+| -------------------------------- | ----------------- | -------------------------- |
+| `durableObjectsStorageGroups`    | key-value backend | returns **no rows at all** |
+| `durableObjectsSqlStorageGroups` | SQLite            | the real bytes             |
 
 An empty array is not a zero. It means "wrong dataset" or "no snapshot yet", and the two
 are indistinguishable without checking a namespace you know has data.
@@ -223,7 +251,7 @@ trusting a blog post.
 ### 6. Cloudflare's own numbers are sampled
 
 Both adaptive datasets expose `avg { sampleInterval }`. Sums must be scaled by it. "Real"
-here means *authoritative for billing*, not *exact*.
+here means _authoritative for billing_, not _exact_.
 
 ### 7. Analytics lag, so per-message cost is impossible
 

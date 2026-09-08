@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { Settings, SlidersHorizontal } from "lucide-react";
 import type { SessionRow } from "@/lib/agent";
 
 export function Sidebar({
@@ -19,7 +21,7 @@ export function Sidebar({
   const [busy, setBusy] = useState(false);
 
   return (
-    <aside className="border-hairline-soft bg-canvas flex h-full w-72 shrink-0 flex-col border-r">
+    <aside className="border-hairline-soft bg-canvas relative flex h-full w-72 shrink-0 flex-col border-r">
       <div className="flex items-center justify-between gap-4 px-6 pt-6 pb-4">
         <div className="min-w-0">
           <div className="text-2xl font-[650] leading-[1.25]">Sessions.</div>
@@ -68,6 +70,26 @@ export function Sidebar({
           </div>
         ))}
       </div>
+
+      <div className="absolute right-4 bottom-4 flex items-center gap-2">
+        <Link
+          href="/capabilities"
+          title="Capabilities"
+          aria-label="Capabilities"
+          className="border-hairline bg-canvas text-ink hover:bg-canvas-soft flex h-11 w-11 items-center justify-center rounded-full border shadow-sm transition"
+        >
+          <SlidersHorizontal size={18} strokeWidth={1.75} />
+        </Link>
+        <Link
+          href="/settings"
+          title="Settings"
+          aria-label="Settings"
+          className="bg-ink text-on-primary flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition hover:opacity-85"
+        >
+          <Settings size={18} strokeWidth={1.75} />
+        </Link>
+      </div>
+
     </aside>
   );
 }

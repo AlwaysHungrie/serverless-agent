@@ -60,11 +60,9 @@ export default function Home() {
   }, [selected, loadSummary, readJson]);
 
   const createSession = async () => {
-    const res = await fetch("/api/sessions", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: `Session ${sessions.length + 1}` }),
-    });
+    // No title: the session is called "New session" until the agent names it from
+    // the first exchange.
+    const res = await fetch("/api/sessions", { method: "POST" });
     const row = await readJson<SessionRow>(res);
     if (!row) return;
     await loadSessions();
@@ -81,6 +79,8 @@ export default function Home() {
     if (selected) loadSummary(selected);
     loadSessions();
   }, [selected, loadSummary, loadSessions]);
+
+  const current = sessions.find((s) => s.id === selected) ?? null;
 
   return (
     <div className="bg-canvas text-ink flex h-screen">
@@ -100,7 +100,11 @@ export default function Home() {
         )}
         {selected ? (
           <>
-            <SessionHeader sessionId={selected} summary={summary} />
+            <SessionHeader
+              title={current?.title ?? "New session"}
+              createdAt={current?.created_at ?? null}
+              summary={summary}
+            />
             {loaded?.sessionId !== selected ? (
               <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light">
                 Waking Durable Object…

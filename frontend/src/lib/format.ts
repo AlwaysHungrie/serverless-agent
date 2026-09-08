@@ -28,3 +28,15 @@ export function formatCount(n: number | null | undefined): string {
   if (n == null) return "—";
   return n.toLocaleString("en-US");
 }
+
+/** Session creation date, as the header shows it: "12 Mar 2026, 4:05 PM". */
+export function formatDate(ms: number | null | undefined): string {
+  if (ms == null) return "—";
+  return new Date(ms).toLocaleString("en-US", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}

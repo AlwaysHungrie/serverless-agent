@@ -41,12 +41,55 @@ curl -X POST http://localhost:8787/agents/session-agent/my-session/chat \
 | `GET  /agents/session-agent/:id/messages` | Transcript, with per-message tokens and cost |
 | `GET  /agents/session-agent/:id/summary` | Message count and total LLM spend |
 | `POST /agents/session-agent/:id/reset` | Wipe the session |
+| `GET\|POST /agents/session-agent/:id/files` | List pending attachments / upload one |
+| `GET\|DELETE /agents/session-agent/:id/files/:fileId` | Image bytes / drop a pending attachment |
+| `GET /agents/session-agent/:id/tasks` | Tasks this session scheduled |
+| `DELETE /agents/session-agent/:id/tasks/:taskId` | Cancel one |
 | `GET\|POST /api/sessions` | List / create sessions |
 | `PATCH\|DELETE /api/sessions/:id` | Rename / delete a session |
+| `GET\|PATCH /api/config` | Settings, capabilities and their metadata |
 
 Durable Object namespaces cannot be enumerated — you can address an instance by name but
 not ask which instances exist — so the session list lives in one well-known
 `SessionRegistry` object while each session's transcript lives in its own `SessionAgent`.
+
+## Capabilities
+
+Capabilities are what the agent can *do* beyond writing text. Each one is off by default
+and switched on under **Capabilities** in the frontend; the metadata in
+[`src/capabilities.ts`](src/capabilities.ts) is what that page renders, so a new
+capability needs no frontend change.
+
+| Capability | Kind | Needs | Tools |
+|---|---|---|---|
+| Web search | tool | Brave Search API key | `web_search` |
+| Read a URL | tool | — | `fetch_url` |
+| File ingest | input | — | — |
+| Image input | input | a multimodal model | — |
+| Image generation | tool | an OpenRouter image model | `generate_image` |
+| Audio input | input | an OpenAI-compatible transcription endpoint + key | — |
+| Scheduled tasks | tool | — | `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` |
+| Memory | tool | — | `remember`, `recall` |
+
+**Tool capabilities** hand the model functions it may call. A turn runs up to six tool
+rounds — call, run, feed the results back — before it must answer, on both the streaming
+and non-streaming paths. **Input capabilities** change what a turn may carry in: text
+files are inlined into the message, images become `image_url` parts, and audio is
+transcribed once on upload so the model only ever sees text.
+
+Memory is app-wide rather than per session: a fact worth keeping ("I use pnpm") is worth
+keeping in the next session too. Recent memories are injected into the system prompt, so
+the model can use what it knows without spending a round trip to discover that it knows
+it.
+
+Scheduled tasks use the Agents SDK's own scheduling (`schedule`/`getSchedules`), so they
+survive eviction. A scheduled turn writes into the transcript like any other, and bills
+like any other: the object wakes up to run it.
+
+**API keys are stored in the registry's SQLite in plain text.** They are redacted on the
+way out — a saved key reads back as `••••••••`, and sending that mask back means "leave
+it alone" — but anyone with access to the Durable Object can read them. Move them to
+Worker secrets or an encrypted store before this handles anyone else's keys.
 
 ## Costs
 

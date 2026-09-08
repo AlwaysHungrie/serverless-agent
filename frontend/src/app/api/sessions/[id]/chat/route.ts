@@ -1,10 +1,19 @@
 import { createUIMessageStream, createUIMessageStreamResponse, type UIMessage } from "ai";
-import { agentUrl, type UsageData } from "@/lib/agent";
+import { agentUrl, type Attachment, type UsageData } from "@/lib/agent";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-export type ChatUIMessage = UIMessage<never, { usage: UsageData }>;
+/** A tool the agent ran mid-turn, streamed so the UI can say what is happening. */
+export type ToolData = { name: string; done: boolean };
+
+/** The attachments sent with a user message, so the bubble can show them. */
+export type FilesData = { attachments: Attachment[] };
+
+export type ChatUIMessage = UIMessage<
+  never,
+  { usage: UsageData; tool: ToolData; files: FilesData }
+>;
 
 /**
  * Bridges the Durable Object's SSE stream into the AI SDK UI message protocol, so
@@ -60,6 +69,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             const event = JSON.parse(frame.slice(6)) as
               | { type: "delta"; text: string }
               | ({ type: "usage" } & UsageData)
+              | { type: "tool"; name: string }
+              | { type: "tool_done"; name: string }
               | { type: "error"; error: string }
               | { type: "done" };
 
@@ -74,6 +85,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                   cost_usd: event.cost_usd,
                   llm_ms: event.llm_ms,
                 },
+              });
+            } else if (event.type === "tool" || event.type === "tool_done") {
+              // One part per tool call, re-sent as done: the UI keys on the name and
+              // replaces the running line with a finished one.
+              writer.write({
+                type: "data-tool",
+                id: `${textId}-tool-${event.name}`,
+                data: { name: event.name, done: event.type === "tool_done" },
               });
             } else if (event.type === "error") {
               throw new Error(event.error);

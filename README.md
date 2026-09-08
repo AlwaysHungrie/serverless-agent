@@ -35,11 +35,20 @@ no CORS and no key exposure.
   SQLite database. Creating a session registers it; deleting one wipes its storage.
 - **Header** — the model, message count, tokens, and the LLM spend for that session.
 - **Each assistant message** — tokens in and out, dollar cost, and model latency.
+- **Attach** — files, images or audio, when the matching capability is on.
 - **Stop** — cancels the stream. The partial reply is kept, along with the tokens
   OpenRouter already billed for, and the Durable Object stops accruing duration.
 
-The model is `deepseek/deepseek-v4-flash` on OpenRouter, set by the `MODEL` var in
-`agent/wrangler.jsonc`.
+Two pages sit behind the buttons at the bottom of the sidebar:
+
+- **Settings** — how the agent talks: model, custom instructions, reasoning effort,
+  temperature, reply cap, context window, auto-titling.
+- **Capabilities** — what the agent can do: web search, reading a URL, file ingest, image
+  input, image generation, audio input, scheduled tasks, memory. Each is off by default,
+  and the ones needing a key say so. See [agent/README.md](agent/README.md#capabilities).
+
+The default model is `deepseek/deepseek-v4-flash` on OpenRouter, set by the `MODEL` var in
+`agent/wrangler.jsonc` and overridable in Settings. Image input needs a multimodal model.
 
 ## Costs
 

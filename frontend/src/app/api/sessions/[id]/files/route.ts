@@ -1,0 +1,31 @@
+import { proxy } from "@/lib/proxy";
+import { AGENT_URL } from "@/lib/agent";
+
+export const dynamic = "force-dynamic";
+
+/** Attachments uploaded but not yet sent with a turn. */
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  return proxy(`/agents/session-agent/${encodeURIComponent(id)}/files`);
+}
+
+/**
+ * Forward the multipart upload untouched. `proxy` cannot be used here: it would have
+ * to buffer and re-encode the body, and the Worker needs the original boundary.
+ */
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  try {
+    const res = await fetch(`${AGENT_URL}/agents/session-agent/${encodeURIComponent(id)}/files`, {
+      method: "POST",
+      body: await request.arrayBuffer(),
+      headers: { "content-type": request.headers.get("content-type") ?? "" },
+    });
+    return new Response(await res.text(), {
+      status: res.status,
+      headers: { "content-type": "application/json" },
+    });
+  } catch {
+    return Response.json({ error: `Cannot reach the agent Worker at ${AGENT_URL}.` }, { status: 502 });
+  }
+}
