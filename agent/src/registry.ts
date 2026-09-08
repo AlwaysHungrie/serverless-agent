@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { McpServerRow } from "./mcp";
+import { McpTokenError, refreshToken, type McpServerRow } from "./mcp";
 
 /**
  * App-wide settings, split in two:
@@ -138,6 +138,7 @@ const MCP_COLUMNS = [
   "oauth_state",
   "oauth_return_to",
   "tools_json",
+  "disabled_tools",
   "tools_synced_at",
   "last_error",
   "created_at",
@@ -162,6 +163,7 @@ export const EMPTY_MCP_SERVER: Omit<McpServerRow, "id" | "name" | "url" | "creat
   oauth_state: "",
   oauth_return_to: "",
   tools_json: "",
+  disabled_tools: "",
   tools_synced_at: 0,
   last_error: "",
 };
@@ -209,6 +211,8 @@ export type SessionRow = {
  */
 export class SessionRegistry extends DurableObject {
   private ready = false;
+  /** Token refreshes in flight, by server id, so concurrent callers share one. */
+  private refreshing = new Map<string, Promise<McpServerRow | undefined>>();
 
   private ensureSchema() {
     if (this.ready) return;
@@ -284,11 +288,20 @@ export class SessionRegistry extends DurableObject {
          oauth_state TEXT NOT NULL DEFAULT '',
          oauth_return_to TEXT NOT NULL DEFAULT '',
          tools_json TEXT NOT NULL DEFAULT '',
+         disabled_tools TEXT NOT NULL DEFAULT '',
          tools_synced_at INTEGER NOT NULL DEFAULT 0,
          last_error TEXT NOT NULL DEFAULT '',
          created_at INTEGER NOT NULL DEFAULT 0
        )`
     );
+    // Bring forward server rows created before a column was added.
+    for (const col of [`disabled_tools TEXT NOT NULL DEFAULT ''`]) {
+      try {
+        this.ctx.storage.sql.exec(`ALTER TABLE mcp_servers ADD COLUMN ${col}`);
+      } catch {
+        // Column already present.
+      }
+    }
     this.ready = true;
   }
 
@@ -347,6 +360,72 @@ export class SessionRegistry extends DurableObject {
       );
     }
     return this.mcpServer(id);
+  }
+
+  /**
+   * The access token for a server, refreshed if it is spent.
+   *
+   * Refreshing lives here, in the one object that owns the row, because a turn can
+   * call several of a server's tools at once and a provider that rotates refresh
+   * tokens only honours the first of two concurrent refreshes. In-flight refreshes
+   * are shared, so those callers wait on one request and all see the same result.
+   *
+   * `force` is for a call that has already been answered with a 401: the stored
+   * expiry said the token was good, and the provider disagrees.
+   */
+  async refreshMcpToken(id: string, force = false): Promise<McpServerRow | undefined> {
+    const server = this.mcpServer(id);
+    if (!server || server.auth !== "oauth" || !server.oauth_refresh_token) return server;
+
+    const spent = server.oauth_expires_at > 0 && server.oauth_expires_at - Date.now() < 60_000;
+    if (!force && !spent) return server;
+
+    const existing = this.refreshing.get(id);
+    if (existing) return await existing;
+
+    const attempt = this.performRefresh(server).finally(() => this.refreshing.delete(id));
+    this.refreshing.set(id, attempt);
+    return await attempt;
+  }
+
+  private async performRefresh(server: McpServerRow): Promise<McpServerRow | undefined> {
+    try {
+      const tokens = await refreshToken(server.oauth_token_url, {
+        refreshToken: server.oauth_refresh_token,
+        clientId: server.oauth_client_id,
+        clientSecret: server.oauth_client_secret || undefined,
+        resource: server.oauth_resource || undefined,
+      });
+      return this.updateMcpServer(server.id, {
+        oauth_access_token: tokens.access_token,
+        // A provider that rotates hands back a new one; keep the old when it does not.
+        oauth_refresh_token: tokens.refresh_token ?? server.oauth_refresh_token,
+        oauth_expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : 0,
+        last_error: "",
+      });
+    } catch (err) {
+      // A refusal of the grant itself is the end of this connection: drop the tokens
+      // so the server reads as disconnected and offers a Connect button, rather than
+      // sitting there advertising tools that every call will fail.
+      if (err instanceof McpTokenError && err.permanent) {
+        return this.updateMcpServer(server.id, {
+          oauth_access_token: "",
+          oauth_refresh_token: "",
+          oauth_expires_at: 0,
+          tools_json: "",
+          last_error: "The connection expired. Connect again to keep using it.",
+        });
+      }
+      return this.updateMcpServer(server.id, {
+        last_error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /** Notes what a failed call learned, so the card stops claiming the server works. */
+  noteMcpError(id: string, message: string) {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(`UPDATE mcp_servers SET last_error = ? WHERE id = ?`, message, id);
   }
 
   removeMcpServer(id: string) {

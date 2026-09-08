@@ -1,10 +1,11 @@
 import type { Config, Memory, SessionRegistry } from "./registry";
 import {
   McpClient,
+  McpUnauthorized,
   parseHeaders,
+  parseNames,
   parseTools,
   qualifiedName,
-  refreshToken,
   type McpServerRow,
 } from "./mcp";
 
@@ -544,30 +545,45 @@ export async function mcpClientFor(
   registry: DurableObjectStub<SessionRegistry>
 ): Promise<McpClient> {
   const headers = server.auth === "headers" ? parseHeaders(server.headers) : {};
-  let bearer = server.auth === "oauth" ? server.oauth_access_token : "";
+  if (server.auth !== "oauth") return new McpClient(server.url, headers);
+  // The registry owns refreshing: it holds the row, and it is the only place that can
+  // keep two of this server's tools from refreshing against each other.
+  const fresh = await registry.refreshMcpToken(server.id);
+  return new McpClient(server.url, headers, fresh?.oauth_access_token ?? "");
+}
 
-  const expiring =
-    server.auth === "oauth" &&
-    server.oauth_refresh_token &&
-    server.oauth_expires_at > 0 &&
-    server.oauth_expires_at - Date.now() < 60_000;
-
-  if (expiring) {
-    const tokens = await refreshToken(server.oauth_token_url, {
-      refreshToken: server.oauth_refresh_token,
-      clientId: server.oauth_client_id,
-      clientSecret: server.oauth_client_secret || undefined,
-      resource: server.oauth_resource || undefined,
-    });
-    bearer = tokens.access_token;
-    await registry.updateMcpServer(server.id, {
-      oauth_access_token: tokens.access_token,
-      oauth_refresh_token: tokens.refresh_token ?? server.oauth_refresh_token,
-      oauth_expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : 0,
-    });
+/**
+ * Run something against a server, once, and again on a fresh token if the provider
+ * says the credentials are no good.
+ *
+ * The stored expiry is only ever a guess about someone else's state: a token can be
+ * revoked, or a session ended at the provider, long before it was due to run out. So
+ * the 401 is treated as the authority and the clock as the optimization, rather than
+ * the other way round.
+ */
+export async function withMcpAuth<T>(
+  server: McpServerRow,
+  registry: DurableObjectStub<SessionRegistry>,
+  run: (client: McpClient) => Promise<T>
+): Promise<T> {
+  try {
+    return await run(await mcpClientFor(server, registry));
+  } catch (err) {
+    if (!(err instanceof McpUnauthorized) || server.auth !== "oauth") throw err;
+    const refreshed = await registry.refreshMcpToken(server.id, true);
+    // A refresh that cleared the tokens has already worked out why and said so in
+    // words the user can act on. Carrying that up beats reporting the 401 that
+    // followed it, which would only say the credentials were refused.
+    if (!refreshed?.oauth_access_token) {
+      throw refreshed?.last_error ? new Error(refreshed.last_error) : err;
+    }
+    const retried = await run(
+      new McpClient(refreshed.url, {}, refreshed.oauth_access_token)
+    );
+    // The call works again, so whatever the card was reporting is out of date.
+    if (server.last_error) await registry.noteMcpError(server.id, "");
+    return retried;
   }
-
-  return new McpClient(server.url, headers, bearer);
 }
 
 /** Whether a server is switched on and has whatever it needs to authenticate. */
@@ -586,14 +602,26 @@ export function mcpToolSpecs(servers: McpServerRow[]): ToolSpec[] {
   const specs: ToolSpec[] = [];
   for (const server of servers) {
     if (!mcpServerReady(server)) continue;
+    const off = new Set(parseNames(server.disabled_tools));
     for (const tool of parseTools(server.tools_json)) {
+      // A tool switched off is never handed to the model, so it cannot be called.
+      if (off.has(tool.name)) continue;
       specs.push({
         name: qualifiedName(server, tool.name),
         description: `[${server.name}] ${tool.description ?? tool.name}`,
         parameters: tool.inputSchema ?? { type: "object", properties: {} },
         async run(args, ctx) {
-          const client = await mcpClientFor(server, ctx.registry);
-          return await client.callTool(tool.name, args);
+          try {
+            return await withMcpAuth(server, ctx.registry, (client) =>
+              client.callTool(tool.name, args)
+            );
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            // Without this the card would keep advertising a server whose every call
+            // is failing, because only a tool sync ever wrote that field.
+            await ctx.registry.noteMcpError(server.id, message);
+            throw err;
+          }
         },
       });
     }

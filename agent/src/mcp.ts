@@ -59,6 +59,12 @@ export type McpServerRow = {
 
   /** Cached `tools/list`, as JSON. Refreshed on save, on connect, and on demand. */
   tools_json: string;
+  /**
+   * The tools of this server the agent may not call, as a JSON array of names. Kept
+   * as the exclusions rather than the inclusions so a tool the provider adds later
+   * arrives switched on, which is what someone who never opened this list expects.
+   */
+  disabled_tools: string;
   tools_synced_at: number;
   /** Why the last sync failed, shown on the card. Empty when it worked. */
   last_error: string;
@@ -75,10 +81,13 @@ export type McpServerView = Omit<
   | "oauth_state"
   | "headers"
   | "tools_json"
+  | "disabled_tools"
 > & {
   /** Header names only, so a saved key shows as set without being handed back. */
   header_names: string[];
   tools: McpTool[];
+  /** Names from `tools` the agent may not call. */
+  disabled_tools: string[];
   connected: boolean;
 };
 
@@ -92,6 +101,21 @@ type JsonRpcResponse = {
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
 };
+
+/**
+ * Raised when the authorization server refuses a token request. `permanent` marks the
+ * refusals that will not come good on their own — a spent or revoked refresh token —
+ * as opposed to the provider being briefly unreachable.
+ */
+export class McpTokenError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly permanent: boolean
+  ) {
+    super(message);
+  }
+}
 
 /** Raised when the server answers 401: the caller may refresh a token and retry. */
 export class McpUnauthorized extends Error {
@@ -368,9 +392,21 @@ async function tokenRequest(tokenUrl: string, form: Record<string, string>): Pro
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: new URLSearchParams(form).toString(),
   });
-  if (!res.ok) throw new Error(`token request failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
+  if (!res.ok) {
+    const body = (await res.text()).slice(0, 300);
+    // 400 and 401 are the authorization server saying the grant itself is no good —
+    // `invalid_grant` for a spent or revoked refresh token. Retrying cannot fix it;
+    // only the user approving the app again can.
+    throw new McpTokenError(
+      `token request failed: ${res.status} ${body}`,
+      res.status,
+      res.status === 400 || res.status === 401
+    );
+  }
   const json = (await res.json()) as TokenSet;
-  if (!json.access_token) throw new Error("the authorization server returned no access token");
+  if (!json.access_token) {
+    throw new McpTokenError("the authorization server returned no access token", res.status, true);
+  }
   return json;
 }
 
@@ -430,6 +466,17 @@ export function slug(name: string): string {
 
 export const qualifiedName = (server: McpServerRow, tool: string) =>
   `mcp_${slug(server.name)}_${tool}`.slice(0, 64);
+
+/** The disabled-tool names on a row. A malformed value disables nothing. */
+export function parseNames(json: string): string[] {
+  if (!json.trim()) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 export function parseTools(json: string): McpTool[] {
   if (!json.trim()) return [];

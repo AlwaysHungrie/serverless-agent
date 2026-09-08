@@ -186,6 +186,11 @@ export type McpServer = {
   enabled: number;
   header_names: string[];
   tools: McpTool[];
+  /**
+   * Names from `tools` the agent may not call. Held as the exclusions, so a tool the
+   * provider adds later arrives switched on.
+   */
+  disabled_tools: string[];
   /** False only for an OAuth server nobody has approved yet. */
   connected: boolean;
   tools_synced_at: number;

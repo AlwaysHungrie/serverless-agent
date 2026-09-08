@@ -135,12 +135,15 @@ function HeaderEditor({
 function ServerCard({
   server,
   onPatch,
+  onToolsChange,
   onAction,
   onRemove,
   busy,
 }: {
   server: McpServer;
   onPatch: (patch: Record<string, unknown>) => void;
+  /** Switching a tool on or off, applied locally before the Worker answers. */
+  onToolsChange: (disabled: string[]) => void;
   onAction: (action: "connect" | "disconnect" | "refresh") => void;
   onRemove: () => void;
   busy: boolean;
@@ -152,13 +155,17 @@ function ServerCard({
     pairsFrom(server.header_names),
   );
 
+  const off = new Set(server.disabled_tools);
+  const live = server.tools.filter((t) => !off.has(t.name)).length;
   const status = !server.enabled
     ? "Off"
     : server.last_error
       ? "Not working"
       : !server.connected
         ? "Not connected"
-        : `${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`;
+        : live === server.tools.length
+          ? `${live} tool${live === 1 ? "" : "s"}`
+          : `${live} of ${server.tools.length} tools`;
 
   return (
     <div className="bg-canvas border-hairline rounded-[20px] border p-4">
@@ -274,19 +281,51 @@ function ServerCard({
 
           {server.tools.length > 0 && (
             <div>
-              <span className="text-muted block text-[12px] leading-[1.33]">
-                Tools available
-              </span>
+              <div className="flex items-baseline justify-between gap-4">
+                <span className="text-muted text-[12px] leading-[1.33]">
+                  Tools available. Switch one off to keep it from the agent.
+                </span>
+                <button
+                  onClick={() =>
+                    onToolsChange(
+                      live === 0 ? [] : server.tools.map((t) => t.name),
+                    )
+                  }
+                  className="text-muted hover:text-ink shrink-0 text-[12px] font-semibold"
+                >
+                  {live === 0 ? "Enable all" : "Disable all"}
+                </button>
+              </div>
               <div className="mt-2 flex flex-wrap gap-2">
-                {server.tools.map((tool) => (
-                  <span
-                    key={tool.name}
-                    title={tool.description}
-                    className="bg-field text-ink rounded-full px-3 py-1.5 text-[12px] leading-[1.35]"
-                  >
-                    {tool.name}
-                  </span>
-                ))}
+                {server.tools.map((tool) => {
+                  const on = !off.has(tool.name);
+                  return (
+                    <button
+                      key={tool.name}
+                      title={tool.description}
+                      aria-pressed={on}
+                      onClick={() =>
+                        onToolsChange(
+                          on
+                            ? [...server.disabled_tools, tool.name]
+                            : server.disabled_tools.filter(
+                                (n) => n !== tool.name,
+                              ),
+                        )
+                      }
+                      // A tool that is off is struck out rather than recoloured: the
+                      // badge stays readable, and the squiggle says "not this one"
+                      // without the row turning into a block of solid pills.
+                      className={`bg-canvas rounded-full border px-3 py-1.5 text-[12px] leading-[1.35] transition ${
+                        on
+                          ? "border-hairline text-ink hover:border-ink"
+                          : "border-hairline text-faint"
+                      }`}
+                    >
+                      {tool.name}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -485,6 +524,40 @@ export function McpServers() {
     return payload.server ?? null;
   };
 
+  /**
+   * A write the UI shows straight away: the row is patched locally, the request goes
+   * out behind it, and the row is put back the way it was if the Worker refuses.
+   *
+   * Switching a tool off is the case that needs this. Waiting for the round trip
+   * before flipping the chip makes a switch feel broken, and the shared `busy` flag
+   * would dim every other chip on the card while it was in flight.
+   */
+  const patchAhead = async (
+    id: string,
+    patch: Partial<McpServer>,
+    body: unknown,
+  ) => {
+    const previous = servers.find((s) => s.id === id);
+    setServers((all) => all.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+    const res = await fetch(`/api/mcp/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = (await res.json().catch(() => null)) as {
+      server?: McpServer;
+      error?: string;
+    } | null;
+    if (!res.ok || !payload?.server) {
+      if (previous)
+        setServers((all) => all.map((s) => (s.id === id ? previous : s)));
+      setError(payload?.error ?? "Couldn't save that. Try again.");
+      return;
+    }
+    setServers((all) => all.map((s) => (s.id === id ? payload.server! : s)));
+    setError(null);
+  };
+
   const add = async (body: Record<string, unknown>) =>
     (await call("/api/mcp", { method: "POST", body: JSON.stringify(body) })) !==
     null;
@@ -521,6 +594,15 @@ export function McpServers() {
               method: "PATCH",
               body: JSON.stringify(patch),
             })
+          }
+          onToolsChange={(disabled) =>
+            void patchAhead(
+              server.id,
+              { disabled_tools: disabled },
+              {
+                disabled_tools: disabled,
+              },
+            )
           }
           onAction={(action) =>
             void call(`/api/mcp/${server.id}/${action}`, {

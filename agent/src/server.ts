@@ -13,6 +13,7 @@ import {
   exchangeCode,
   parseHeaders,
   parseTools,
+  parseNames,
   pkceChallenge,
   randomToken,
   registerClient,
@@ -20,7 +21,7 @@ import {
   type McpServerRow,
   type McpServerView,
 } from "./mcp";
-import { mcpClientFor, mcpServerReady } from "./capabilities";
+import { mcpServerReady, withMcpAuth } from "./capabilities";
 
 export { SessionAgent } from "./agent";
 export { SessionRegistry } from "./registry";
@@ -199,12 +200,14 @@ function mcpView(row: McpServerRow): McpServerView {
     oauth_state: _state,
     headers,
     tools_json,
+    disabled_tools,
     ...rest
   } = row;
   return {
     ...rest,
     header_names: Object.keys(parseHeaders(headers)),
     tools: parseTools(tools_json),
+    disabled_tools: parseNames(disabled_tools),
     connected: row.auth !== "oauth" || token !== "",
   };
 }
@@ -224,8 +227,7 @@ async function syncMcpTools(
     return (await reg.updateMcpServer(row.id, { tools_json: "", last_error: "" })) ?? row;
   }
   try {
-    const client = await mcpClientFor(row, reg);
-    const tools = await client.listTools();
+    const tools = await withMcpAuth(row, reg, (client) => client.listTools());
     return (
       (await reg.updateMcpServer(row.id, {
         tools_json: JSON.stringify(tools),
@@ -275,6 +277,12 @@ function validateMcpBody(body: Record<string, unknown>): Partial<McpServerRow> {
     patch.headers = JSON.stringify(body.headers).slice(0, 8000);
   }
   if (body.enabled !== undefined) patch.enabled = body.enabled ? 1 : 0;
+  if (body.disabled_tools !== undefined) {
+    if (!Array.isArray(body.disabled_tools)) throw new Error("disabled_tools must be an array");
+    patch.disabled_tools = JSON.stringify(
+      body.disabled_tools.filter((n): n is string => typeof n === "string")
+    ).slice(0, 8000);
+  }
 
   return patch;
 }
@@ -542,7 +550,13 @@ async function handleMcp(
     }
     const updated = await reg.updateMcpServer(id, patch);
     if (!updated) return withCors(Response.json({ error: "no such server" }, { status: 404 }));
-    return withCors(Response.json({ server: mcpView(await syncMcpTools(reg, updated)) }));
+    // Only a change the server itself would answer differently is worth a round trip;
+    // renaming one, or switching one of its tools off, is not.
+    const rereads = ["url", "auth", "headers", "enabled"] as const;
+    const changed = rereads.some((key) => patch[key] !== undefined);
+    return withCors(
+      Response.json({ server: mcpView(changed ? await syncMcpTools(reg, updated) : updated) })
+    );
   }
 
   if (id && request.method === "DELETE") {
