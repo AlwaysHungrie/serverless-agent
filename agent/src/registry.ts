@@ -123,6 +123,12 @@ export type SessionRow = {
   chat_type: string;
   /** A public chat's @handle, without the @. Empty for a private one. */
   chat_username: string;
+  /**
+   * The forum topic inside that chat, as a string, or empty when the session is the
+   * whole chat. A forum gets one session per topic, so this is part of what makes a
+   * conversation distinct.
+   */
+  chat_thread_id: string;
 };
 
 /**
@@ -147,7 +153,8 @@ export class SessionRegistry extends DurableObject {
          source TEXT NOT NULL DEFAULT 'web',
          chat_id TEXT NOT NULL DEFAULT '',
          chat_type TEXT NOT NULL DEFAULT '',
-         chat_username TEXT NOT NULL DEFAULT ''
+         chat_username TEXT NOT NULL DEFAULT '',
+         chat_thread_id TEXT NOT NULL DEFAULT ''
        )`
     );
     for (const col of [
@@ -156,6 +163,7 @@ export class SessionRegistry extends DurableObject {
       `chat_id TEXT NOT NULL DEFAULT ''`,
       `chat_type TEXT NOT NULL DEFAULT ''`,
       `chat_username TEXT NOT NULL DEFAULT ''`,
+      `chat_thread_id TEXT NOT NULL DEFAULT ''`,
     ]) {
       try {
         this.ctx.storage.sql.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
@@ -221,7 +229,7 @@ export class SessionRegistry extends DurableObject {
     return this.ctx.storage.sql
       .exec(
         `SELECT id, title, created_at, updated_at, object_id, source, chat_id, chat_type,
-                chat_username
+                chat_username, chat_thread_id
          FROM sessions ORDER BY updated_at DESC`
       )
       .toArray() as unknown as SessionRow[];
@@ -231,19 +239,23 @@ export class SessionRegistry extends DurableObject {
     id: string,
     title: string,
     objectId: string,
-    origin: Pick<SessionRow, "source" | "chat_id" | "chat_type" | "chat_username"> = {
+    origin: Pick<
+      SessionRow,
+      "source" | "chat_id" | "chat_type" | "chat_username" | "chat_thread_id"
+    > = {
       source: "web",
       chat_id: "",
       chat_type: "",
       chat_username: "",
+      chat_thread_id: "",
     }
   ): SessionRow {
     this.ensureSchema();
     const now = Date.now();
     this.ctx.storage.sql.exec(
       `INSERT INTO sessions (id, title, created_at, updated_at, object_id, source, chat_id,
-                             chat_type, chat_username)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             chat_type, chat_username, chat_thread_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at,
                                      object_id = excluded.object_id`,
       id,
@@ -254,20 +266,26 @@ export class SessionRegistry extends DurableObject {
       origin.source,
       origin.chat_id,
       origin.chat_type,
-      origin.chat_username
+      origin.chat_username,
+      origin.chat_thread_id
     );
     return { id, title, created_at: now, updated_at: now, object_id: objectId, ...origin };
   }
 
-  /** The session a Telegram chat maps to, if that chat has one already. */
-  forChat(chatId: string): SessionRow | undefined {
+  /**
+   * The session a Telegram conversation maps to, if it has one already. A topic is its
+   * own conversation, so the thread is matched too — a group's own session (thread '')
+   * never answers for a topic inside it.
+   */
+  forChat(chatId: string, threadId = ""): SessionRow | undefined {
     this.ensureSchema();
     return this.ctx.storage.sql
       .exec(
         `SELECT id, title, created_at, updated_at, object_id, source, chat_id, chat_type,
-                chat_username
-         FROM sessions WHERE chat_id = ? LIMIT 1`,
-        chatId
+                chat_username, chat_thread_id
+         FROM sessions WHERE chat_id = ? AND chat_thread_id = ? LIMIT 1`,
+        chatId,
+        threadId
       )
       .toArray()[0] as unknown as SessionRow | undefined;
   }

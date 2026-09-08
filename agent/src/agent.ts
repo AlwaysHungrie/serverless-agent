@@ -17,6 +17,7 @@ import {
   addressesBot,
   messageFiles,
   messageTextWithQuote,
+  topicId,
   type TelegramMessage,
 } from "./telegram";
 
@@ -1036,7 +1037,10 @@ export class SessionAgent extends Think<Env> {
 
     const bot = new Telegram(config.telegram_bot_token, this.env.TELEGRAM_API_BASE);
     const chatId = String(message.chat.id);
-    await bot.typing(chatId);
+    // Every send has to name the topic, or the answer surfaces in the group's General
+    // topic instead of the one that asked.
+    const thread = topicId(message) || undefined;
+    await bot.typing(chatId, thread);
 
     try {
       await this.ingestTelegramFiles(bot, message);
@@ -1049,13 +1053,18 @@ export class SessionAgent extends Think<Env> {
           ? textOf(result.message as unknown as UIMessage)
           : "That turn did not finish. Try again?";
 
-      await bot.send(chatId, reply || "(no reply)", message.message_id);
+      await bot.send(chatId, reply || "(no reply)", message.message_id, thread);
       // An image the agent drew during the turn is a file, not a link, in a chat.
-      await this.sendDrawnImages(bot, chatId, drawnBefore);
+      await this.sendDrawnImages(bot, chatId, drawnBefore, thread);
       return { ok: true };
     } catch (err) {
       await bot
-        .send(chatId, `Something went wrong: ${err instanceof Error ? err.message : String(err)}`)
+        .send(
+          chatId,
+          `Something went wrong: ${err instanceof Error ? err.message : String(err)}`,
+          undefined,
+          thread
+        )
         .catch(() => {
           // The chat is unreachable; the error is already the answer to the request.
         });
@@ -1100,14 +1109,19 @@ export class SessionAgent extends Think<Env> {
   }
 
   /** Images created during this turn, sent to the chat as photos. */
-  private async sendDrawnImages(bot: Telegram, chatId: string, before: Set<string>): Promise<void> {
+  private async sendDrawnImages(
+    bot: Telegram,
+    chatId: string,
+    before: Set<string>,
+    threadId?: number
+  ): Promise<void> {
     const drawn = this.exec<Attachment>(
       `SELECT * FROM attachments WHERE kind = 'image' ORDER BY ts ASC`
     ).filter((a) => !before.has(a.id));
     for (const image of drawn) {
       const bytes = await this.workspace.readFileBytes(image.path);
       if (!bytes) continue;
-      await bot.sendPhoto(chatId, toArrayBuffer(bytes), image.name, image.text);
+      await bot.sendPhoto(chatId, toArrayBuffer(bytes), image.name, image.text, threadId);
     }
   }
 

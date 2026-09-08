@@ -1,6 +1,6 @@
 import { routeAgentRequest } from "agents";
 import { MODELS, type Env } from "./agent";
-import { Telegram, chatTitle, type TelegramUpdate } from "./telegram";
+import { Telegram, chatTitle, topicId, type TelegramUpdate } from "./telegram";
 import { CAPABILITIES, SECRET_MASK, type CapabilityField } from "./capabilities";
 import type { Config } from "./registry";
 
@@ -18,11 +18,13 @@ function registry(env: Env) {
 }
 
 /**
- * The session a Telegram chat maps to. A DM is one chat, a group is another, so this
- * is what gives every conversation its own session — and keeps giving it the same one.
+ * The session a Telegram conversation maps to. A DM is one chat, a group is another,
+ * and a forum topic is its own conversation inside a group — so this is what gives
+ * each of them its own session, and keeps giving it the same one.
  */
-function sessionIdForChat(chatId: string): string {
-  return `tg-${chatId.replace("-", "n")}`;
+function sessionIdForChat(chatId: string, threadId = ""): string {
+  const base = `tg-${chatId.replace("-", "n")}`;
+  return threadId ? `${base}-t${threadId}` : base;
 }
 
 /**
@@ -163,8 +165,11 @@ async function handleWebhook(
   if (!message?.chat) return new Response("ok");
 
   const chatId = String(message.chat.id);
-  const existing = await reg.forChat(chatId);
-  const sessionId = existing?.id ?? sessionIdForChat(chatId);
+  // A forum topic is a conversation of its own, so it keys a session of its own.
+  const topic = topicId(message);
+  const threadId = topic ? String(topic) : "";
+  const existing = await reg.forChat(chatId, threadId);
+  const sessionId = existing?.id ?? sessionIdForChat(chatId, threadId);
   if (!existing) {
     await reg.create(sessionId, chatTitle(message), env.SessionAgent.idFromName(sessionId).toString(), {
       source: "telegram",
@@ -172,6 +177,7 @@ async function handleWebhook(
       chat_type: message.chat.type,
       // A public group links by handle; a private one links by its internal id.
       chat_username: message.chat.type === "private" ? "" : (message.chat.username ?? ""),
+      chat_thread_id: threadId,
     });
   }
   await reg.touch(sessionId);

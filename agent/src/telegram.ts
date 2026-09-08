@@ -22,6 +22,13 @@ export type TelegramMessage = {
   from?: { id: number; is_bot: boolean; first_name?: string; username?: string };
   entities?: { type: string; offset: number; length: number }[];
   /**
+   * The forum topic this message sits in. A topic behaves like a chat inside a chat,
+   * so this is the second half of what identifies a conversation. Absent in a plain
+   * group, and absent in a forum's "General" topic.
+   */
+  message_thread_id?: number;
+  is_topic_message?: boolean;
+  /**
    * The message this one replies to. Telegram sends only one level, already flattened,
    * so this shape does not recurse.
    */
@@ -30,6 +37,12 @@ export type TelegramMessage = {
     text?: string;
     caption?: string;
     from?: { id: number; is_bot: boolean; first_name?: string; username?: string };
+    /**
+     * Set when the "reply" is really the service message that opened a topic —
+     * Telegram hangs the first message of a topic off it. It names the topic, and it
+     * is not something anyone said, so it is a title rather than a quote.
+     */
+    forum_topic_created?: { name: string };
   };
   photo?: { file_id: string; file_size?: number; width: number; height: number }[];
   document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
@@ -105,19 +118,26 @@ export class Telegram {
   }
 
   /** "Typing…", so a long turn does not look like a dropped message. */
-  async typing(chatId: string): Promise<void> {
-    await this.call("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {
+  async typing(chatId: string, threadId?: number): Promise<void> {
+    await this.call("sendChatAction", {
+      chat_id: chatId,
+      action: "typing",
+      ...(threadId ? { message_thread_id: threadId } : {}),
+    }).catch(() => {
       // Nothing depends on the indicator; a failure here must not fail the turn.
     });
   }
 
   /** Send a reply, split at Telegram's length limit. Returns the message ids sent. */
-  async send(chatId: string, text: string, replyTo?: number): Promise<number[]> {
+  async send(chatId: string, text: string, replyTo?: number, threadId?: number): Promise<number[]> {
     const ids: number[] = [];
     for (const chunk of split(text)) {
       const sent = await this.call<{ message_id: number }>("sendMessage", {
         chat_id: chatId,
         text: chunk,
+        // Without the thread a reply lands in the group's General topic, not the one
+        // that was talking.
+        ...(threadId ? { message_thread_id: threadId } : {}),
         // Telegram's Markdown is strict enough that a stray underscore breaks the
         // whole message, so replies are sent as plain text.
         ...(replyTo && ids.length === 0
@@ -130,9 +150,16 @@ export class Telegram {
   }
 
   /** Send an image the agent drew. */
-  async sendPhoto(chatId: string, bytes: ArrayBuffer, name: string, caption?: string) {
+  async sendPhoto(
+    chatId: string,
+    bytes: ArrayBuffer,
+    name: string,
+    caption?: string,
+    threadId?: number
+  ) {
     const form = new FormData();
     form.set("chat_id", chatId);
+    if (threadId) form.set("message_thread_id", String(threadId));
     if (caption) form.set("caption", caption.slice(0, 1000));
     form.set("photo", new Blob([bytes]), name);
     const res = await fetch(`${this.api}/bot${this.token}/sendPhoto`, { method: "POST", body: form });
@@ -174,13 +201,32 @@ export function messageText(message: TelegramMessage): string {
 }
 
 /**
+ * The forum topic a message belongs to, or 0 for a chat without topics. A forum's
+ * "General" topic carries no thread id of its own, so it counts as the group itself.
+ */
+export function topicId(message: TelegramMessage): number {
+  return message.is_topic_message ? (message.message_thread_id ?? 0) : 0;
+}
+
+/**
+ * What identifies a conversation: the chat, and the topic inside it if there is one.
+ * A group is one conversation; a forum is one conversation per topic.
+ */
+export function chatKey(message: TelegramMessage): string {
+  const topic = topicId(message);
+  return topic ? `${message.chat.id}:${topic}` : String(message.chat.id);
+}
+
+/**
  * The message being replied to, as a Markdown blockquote — who said it and what they
  * said, capped so a reply to a wall of text stays a quote. Empty when the message is
  * not a reply, or when what it replies to carried no words.
  */
 export function quotedText(message: TelegramMessage): string {
   const parent = message.reply_to_message;
-  if (!parent) return "";
+  // In a forum, the first message of a topic "replies" to the service message that
+  // opened it. That is structure, not something anyone said.
+  if (!parent || parent.forum_topic_created) return "";
   const body = (parent.text ?? parent.caption ?? "").trim();
   if (!body) return "";
   const who = parent.from?.first_name ?? parent.from?.username ?? "";
@@ -245,10 +291,19 @@ export function addressesBot(message: TelegramMessage, botUsername: string): boo
   return botUsername !== "" && text.includes(`@${botUsername.toLowerCase()}`);
 }
 
-/** A chat's name, for the sidebar. */
+/**
+ * A conversation's name, for the sidebar. A topic is named after the topic, under the
+ * group it lives in — Telegram only ever gives the topic's name on the service message
+ * that opened it, so a session started mid-topic falls back to the topic's number.
+ */
 export function chatTitle(message: TelegramMessage): string {
   const chat = message.chat;
-  if (chat.title) return chat.title;
+  const topic = topicId(message);
+  if (chat.title) {
+    if (!topic) return chat.title;
+    const named = message.reply_to_message?.forum_topic_created?.name;
+    return `${chat.title} / ${named ?? `Topic ${topic}`}`;
+  }
   const who = chat.first_name ?? chat.username ?? message.from?.first_name ?? "Telegram";
   return `${who} (Telegram)`;
 }

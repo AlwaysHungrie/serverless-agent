@@ -15,6 +15,8 @@ export type SessionRow = {
   chat_type?: string;
   /** A public chat's @handle, without the @. */
   chat_username?: string;
+  /** The forum topic inside that chat, when the session is one topic of a group. */
+  chat_thread_id?: string;
 };
 
 /**
@@ -25,12 +27,18 @@ export type SessionRow = {
  * - A private supergroup is reachable at `t.me/c/<id>/1`, where the id is the chat id
  *   with Telegram's `-100` prefix stripped. It only opens for people already in it,
  *   which is exactly right: it is a link back to a conversation, not an invite.
+ * - A forum topic hangs off its group's link, as `<group>/<topic id>`.
  * - A DM with the bot is the bot's own handle.
  */
 export function telegramLink(session: SessionRow, botUsername: string): string {
-  if (session.chat_username) return `https://t.me/${session.chat_username}`;
+  const topic = session.chat_thread_id ?? "";
+  if (session.chat_username) {
+    const group = `https://t.me/${session.chat_username}`;
+    return topic ? `${group}/${topic}` : group;
+  }
   const id = session.chat_id ?? "";
-  if (id.startsWith("-100")) return `https://t.me/c/${id.slice(4)}/1`;
+  // The trailing segment is the topic in a forum, and the first message otherwise.
+  if (id.startsWith("-100")) return `https://t.me/c/${id.slice(4)}/${topic || "1"}`;
   // A basic group (not a supergroup) has no link of its own; the bot is the way in.
   return botUsername ? `https://t.me/${botUsername}` : "https://t.me";
 }
