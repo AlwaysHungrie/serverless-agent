@@ -282,7 +282,9 @@ function VoiceNote({
 
         <div
           onClick={seek}
-          className="flex h-9 min-w-0 flex-1 cursor-pointer gap-px items-center max-w-48"
+          // Fixed width, not flex-1: the card is w-fit, so a basis-0 track would
+          // contribute nothing to the intrinsic width and collapse to no bars.
+          className="flex h-9 w-48 max-w-full shrink-0 cursor-pointer items-center gap-px"
         >
           {shape.map((h, i) => (
             <span
