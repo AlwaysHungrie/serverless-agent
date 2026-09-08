@@ -29,7 +29,12 @@ type Msg = {
 };
 
 /** A conversation prefix plus its files: what one session hands another on a fork. */
-export type Snapshot = { messages: StoredMessage[]; attachments: Attachment[] };
+export type Snapshot = {
+  messages: StoredMessage[];
+  attachments: Attachment[];
+  /** Files of the question the fork dropped: they return to the composer, unsent. */
+  pending?: Attachment[];
+};
 
 export type StoredMessage = {
   id: number;
@@ -210,11 +215,14 @@ export class SessionAgent extends Agent<Env> {
 
     // Streaming owns its own metering: the object stays billable until the last token.
     if (request.method === "POST" && path === "stream") {
-      const { message } = (await request.json()) as { message?: string };
+      const { message, retry } = (await request.json()) as {
+        message?: string;
+        retry?: boolean;
+      };
       if (message === undefined) {
         return Response.json({ error: "body must be { message: string }" }, { status: 400 });
       }
-      return await this.streamChat(message);
+      return await this.streamChat(message, retry === true);
     }
 
     // Attachment bytes are served raw so an <img src> can point straight at them.
@@ -319,15 +327,20 @@ export class SessionAgent extends Agent<Env> {
     return key;
   }
 
-  /** Drop every object this session holds in the bucket. */
+  /**
+   * Drop every object this session holds in the bucket. The bucket is swept by key
+   * prefix rather than by what the attachments table remembers, so a row lost to a
+   * failed write or an interrupted delete cannot leave its bytes behind for good.
+   */
   private async deleteObjects(): Promise<void> {
-    const keys = this.exec<{ key: string }>(
-      `SELECT key FROM attachments WHERE key != ''`
-    ).map((r) => r.key);
-    // R2 takes up to 1000 keys per delete call.
-    for (let i = 0; i < keys.length; i += 1000) {
-      await this.env.FILES.delete(keys.slice(i, i + 1000));
-    }
+    let cursor: string | undefined;
+    do {
+      const page = await this.env.FILES.list({ prefix: `${this.name}/`, cursor });
+      // R2 takes up to 1000 keys per delete call, and a page holds at most 1000.
+      const keys = page.objects.map((o) => o.key);
+      if (keys.length > 0) await this.env.FILES.delete(keys);
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
   }
 
   /** The bytes behind an attachment, as the data URL OpenRouter wants. */
@@ -636,6 +649,22 @@ export class SessionAgent extends Agent<Env> {
     return p ? promptTokens * p.prompt + completionTokens * p.completion : 0;
   }
 
+  /**
+   * Undo the last exchange so it can be asked again: the trailing assistant replies
+   * and the question that prompted them are dropped, and that question's attachments
+   * are handed back so the retry carries the same files. They are already marked
+   * used, so `pendingAttachments` would never find them.
+   */
+  private rewind(): Attachment[] {
+    const rows = this.rows();
+    let cut = rows.length;
+    while (cut > 0 && rows[cut - 1].role === "assistant") cut--;
+    const question = cut > 0 && rows[cut - 1].role === "user" ? rows[cut - 1] : null;
+    if (question) cut--;
+    for (const row of rows.slice(cut)) this.exec(`DELETE FROM messages WHERE id = ?`, row.id);
+    return question ? this.attachmentsOf(question) : [];
+  }
+
   private saveUser(content: string, attachments: Attachment[]) {
     this.exec(
       `INSERT INTO messages (role, content, ts, attachments) VALUES ('user', ?, ?, ?)`,
@@ -676,12 +705,20 @@ export class SessionAgent extends Agent<Env> {
    * session without reaching back into this one.
    */
   private exportTurns(count: number): Snapshot {
-    const rows = this.rows().slice(0, Math.max(0, count));
-    const ids = new Set(rows.flatMap((row) => JSON.parse(row.attachments || "[]") as string[]));
-    const attachments = [...ids]
-      .map((id) => this.attachment(id))
-      .filter((a): a is Attachment => !!a);
-    return { messages: rows, attachments };
+    const all = this.rows();
+    const rows = all.slice(0, Math.max(0, count));
+    const attachmentsOf = (of: StoredMessage[]) => {
+      const ids = new Set(of.flatMap((row) => JSON.parse(row.attachments || "[]") as string[]));
+      return [...ids].map((id) => this.attachment(id)).filter((a): a is Attachment => !!a);
+    };
+    // The message just past the cut is the question a fork hands back for editing;
+    // its files travel too, so the new session's composer opens with the same chips.
+    const dropped = all[Math.max(0, count)];
+    return {
+      messages: rows,
+      attachments: attachmentsOf(rows),
+      pending: dropped?.role === "user" ? attachmentsOf([dropped]) : [],
+    };
   }
 
   /**
@@ -690,7 +727,10 @@ export class SessionAgent extends Agent<Env> {
    * under this session so deleting either side leaves the other intact.
    */
   private async importTurns(snapshot: Snapshot): Promise<void> {
-    for (const a of snapshot.attachments ?? []) {
+    const carried = (snapshot.attachments ?? []).map((a) => [a, 1] as const);
+    // Copied unsent (used = 0), so they show as chips and ride the next turn.
+    const pending = (snapshot.pending ?? []).map((a) => [a, 0] as const);
+    for (const [a, used] of [...carried, ...pending]) {
       let key = "";
       if (a.key) {
         const object = await this.env.FILES.get(a.key);
@@ -698,7 +738,7 @@ export class SessionAgent extends Agent<Env> {
       }
       this.exec(
         `INSERT OR REPLACE INTO attachments (id, kind, name, mime, text, data, key, bytes, ts, used)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         a.id,
         a.kind,
         a.name,
@@ -707,7 +747,8 @@ export class SessionAgent extends Agent<Env> {
         key ? "" : a.data,
         key,
         a.bytes,
-        a.ts
+        a.ts,
+        used
       );
     }
     for (const row of snapshot.messages ?? []) {
@@ -945,8 +986,8 @@ export class SessionAgent extends Agent<Env> {
    * A whole turn, without streaming: call the model, run any tools it asks for, call
    * it again with the results, and keep going until it answers or runs out of rounds.
    */
-  private async chat(message: string) {
-    const attachments = this.pendingAttachments();
+  private async chat(message: string, retry = false) {
+    const attachments = retry ? this.rewind() : this.pendingAttachments();
     const convo = await this.modelMessages(message, attachments);
     const first = this.shouldName();
     this.saveUser(message, attachments);
@@ -1025,8 +1066,8 @@ export class SessionAgent extends Agent<Env> {
    * event tells the client what is happening, and the next round starts. Text from
    * every round is forwarded as it arrives.
    */
-  private async streamChat(message: string): Promise<Response> {
-    const attachments = this.pendingAttachments();
+  private async streamChat(message: string, retry = false): Promise<Response> {
+    const attachments = retry ? this.rewind() : this.pendingAttachments();
     const convo = await this.modelMessages(message, attachments);
     const first = this.shouldName();
     this.saveUser(message, attachments);

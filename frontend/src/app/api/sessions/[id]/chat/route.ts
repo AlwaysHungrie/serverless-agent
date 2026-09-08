@@ -59,7 +59,13 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const { messages } = (await request.json()) as { messages: ChatUIMessage[] };
+  const { messages, trigger } = (await request.json()) as {
+    messages: ChatUIMessage[];
+    trigger?: "submit-message" | "regenerate-message";
+  };
+  // A retry re-asks the question already on record, so the agent rewinds to it
+  // instead of banking a second copy — and the turn keeps its attachments.
+  const retry = trigger === "regenerate-message";
 
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const text =
@@ -73,7 +79,7 @@ export async function POST(
       const upstream = await fetch(agentUrl(id, "stream"), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, retry }),
         signal: request.signal,
       });
 

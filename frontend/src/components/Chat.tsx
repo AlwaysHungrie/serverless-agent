@@ -911,19 +911,43 @@ function acceptFor(ready: Set<string>): string {
   return accept.join(",");
 }
 
+/**
+ * Where a fork taken at message `i` should cut, and what goes back into the
+ * composer: the user's question is dropped from the copy and returned as a draft
+ * so it can be reworded. An assistant reply with no question before it just cuts.
+ */
+function forkAt(
+  messages: ChatUIMessage[],
+  i: number,
+): [count: number, draft: string] {
+  const prev = messages[i - 1];
+  if (!prev || prev.role !== "user") return [i, ""];
+  const draft = prev.parts
+    .filter((p) => p.type === "text")
+    .map((p) => p.text)
+    .join("");
+  return [i - 1, draft];
+}
+
 export function Chat({
   sessionId,
   initialMessages,
   onTurnEnd,
   onFork,
+  initialInput = "",
 }: {
   sessionId: string;
   initialMessages: StoredMessage[];
   onTurnEnd: () => void;
-  /** Branch the conversation: the first `count` messages become a new session. */
-  onFork: (count: number) => void;
+  /**
+   * Branch the conversation: the first `count` messages become a new session,
+   * and `draft` is the question that was dropped, handed back for editing.
+   */
+  onFork: (count: number, draft: string) => void;
+  /** Text the composer opens with — a forked question waiting to be re-asked. */
+  initialInput?: string;
 }) {
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialInput);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   /** Seconds into the current take, or null when the mic is idle. */
@@ -1165,11 +1189,11 @@ export function Chat({
               sessionId={sessionId}
               at={streaming && last ? null : at}
               pending={streaming && last && m.role === "assistant"}
-              // A fork replays what came before the reply, so the branch starts from
-              // the same question with the answer still to be written.
+              // A fork replays everything before the question that led here; the
+              // question itself returns to the composer, ready to be edited.
               onFork={
                 m.role === "assistant" && !streaming
-                  ? () => onFork(i)
+                  ? () => onFork(...forkAt(messages, i))
                   : undefined
               }
               onRetry={

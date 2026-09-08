@@ -6,10 +6,10 @@ import { ArrowLeft, Check } from "lucide-react";
 import type { Config, ModelOption, ReasoningEffort } from "@/lib/agent";
 
 const REASONING: { id: ReasoningEffort; label: string; hint: string }[] = [
-  { id: "off", label: "Off", hint: "Answer straight away. Cheapest and fastest." },
-  { id: "low", label: "Low", hint: "A short scratchpad before answering." },
-  { id: "medium", label: "Medium", hint: "Balanced. Good for multi-step questions." },
-  { id: "high", label: "High", hint: "Long deliberation. Slowest and most expensive." },
+  { id: "off", label: "Off", hint: "Answers right away. Cheapest." },
+  { id: "low", label: "Low", hint: "Thinks briefly before answering." },
+  { id: "medium", label: "Medium", hint: "Good for multi-step questions." },
+  { id: "high", label: "High", hint: "Thinks hardest. Slowest and priciest." },
 ];
 
 function Row({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
@@ -110,7 +110,7 @@ export default function Settings() {
         | { config: Config; models: ModelOption[]; error?: string }
         | null;
       if (!res.ok || !payload) {
-        setError(payload?.error ?? `Request failed with ${res.status}.`);
+        setError(payload?.error ?? "Couldn't load your settings. Refresh the page to try again.");
         return;
       }
       setModels(payload.models);
@@ -128,7 +128,7 @@ export default function Settings() {
     setSaving(false);
     const payload = (await res.json().catch(() => null)) as { config: Config; error?: string } | null;
     if (!res.ok || !payload) {
-      setError(payload?.error ?? "Could not save. The agent Worker may be unreachable.");
+      setError(payload?.error ?? "Couldn't save. The agent isn't responding. Change the setting again to retry.");
       return;
     }
     // Take the server's row back: it clamps values the UI could send out of range.
@@ -162,8 +162,8 @@ export default function Settings() {
           <span className="text-faint text-[12px] leading-[1.33]">{saving ? "Saving…" : "Saved"}</span>
         </div>
         <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
-          How the agent talks. Applies to every session, new and existing. What it can
-          do lives under <Link href="/capabilities" className="text-ink underline">Capabilities</Link>.
+          Change how the agent writes in every session. To give it tools, go to{" "}
+          <Link href="/capabilities" className="text-ink underline">Capabilities</Link>.
         </p>
 
         {error && (
@@ -178,7 +178,7 @@ export default function Settings() {
 
         {config && (
           <div className="mt-8">
-            <Row title="Model" hint="Which model every session talks to through OpenRouter.">
+            <Row title="Model" hint="Choose which model answers you.">
               <div className="space-y-2">
                 {models.map((m) => (
                   <button
@@ -194,6 +194,7 @@ export default function Settings() {
                       </span>
                       <span className="text-faint block truncate text-[12px] leading-[1.33]">
                         {m.id}
+                        {m.vision ? " · sees images" : ""}
                       </span>
                     </span>
                     {config.model === m.id && <Check size={18} strokeWidth={2} className="shrink-0" />}
@@ -204,7 +205,7 @@ export default function Settings() {
 
             <Row
               title="Custom instructions"
-              hint="Added to the system prompt on every turn. Tone, format, what to avoid."
+              hint="Tell the agent how to reply, every time."
             >
               <textarea
                 value={config.system_prompt}
@@ -221,7 +222,7 @@ export default function Settings() {
 
             <Row
               title="Extended reasoning"
-              hint="How long the model thinks before it starts answering. More thinking costs more tokens."
+              hint="Choose how long the agent thinks before it answers."
             >
               <Segmented
                 options={REASONING.map((r) => ({ id: r.id, label: r.label }))}
@@ -235,7 +236,7 @@ export default function Settings() {
 
             <Row
               title="Creativity"
-              hint="Sampling temperature. Low is repeatable and literal, high is varied and loose."
+              hint="Low keeps answers literal. High makes them varied."
             >
               <Slider
                 value={config.temperature}
@@ -249,7 +250,7 @@ export default function Settings() {
 
             <Row
               title="Reply length cap"
-              hint="Hard limit on a single reply. Off lets the model stop on its own."
+              hint="Set how long a single reply can run."
             >
               <Slider
                 value={config.max_tokens}
@@ -263,7 +264,7 @@ export default function Settings() {
 
             <Row
               title="Context window"
-              hint="How many past messages are resent each turn. A window keeps a long session from growing its prompt — and its cost — without limit."
+              hint="Choose how much of the chat the agent sees each turn."
             >
               <Slider
                 value={config.context_messages}
@@ -277,11 +278,11 @@ export default function Settings() {
 
             <Row
               title="Auto-title sessions"
-              hint="Name a session from its first exchange, instead of leaving it as “New session”."
+              hint="Name each session from your first message."
             >
               <div className="flex items-center justify-between gap-6">
                 <span className="text-muted text-[14px]">
-                  {config.auto_title ? "On — one extra short call per session." : "Off"}
+                  {config.auto_title ? "On" : "Off"}
                 </span>
                 <Toggle on={!!config.auto_title} onChange={(v) => set({ auto_title: v ? 1 : 0 })} />
               </div>

@@ -46,7 +46,7 @@ export type UsageData = {
 };
 
 /** What the session knows about itself: transcript size and exact LLM spend. */
-export type ModelOption = { id: string; label: string };
+export type ModelOption = { id: string; label: string; vision: boolean };
 
 export type ReasoningEffort = "off" | "low" | "medium" | "high";
 

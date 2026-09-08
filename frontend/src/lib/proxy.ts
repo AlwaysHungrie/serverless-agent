@@ -17,7 +17,7 @@ export async function proxy(path: string, init?: RequestInit): Promise<Response>
     const cause = err instanceof Error && err.cause ? ` (${String(err.cause)})` : "";
     return Response.json(
       {
-        error: `Cannot reach the agent Worker at ${AGENT_URL}${cause}. Start it with \`pnpm dev\` in the agent/ directory, or point AGENT_URL at wherever it is listening.`,
+        error: `Cannot reach the Agent at ${AGENT_URL} ${cause}`,
       },
       { status: 502 }
     );

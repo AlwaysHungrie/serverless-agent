@@ -17,6 +17,11 @@ export default function Home() {
   } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** A forked question handed to one session's composer, waiting to be edited. */
+  const [draft, setDraft] = useState<{
+    sessionId: string;
+    text: string;
+  } | null>(null);
 
   /** Reads a proxy response, surfacing the Worker-unreachable message as an error. */
   const readJson = useCallback(async <T,>(res: Response): Promise<T | null> => {
@@ -83,7 +88,7 @@ export default function Home() {
    * Branch a conversation: the first `count` messages are copied into a fresh
    * session, which then opens. The original is left exactly as it was.
    */
-  const forkSession = async (id: string, count: number) => {
+  const forkSession = async (id: string, count: number, draft: string) => {
     const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/fork`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -92,6 +97,8 @@ export default function Home() {
     const row = await readJson<SessionRow>(res);
     if (!row) return;
     await loadSessions();
+    // The question the fork dropped waits in the new session's composer.
+    setDraft(draft ? { sessionId: row.id, text: draft } : null);
     setSelected(row.id);
   };
 
@@ -143,7 +150,10 @@ export default function Home() {
                 sessionId={selected}
                 initialMessages={loaded.messages}
                 onTurnEnd={onTurnEnd}
-                onFork={(count) => void forkSession(selected, count)}
+                initialInput={draft?.sessionId === selected ? draft.text : ""}
+                onFork={(count, text) =>
+                  void forkSession(selected, count, text)
+                }
               />
             )}
           </>
