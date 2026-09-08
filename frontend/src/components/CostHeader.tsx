@@ -7,9 +7,9 @@ import { formatBytes, formatCount, formatMs, formatUsd } from "@/lib/format";
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="min-w-0">
-      <div className="text-[10px] uppercase tracking-wide text-zinc-500">{label}</div>
-      <div className="font-mono text-sm text-zinc-100">{value}</div>
-      {hint && <div className="text-[10px] text-zinc-600">{hint}</div>}
+      <div className="text-faint text-[12px] leading-[1.33]">{label}</div>
+      <div className="text-ink tnum text-[20px] font-[650] leading-[1.3]">{value}</div>
+      {hint && <div className="text-muted tnum text-[12px] leading-[1.33]">{hint}</div>}
     </div>
   );
 }
@@ -33,11 +33,13 @@ export function CostHeader({
   const cfCost = actual?.cost.cloudflareUsd ?? 0;
 
   return (
-    <header className="border-b border-zinc-800 bg-zinc-950">
-      <div className="flex flex-wrap items-center gap-6 px-6 py-3">
+    <header className="border-hairline-soft bg-canvas border-b">
+      <div className="flex flex-wrap items-end gap-x-10 gap-y-4 px-8 pt-6 pb-5">
         <div className="mr-auto min-w-0">
-          <div className="truncate text-sm font-semibold text-zinc-100">{sessionId}</div>
-          <div className="text-[11px] text-zinc-500">{summary?.llm.model ?? "…"}</div>
+          <div className="truncate text-2xl font-[650] leading-[1.25]">{sessionId}</div>
+          <div className="text-muted truncate text-[14px] font-light leading-[1.43]">
+            {summary?.llm.model ?? "…"}
+          </div>
         </div>
 
         <Stat
@@ -52,30 +54,30 @@ export function CostHeader({
           value={actual ? formatUsd(cfCost) : "—"}
           hint={
             actual
-              ? `${formatCount(actual.usage.requests)} DO reqs · ${actual.cost.gbSeconds.toFixed(4)} GB-s`
-              : "not reported"
+              ? `${formatCount(actual.usage.requests)} reqs · ${actual.cost.gbSeconds.toFixed(4)} GB-s`
+              : "not reported yet"
           }
         />
         <Stat label="Total" value={actual ? formatUsd(llmCost + cfCost) : formatUsd(llmCost)} />
 
         <button
           onClick={() => setOpen((v) => !v)}
-          className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 transition hover:border-zinc-500 hover:text-white"
+          className="border-hairline text-ink h-9 shrink-0 rounded-full border px-4 text-[14px] font-semibold transition hover:opacity-70"
         >
           {open ? "Hide" : "Breakdown"}
         </button>
       </div>
 
       {open && (
-        <div className="border-t border-zinc-800 bg-zinc-900/50 px-6 py-4">
+        <div className="border-hairline-soft bg-canvas-soft border-t px-8 py-6">
           {actualError && (
-            <p className="mb-4 rounded-md border border-amber-900 bg-amber-950/40 px-3 py-2 text-[11px] text-amber-200">
+            <p className="border-hairline-soft bg-canvas text-muted mb-6 rounded-[16px] border px-4 py-3 text-[14px] leading-[1.43]">
               {actualError}
             </p>
           )}
 
           {actual && (
-            <div className="grid grid-cols-2 gap-x-8 gap-y-3 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-x-10 gap-y-5 md:grid-cols-4">
               <Stat
                 label="DO duration"
                 value={formatUsd(actual.cost.lines.doDuration)}
@@ -101,36 +103,40 @@ export function CostHeader({
                 value={formatUsd(actual.cost.lines.workerRequests)}
                 hint={`${formatCount(actual.usage.requests)} @ $0.30/M`}
               />
-              <Stat label="CPU time" value={formatMs(actual.usage.cpuTimeUs / 1000)} hint="billed via duration" />
+              <Stat
+                label="CPU time"
+                value={formatMs(actual.usage.cpuTimeUs / 1000)}
+                hint="billed through duration"
+              />
               <Stat
                 label="Namespace storage"
                 value={`${formatUsd(actual.cost.namespaceStorageUsdPerMonth)}/mo`}
-                hint={`${formatBytes(actual.usage.storedBytesNamespace)} across all sessions`}
+                hint={`${formatBytes(actual.usage.storedBytesNamespace)}, all sessions`}
               />
               <Stat label="Errors" value={formatCount(actual.usage.errors)} />
             </div>
           )}
 
-          <div className="mt-4 flex flex-wrap items-center gap-4">
+          <div className="mt-6 flex flex-wrap items-center gap-4">
             <button
               onClick={onRefreshUsage}
-              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 transition hover:border-zinc-500 hover:text-white"
+              className="border-hairline text-ink h-9 rounded-full border px-4 text-[14px] font-semibold transition hover:opacity-70"
             >
               Refresh Cloudflare usage
             </button>
-            <span className="text-[10px] text-zinc-600">
+            <span className="text-faint tnum text-[12px] leading-[1.33]">
               this session&apos;s SQLite: {formatBytes(summary?.sqlite_bytes ?? 0)}
             </span>
           </div>
 
-          <p className="mt-4 max-w-3xl text-[11px] leading-relaxed text-zinc-500">
+          <p className="text-muted mt-6 max-w-3xl text-[14px] font-light leading-[1.43]">
             LLM cost is exact — OpenRouter reports it per call. Cloudflare cost is Cloudflare&apos;s
-            own reported usage priced at published rates, covering the last 24 hours for this
-            object. It lags a few minutes and the underlying datasets are sampled
-            {actual?.usage.sampled ? " (this response was sampled)" : ""}, so it will trail what you
-            just sent. Stored bytes are only reported per namespace, never per object, so that line
-            covers every session. None of this is billed until the Paid plan&apos;s monthly
-            allowances — 1,000,000 DO requests, 400,000 GB-s, 5 GB — run out.
+            own reported usage for this object over the last 24 hours, priced at published rates. It
+            lags a few minutes and the datasets are sampled
+            {actual?.usage.sampled ? " (this response was sampled)" : ""}, so it trails what you just
+            sent. Stored bytes are reported per namespace only, so that line covers every session.
+            None of it is billed until the Paid plan&apos;s monthly allowances — 1,000,000 requests,
+            400,000 GB-s, 5 GB — run out.
           </p>
         </div>
       )}
