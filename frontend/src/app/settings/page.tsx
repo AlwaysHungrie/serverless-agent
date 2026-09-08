@@ -3,7 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Check } from "lucide-react";
-import type { Config, ModelOption, ReasoningEffort } from "@/lib/agent";
+import { CapabilitySection } from "@/components/CapabilitySection";
+import type {
+  Capability,
+  Config,
+  ModelOption,
+  ReasoningEffort,
+} from "@/lib/agent";
 
 const REASONING: { id: ReasoningEffort; label: string; hint: string }[] = [
   { id: "off", label: "Off", hint: "Answers right away. Cheapest." },
@@ -12,11 +18,21 @@ const REASONING: { id: ReasoningEffort; label: string; hint: string }[] = [
   { id: "high", label: "High", hint: "Thinks hardest. Slowest and priciest." },
 ];
 
-function Row({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
+function Row({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="border-hairline-soft border-t py-7">
       <h2 className="text-[16px] font-semibold leading-[1.38]">{title}</h2>
-      <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">{hint}</p>
+      <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
+        {hint}
+      </p>
       <div className="mt-4">{children}</div>
     </section>
   );
@@ -38,7 +54,9 @@ function Segmented<T extends string>({
           key={o.id}
           onClick={() => onChange(o.id)}
           className={`rounded-full px-4 py-1.5 text-[14px] font-semibold transition ${
-            value === o.id ? "bg-canvas text-ink shadow-sm" : "text-muted hover:text-ink"
+            value === o.id
+              ? "bg-canvas text-ink shadow-sm"
+              : "text-muted hover:text-ink"
           }`}
         >
           {o.label}
@@ -74,7 +92,9 @@ function Slider({
         onChange={(e) => onChange(Number(e.target.value))}
         className="accent-ink h-1 flex-1 cursor-pointer"
       />
-      <span className="tnum text-muted w-24 shrink-0 text-right text-[14px]">{format(value)}</span>
+      <span className="tnum text-muted w-24 shrink-0 text-right text-[14px]">
+        {format(value)}
+      </span>
     </div>
   );
 }
@@ -82,6 +102,8 @@ function Slider({
 export default function Settings() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [config, setConfig] = useState<Config | null>(null);
+  /** Connecting the bot is setup rather than a tool, so it is shown here, first. */
+  const [telegram, setTelegram] = useState<Capability | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -89,15 +111,24 @@ export default function Settings() {
   useEffect(() => {
     void (async () => {
       const res = await fetch("/api/config");
-      const payload = (await res.json().catch(() => null)) as
-        | { config: Config; models: ModelOption[]; error?: string }
-        | null;
+      const payload = (await res.json().catch(() => null)) as {
+        config: Config;
+        models: ModelOption[];
+        capabilities: Capability[];
+        error?: string;
+      } | null;
       if (!res.ok || !payload) {
-        setError(payload?.error ?? "Couldn't load your settings. Refresh the page to try again.");
+        setError(
+          payload?.error ??
+            "Couldn't load your settings. Refresh the page to try again.",
+        );
         return;
       }
       setModels(payload.models);
       setConfig(payload.config);
+      setTelegram(
+        payload.capabilities.find((c) => c.id === "telegram") ?? null,
+      );
     })();
   }, []);
 
@@ -109,9 +140,15 @@ export default function Settings() {
       body: JSON.stringify(patch),
     });
     setSaving(false);
-    const payload = (await res.json().catch(() => null)) as { config: Config; error?: string } | null;
+    const payload = (await res.json().catch(() => null)) as {
+      config: Config;
+      error?: string;
+    } | null;
     if (!res.ok || !payload) {
-      setError(payload?.error ?? "Couldn't save. The agent isn't responding. Change the setting again to retry.");
+      setError(
+        payload?.error ??
+          "Couldn't save. The agent isn't responding. Change the setting again to retry.",
+      );
       return;
     }
     // Take the server's row back: it clamps values the UI could send out of range.
@@ -142,11 +179,16 @@ export default function Settings() {
 
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-[32px] font-[650] leading-[1.2]">Settings.</h1>
-          <span className="text-faint text-[12px] leading-[1.33]">{saving ? "Saving…" : "Saved"}</span>
+          <span className="text-faint text-[12px] leading-[1.33]">
+            {saving ? "Saving…" : "Saved"}
+          </span>
         </div>
         <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
           Change how the agent writes in every session. To give it tools, go to{" "}
-          <Link href="/capabilities" className="text-ink underline">Capabilities</Link>.
+          <Link href="/capabilities" className="text-ink underline">
+            Capabilities
+          </Link>
+          .
         </p>
 
         {error && (
@@ -156,11 +198,21 @@ export default function Settings() {
         )}
 
         {!config && !error && (
-          <p className="text-muted py-16 text-[14px] leading-[1.43]">Loading settings…</p>
+          <p className="text-muted py-16 text-[14px] leading-[1.43]">
+            Loading settings…
+          </p>
         )}
 
         {config && (
           <div className="mt-8">
+            {telegram && (
+              <CapabilitySection
+                capability={telegram}
+                config={config}
+                set={set}
+              />
+            )}
+
             <Row title="Model" hint="Choose which model answers you.">
               <div className="space-y-2">
                 {models.map((m) => (
@@ -168,7 +220,9 @@ export default function Settings() {
                     key={m.id}
                     onClick={() => set({ model: m.id })}
                     className={`flex w-full items-center gap-3 rounded-[16px] px-5 py-4 text-left transition ${
-                      config.model === m.id ? "bg-canvas-soft" : "hover:bg-canvas-soft/60"
+                      config.model === m.id
+                        ? "bg-canvas-soft"
+                        : "hover:bg-canvas-soft/60"
                     }`}
                   >
                     <span className="min-w-0 flex-1">
@@ -177,10 +231,12 @@ export default function Settings() {
                       </span>
                       <span className="text-faint block truncate text-[12px] leading-[1.33]">
                         {m.id}
-                        {m.vision ? " · sees images" : ""}
+                        {!m.vision ? " · (no vision)" : ""}
                       </span>
                     </span>
-                    {config.model === m.id && <Check size={18} strokeWidth={2} className="shrink-0" />}
+                    {config.model === m.id && (
+                      <Check size={18} strokeWidth={2} className="shrink-0" />
+                    )}
                   </button>
                 ))}
               </div>

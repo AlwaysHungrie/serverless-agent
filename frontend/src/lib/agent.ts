@@ -109,8 +109,11 @@ export type Config = {
   cap_audio_input: number;
   cap_scheduled_tasks: number;
   cap_memory: number;
+  cap_telegram: number;
 
   brave_api_key: string;
+  telegram_bot_token: string;
+  telegram_bot_username: string;
   image_model: string;
   transcription_model: string;
 };

@@ -167,7 +167,6 @@ export const CAPABILITIES: Capability[] = [
     flag: "cap_telegram",
     label: "Telegram",
     summary: "Talk to the agent from Telegram, in a DM or in a group.",
-    note: "Each chat becomes its own session here, read-only: the conversation continues in Telegram.",
     tools: [],
     fields: [
       {
