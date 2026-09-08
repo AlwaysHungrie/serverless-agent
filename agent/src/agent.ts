@@ -11,11 +11,13 @@ import {
   type ScheduledTask,
   type ToolContext,
 } from "./capabilities";
+import { parseCommand, type Command } from "./commands";
 import { DEFAULT_CONFIG, type Config, type Memory, type SessionRegistry } from "./registry";
 import {
   Telegram,
   addressesBot,
   messageFiles,
+  messageText,
   messageTextWithQuote,
   topicId,
   type TelegramMessage,
@@ -927,6 +929,12 @@ export class SessionAgent extends Think<Env> {
 
   /** A whole turn, without streaming. */
   private async runChat(message: string, retry = false) {
+    const command = parseCommand(message);
+    if (command) {
+      const reply = await this.runCommand(command);
+      if (command === "delete") this.ctx.waitUntil(this.finishDelete());
+      return { body: { reply }, turn: { cost_usd: 0, llm_ms: 0 } };
+    }
     const userMessage = await this.openTurn(message, retry);
     const result = await this.runTurn({ input: [userMessage] });
     const reply =
@@ -951,6 +959,8 @@ export class SessionAgent extends Think<Env> {
    * keeps its partial text and its token cost, because the tokens were generated.
    */
   private async streamChat(message: string, retry = false): Promise<Response> {
+    const command = parseCommand(message);
+    if (command) return await this.streamCommand(command);
     const userMessage = await this.openTurn(message, retry);
     const encoder = new TextEncoder();
     const self = this;
@@ -1021,6 +1031,34 @@ export class SessionAgent extends Think<Env> {
     });
   }
 
+  /**
+   * A command's answer, sent down the same stream a reply would use so the browser
+   * draws it as an ordinary message. No turn runs, so there is no cost to report.
+   */
+  private async streamCommand(command: Command): Promise<Response> {
+    const text = await this.runCommand(command);
+    if (command === "delete") this.ctx.waitUntil(this.finishDelete());
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const event of [
+          { type: "delta", text },
+          { type: "usage", prompt_tokens: 0, completion_tokens: 0, cost_usd: 0, llm_ms: 0 },
+        ]) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        }
+        controller.close();
+      },
+    });
+    return new Response(body, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
+    });
+  }
+
   /* --------------------------------------------------------------- telegram -- */
 
 
@@ -1046,6 +1084,15 @@ export class SessionAgent extends Think<Env> {
     await bot.typing(chatId, thread);
 
     try {
+      // A command is answered by the session itself, without a turn: the model has no
+      // say in whether it gets reset, and a wedged session could not run one anyway.
+      const command = parseCommand(messageText(message));
+      if (command) {
+        await bot.send(chatId, await this.runCommand(command), message.message_id, thread);
+        if (command === "delete") await this.finishDelete();
+        return { ok: true };
+      }
+
       await this.ingestTelegramFiles(bot, message);
       const text = messageTextWithQuote(message) || "(no text)";
       const drawnBefore = new Set(this.exec<{ id: string }>(`SELECT id FROM attachments`).map((r) => r.id));
@@ -1321,6 +1368,40 @@ export class SessionAgent extends Think<Env> {
   }
 
   /** Clear the session in place: transcript, files, and pending tasks. */
+  /**
+   * Run a bang command and say what it did. The answer is written for whoever typed
+   * it, because on Telegram it is the only feedback there is.
+   *
+   * `delete` reports before it acts: destroying the object aborts the isolate, so
+   * anything left to say afterwards may never be said. The caller sends the reply and
+   * then calls `finishDelete`.
+   */
+  private async runCommand(command: Command): Promise<string> {
+    if (command === "unstick") {
+      this.unstick();
+      return "Cleared this session's turn state. Everything it holds is still here — ask again.";
+    }
+    if (command === "new") {
+      const row = await this.registry().get(this.name);
+      if (!row?.chat_id) {
+        return "Nothing to move: this session is not tied to a chat. Start a new one from the sidebar.";
+      }
+      await this.registry().detachChat(this.name);
+      return "Starting fresh. This conversation is kept and still readable in the browser; anything said here from now on goes to a new session.";
+    }
+    await this.registry().remove(this.name);
+    return "Deleted this session and everything in it. The next message starts over.";
+  }
+
+  /**
+   * The half of `!delete` that cannot be reported: the object drops its own storage,
+   * which ends the isolate running this code.
+   */
+  private async finishDelete(): Promise<void> {
+    await this.sweepBucket();
+    this.ctx.waitUntil(this.destroy());
+  }
+
   /**
    * Free a session whose turns have stopped completing. A turn that dies without
    * settling — an isolate evicted mid-flight, a stream that never terminated — leaves

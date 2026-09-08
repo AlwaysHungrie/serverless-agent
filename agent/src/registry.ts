@@ -290,6 +290,32 @@ export class SessionRegistry extends DurableObject {
       .toArray()[0] as unknown as SessionRow | undefined;
   }
 
+  /** One session by id, or nothing. */
+  get(id: string): SessionRow | undefined {
+    this.ensureSchema();
+    return this.ctx.storage.sql
+      .exec(
+        `SELECT id, title, created_at, updated_at, object_id, source, chat_id, chat_type,
+                chat_username, chat_thread_id
+         FROM sessions WHERE id = ? LIMIT 1`,
+        id
+      )
+      .toArray()[0] as unknown as SessionRow | undefined;
+  }
+
+  /**
+   * Cut a session loose from its Telegram chat without touching what it holds. The
+   * chat stops resolving to it, so the next message there starts somewhere new, while
+   * the conversation stays readable in the browser exactly as it was left.
+   */
+  detachChat(id: string) {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      `UPDATE sessions SET chat_id = '', chat_thread_id = '' WHERE id = ?`,
+      id
+    );
+  }
+
   touch(id: string) {
     this.ensureSchema();
     this.ctx.storage.sql.exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, Date.now(), id);
