@@ -35,6 +35,7 @@ import {
   type UsageData,
 } from "@/lib/agent";
 import { formatMs, formatUsd } from "@/lib/format";
+import { fitImage } from "@/lib/image";
 import { startRecording, type Recorder } from "@/lib/recorder";
 
 /** How a tool call reads while it runs, and once it is done. */
@@ -179,6 +180,20 @@ const MARKDOWN_COMPONENTS = (sessionId: string) => ({
 function isAudio(a: Attachment) {
   return a.mime.startsWith("audio/") || a.mime.startsWith("video/");
 }
+
+/**
+ * How long one take may run. 16 kHz mono PCM is 32 kB a second, so ten minutes is
+ * about 19 MB — inside the Worker's audio ceiling. The take is stopped and kept at
+ * the cap rather than split: a transcript cut across two requests loses the sentence
+ * that straddles them.
+ */
+const MAX_RECORDING_SECONDS = 600;
+
+/**
+ * The Worker's image ceiling, less a margin for the multipart envelope. An image over
+ * this is re-encoded in the browser rather than refused: see `fitImage`.
+ */
+const MAX_IMAGE_BYTES = 9_500_000;
 
 /** m:ss, for player positions and durations. */
 function clock(seconds: number) {
@@ -654,15 +669,13 @@ function Bubble({
     .map((p) => p.text)
     .join("");
   const usage = message.parts.find((p) => p.type === "data-usage") as
-    | { type: "data-usage"; data: UsageData }
-    | undefined;
+    { type: "data-usage"; data: UsageData } | undefined;
   const tools = message.parts.filter(
     (p): p is { type: "data-tool"; id?: string; data: ToolData } =>
       p.type === "data-tool",
   );
   const files = message.parts.find((p) => p.type === "data-files") as
-    | { type: "data-files"; data: FilesData }
-    | undefined;
+    { type: "data-files"; data: FilesData } | undefined;
 
   const attachments = files?.data.attachments ?? [];
   const images = attachments.filter((a) => a.kind === "image");
@@ -888,24 +901,31 @@ export function Chat({
     for (const m of messages) if (!seen.has(m.id)) seen.set(m.id, now);
   }, [messages, seen]);
 
-  // Advance the counter once a second while a take is running, and never otherwise.
-  useEffect(() => {
-    if (!recording) return;
-    const id = setInterval(() => setRecordedFor((s) => (s ?? 0) + 1), 1000);
-    return () => clearInterval(id);
-  }, [recording]);
+  const remove = async (id: string) => {
+    setAttachments((a) => a.filter((x) => x.id !== id));
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files/${id}`, {
+      method: "DELETE",
+    });
+  };
 
-  const upload = async (files: File[]) => {
+  const upload = async (picked: File[]) => {
     setUploading(true);
     setUploadError(null);
-    for (const file of files) {
-      const key = `${file.name}-${Date.now()}`;
+    for (const original of picked) {
+      const isImage = original.type.startsWith("image/");
+      const key = `${original.name}-${nextKey.current++}`;
       // An image can be previewed from the browser's own copy straight away, so the
-      // thumbnail appears on pick rather than after the round trip.
-      const preview = file.type.startsWith("image/")
-        ? URL.createObjectURL(file)
-        : null;
-      setGhosts((g) => [...g, { key, name: file.name, preview }]);
+      // thumbnail appears on pick rather than after the round trip — and before the
+      // re-encode below, which on a large photo takes a moment of its own.
+      const preview = isImage ? URL.createObjectURL(original) : null;
+      setGhosts((g) => [...g, { key, name: original.name, preview }]);
+
+      // A photo off a phone is routinely past the ceiling; shrink it rather than
+      // sending the user away to resize it. Anything that cannot be shrunk is sent
+      // as it is, so the Worker's own message is what they see.
+      const file = isImage
+        ? ((await fitImage(original, MAX_IMAGE_BYTES)) ?? original)
+        : original;
 
       const form = new FormData();
       form.set("file", file);
@@ -924,6 +944,14 @@ export function Chat({
       setGhosts((g) => g.filter((x) => x.key !== key));
       if (preview) URL.revokeObjectURL(preview);
 
+      // Cancelled while it was in flight: the Worker has already transcribed and
+      // stored it, so the tidying happens here rather than being left behind.
+      if (cancelled.current.has(key)) {
+        cancelled.current.delete(key);
+        if (payload?.attachment) void remove(payload.attachment.id);
+        continue;
+      }
+
       if (!res.ok || !payload?.attachment) {
         setUploadError(payload?.error ?? `Could not upload ${file.name}.`);
         continue;
@@ -931,6 +959,22 @@ export function Chat({
       setAttachments((a) => [...a, payload.attachment!]);
     }
     setUploading(false);
+  };
+
+  /** Counter behind the ghost keys: unique per pick, without reading the clock. */
+  const nextKey = useRef(0);
+
+  /** Uploads dropped by the user before the Worker answered. */
+  const cancelled = useRef(new Set<string>());
+
+  /** Take a pending upload off the strip; its row is deleted when it lands. */
+  const cancelUpload = (key: string) => {
+    cancelled.current.add(key);
+    setGhosts((g) => {
+      const ghost = g.find((x) => x.key === key);
+      if (ghost?.preview) URL.revokeObjectURL(ghost.preview);
+      return g.filter((x) => x.key !== key);
+    });
   };
 
   /** Hold the live recorder outside React state: it is a handle, not rendered data. */
@@ -965,12 +1009,21 @@ export function Chat({
     }
   };
 
-  const remove = async (id: string) => {
-    setAttachments((a) => a.filter((x) => x.id !== id));
-    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files/${id}`, {
-      method: "DELETE",
-    });
-  };
+  // Advance the counter once a second while a take is running, and never otherwise.
+  // At the ceiling the take is stopped and kept, rather than left running into a clip
+  // the Worker would reject.
+  useEffect(() => {
+    if (!recording) return;
+    const id = setInterval(() => {
+      setRecordedFor((s) => (s ?? 0) + 1);
+      if ((recordedFor ?? 0) + 1 >= MAX_RECORDING_SECONDS) {
+        void finishRecording(true);
+      }
+    }, 1000);
+    return () => clearInterval(id);
+    // finishRecording is stable enough for this: it only reads refs and setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording, recordedFor]);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1004,8 +1057,7 @@ export function Chat({
         )}
         {messages.map((m, i) => {
           const stored = m.parts.find((p) => p.type === "data-meta") as
-            | { type: "data-meta"; data: MetaData }
-            | undefined;
+            { type: "data-meta"; data: MetaData } | undefined;
           const at = stored?.data.ts ?? seen.get(m.id) ?? null;
           const last = i === messages.length - 1;
           return (
@@ -1058,20 +1110,44 @@ export function Chat({
               />
               {ghosts.map((g) =>
                 g.preview ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    key={g.key}
-                    src={g.preview}
-                    alt={g.name}
-                    className="border-hairline-soft h-16 w-16 animate-pulse rounded-[12px] border object-cover"
-                  />
+                  <span key={g.key} className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={g.preview}
+                      alt={g.name}
+                      className="border-hairline-soft h-16 w-16 animate-pulse rounded-[12px] border object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => cancelUpload(g.key)}
+                      aria-label={`Cancel ${g.name}`}
+                      className="bg-ink text-on-primary absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full"
+                    >
+                      <X size={11} strokeWidth={2.5} />
+                    </button>
+                  </span>
                 ) : (
                   <span
                     key={g.key}
-                    className="bg-field text-muted flex animate-pulse items-center gap-2 rounded-full py-1.5 pr-3 pl-3 text-[12px] leading-[1.33]"
+                    className="bg-field text-muted flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[12px] leading-[1.33]"
                   >
-                    <FileText size={13} strokeWidth={1.75} />
-                    <span className="max-w-[200px] truncate">{g.name}</span>
+                    {/* The label pulses, not the chip: the cancel button must stay solid. */}
+                    <FileText
+                      size={13}
+                      strokeWidth={1.75}
+                      className="animate-pulse"
+                    />
+                    <span className="max-w-[200px] animate-pulse truncate">
+                      {g.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => cancelUpload(g.key)}
+                      aria-label={`Cancel ${g.name}`}
+                      className="text-muted hover:text-ink flex h-5 w-5 items-center justify-center rounded-full"
+                    >
+                      <X size={12} strokeWidth={2} />
+                    </button>
                   </span>
                 ),
               )}
@@ -1128,7 +1204,11 @@ export function Chat({
               <span className="text-ink tnum text-[16px]">
                 {clock(recordedFor ?? 0)}
               </span>
-              <span className="text-faint flex-1 text-[13px]">Recording…</span>
+              <span className="text-faint flex-1 text-[13px]">
+                {MAX_RECORDING_SECONDS - (recordedFor ?? 0) <= 30
+                  ? `Stopping in ${MAX_RECORDING_SECONDS - (recordedFor ?? 0)}s`
+                  : "Recording…"}
+              </span>
               <button
                 type="button"
                 onClick={() => void finishRecording(false)}

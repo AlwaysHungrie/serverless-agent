@@ -89,8 +89,16 @@ const TITLE_PROMPT =
 /** How many times a single turn may call tools before it must answer. */
 const MAX_TOOL_ROUNDS = 6;
 
-/** Attachment ceiling. Durable Object SQLite refuses very large values outright. */
-const MAX_UPLOAD_BYTES = 1_000_000;
+/**
+ * Attachment ceilings, per kind. Bytes live in R2, so the limits are about what each
+ * kind costs downstream rather than what SQLite will hold: a text file is inlined into
+ * every prompt, an image is base64'd into one, and audio is transcribed once.
+ */
+const MAX_UPLOAD_BYTES = {
+  text: 1_000_000,
+  image: 10_000_000,
+  audio: 25_000_000,
+} as const;
 
 const TEXT_EXTENSIONS =
   /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|log|html?|xml|css|jsx?|tsx?|py|rb|go|rs|java|kt|c|h|cpp|sh|sql)$/i;
@@ -326,16 +334,24 @@ export class SessionAgent extends Agent<Env> {
     if (!file || typeof file === "string") {
       return { body: { error: "expected a file field" }, status: 400 };
     }
-    if (file.size > MAX_UPLOAD_BYTES) {
-      return {
-        body: { error: `${file.name} is ${Math.round(file.size / 1000)} kB; the limit is 1000 kB.` },
-        status: 413,
-      };
-    }
-
     const config = this.config();
     const mime = file.type || "application/octet-stream";
     const id = crypto.randomUUID().slice(0, 12);
+
+    const limit =
+      mime.startsWith("image/")
+        ? MAX_UPLOAD_BYTES.image
+        : mime.startsWith("audio/") || mime.startsWith("video/")
+          ? MAX_UPLOAD_BYTES.audio
+          : MAX_UPLOAD_BYTES.text;
+    if (file.size > limit) {
+      return {
+        body: {
+          error: `${file.name} is ${formatMb(file.size)}; the limit for this kind of file is ${formatMb(limit)}.`,
+        },
+        status: 413,
+      };
+    }
 
     if (mime.startsWith("image/")) {
       if (!enabled(config, "vision")) {
@@ -1149,6 +1165,12 @@ function base64ToBytes(encoded: string): ArrayBuffer {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes.buffer;
+}
+
+function formatMb(bytes: number): string {
+  return bytes >= 1_000_000
+    ? `${(bytes / 1_000_000).toFixed(1)} MB`
+    : `${Math.round(bytes / 1000)} kB`;
 }
 
 function bytesToBase64(buffer: ArrayBuffer): string {
