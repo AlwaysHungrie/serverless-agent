@@ -7,3 +7,4 @@ out/
 *.log
 .dev.vars
 .wrangler/
+.cf.env

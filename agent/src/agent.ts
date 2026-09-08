@@ -1,5 +1,5 @@
 import { Agent } from "agents";
-import { estimateCost, sessionsIncludedPerMonth, MODEL_FALLBACK_PRICE, type UsageTotals } from "./pricing";
+import { MODEL_FALLBACK_PRICE } from "./pricing";
 import type { SessionRegistry } from "./registry";
 
 export type Env = {
@@ -7,6 +7,9 @@ export type Env = {
   SessionRegistry: DurableObjectNamespace<SessionRegistry>;
   OPENROUTER_API_KEY: string;
   MODEL: string;
+  /** Cloudflare API token with Account Analytics: Read, for real usage lookups. */
+  CF_ANALYTICS_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
 };
 
 type Msg = { role: "user" | "assistant" | "system"; content: string };
@@ -29,22 +32,10 @@ const SYSTEM_PROMPT = "You are a concise assistant running inside a Cloudflare D
  * The instance name in the URL (/agents/session-agent/<session-id>) is the session id.
  */
 export class SessionAgent extends Agent<Env> {
-  /** Wall clock at the moment this DO instance woke into memory. */
-  private instanceWokeAt = Date.now();
-  /** Wall-clock milliseconds of this instance already folded into the stored total. */
-  private wallClockCheckpoint = 0;
-  /** Row counters for the current request, filled by exec(). */
-  private rowsRead = 0;
-  private rowsWritten = 0;
   private schemaReady = false;
 
-  /** Run SQL and accumulate the row counters Cloudflare bills on. */
   private exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): T[] {
-    const cursor = this.ctx.storage.sql.exec(query, ...(bindings as never[]));
-    const rows = cursor.toArray() as T[];
-    this.rowsRead += cursor.rowsRead;
-    this.rowsWritten += cursor.rowsWritten;
-    return rows;
+    return this.ctx.storage.sql.exec(query, ...(bindings as never[])).toArray() as T[];
   }
 
   private ensureSchema() {
@@ -74,86 +65,10 @@ export class SessionAgent extends Agent<Env> {
         // Column already present.
       }
     }
-    // One row, one UPDATE per request. An earlier key/value shape cost six row
-    // writes per request, which made the meter more expensive than the work it
-    // was measuring.
-    this.exec(
-      `CREATE TABLE IF NOT EXISTS usage_totals (
-         id INTEGER PRIMARY KEY CHECK (id = 1),
-         requests REAL NOT NULL DEFAULT 0,
-         active_ms REAL NOT NULL DEFAULT 0,
-         wall_clock_ms REAL NOT NULL DEFAULT 0,
-         rows_read REAL NOT NULL DEFAULT 0,
-         rows_written REAL NOT NULL DEFAULT 0,
-         prompt_tokens REAL NOT NULL DEFAULT 0,
-         completion_tokens REAL NOT NULL DEFAULT 0,
-         llm_cost_usd REAL NOT NULL DEFAULT 0
-       )`
-    );
-    this.exec(`INSERT OR IGNORE INTO usage_totals (id) VALUES (1)`);
     this.schemaReady = true;
   }
 
-  /** Token and cost deltas for the current request, flushed with the counters. */
-  private pending = { promptTokens: 0, completionTokens: 0, llmCostUsd: 0 };
-
-  private counters(): Record<string, number> {
-    return this.exec<Record<string, number>>(`SELECT * FROM usage_totals WHERE id = 1`)[0] ?? {};
-  }
-
-  private totals(): UsageTotals {
-    const c = this.counters();
-    return {
-      requests: c.requests ?? 0,
-      activeMs: c.active_ms ?? 0,
-      wallClockMs: c.wall_clock_ms ?? 0,
-      rowsRead: c.rows_read ?? 0,
-      rowsWritten: c.rows_written ?? 0,
-      storageBytes: this.ctx.storage.sql.databaseSize,
-      promptTokens: c.prompt_tokens ?? 0,
-      completionTokens: c.completion_tokens ?? 0,
-      llmCostUsd: c.llm_cost_usd ?? 0,
-    };
-  }
-
-  /**
-   * Fold one request's resource use into the persisted counters.
-   * `billableMs` is the wall clock Cloudflare would charge duration for, which for a
-   * stream is the whole time the object stayed resident producing it.
-   */
-  private recordRequest(billableMs: number) {
-    const instanceWallClock = Date.now() - this.instanceWokeAt;
-    this.wallClockCheckpoint = instanceWallClock;
-
-    // A single UPDATE, so metering costs one row write per request. That row cannot
-    // count itself while it is being written, so the +1s below add the read and the
-    // write this statement is about to perform.
-    this.exec(
-      `UPDATE usage_totals SET
-         requests = requests + 1,
-         active_ms = active_ms + ?,
-         wall_clock_ms = wall_clock_ms + ?,
-         rows_read = rows_read + ?,
-         rows_written = rows_written + ?,
-         prompt_tokens = prompt_tokens + ?,
-         completion_tokens = completion_tokens + ?,
-         llm_cost_usd = llm_cost_usd + ?
-       WHERE id = 1`,
-      billableMs,
-      billableMs,
-      this.rowsRead + 1,
-      this.rowsWritten + 1,
-      this.pending.promptTokens,
-      this.pending.completionTokens,
-      this.pending.llmCostUsd
-    );
-    this.pending = { promptTokens: 0, completionTokens: 0, llmCostUsd: 0 };
-  }
-
   async onRequest(request: Request): Promise<Response> {
-    const startedAt = Date.now();
-    this.rowsRead = 0;
-    this.rowsWritten = 0;
     this.ensureSchema();
 
     const url = new URL(request.url);
@@ -163,7 +78,7 @@ export class SessionAgent extends Agent<Env> {
     if (request.method === "POST" && path === "stream") {
       const { message } = (await request.json()) as { message?: string };
       if (!message) return Response.json({ error: "body must be { message: string }" }, { status: 400 });
-      return this.streamChat(message, startedAt);
+      return this.streamChat(message);
     }
 
     let body: unknown;
@@ -177,13 +92,10 @@ export class SessionAgent extends Agent<Env> {
         turn = result.turn;
       } else if (request.method === "GET" && path === "messages") {
         body = { messages: this.messages() };
-      } else if (request.method === "GET" && path === "metrics") {
-        body = this.metrics();
+      } else if (request.method === "GET" && path === "summary") {
+        body = this.summary();
       } else if (request.method === "POST" && path === "reset") {
         this.exec(`DELETE FROM messages`);
-        this.exec(`UPDATE usage_totals SET requests = 0, active_ms = 0, wall_clock_ms = 0,
-                     rows_read = 0, rows_written = 0, prompt_tokens = 0,
-                     completion_tokens = 0, llm_cost_usd = 0 WHERE id = 1`);
         body = { ok: true };
       } else {
         status = 404;
@@ -194,23 +106,8 @@ export class SessionAgent extends Agent<Env> {
       body = { error: err instanceof Error ? err.message : String(err) };
     }
 
-    const activeMs = Date.now() - startedAt;
-    this.recordRequest(activeMs);
-
     return Response.json(
-      {
-        ...(body as object),
-        _meta: {
-          session: this.name,
-          request: {
-            active_ms: activeMs,
-            rows_read: this.rowsRead,
-            rows_written: this.rowsWritten,
-            storage_bytes: this.ctx.storage.sql.databaseSize,
-            ...turn,
-          },
-        },
-      },
+      { ...(body as object), _meta: { session: this.name, request: { ...turn } } },
       { status }
     );
   }
@@ -247,9 +144,6 @@ export class SessionAgent extends Agent<Env> {
       cost,
       ms
     );
-    this.pending.promptTokens += promptTokens;
-    this.pending.completionTokens += completionTokens;
-    this.pending.llmCostUsd += cost;
   }
 
   private openrouter(messages: Msg[], stream: boolean, signal?: AbortSignal) {
@@ -296,11 +190,9 @@ export class SessionAgent extends Agent<Env> {
    * client stopped it. A stopped reply keeps its partial text and its token cost,
    * because OpenRouter has already generated (and charged for) what arrived.
    */
-  private streamChat(message: string, startedAt: number): Response {
+  private streamChat(message: string): Response {
     const messages = this.modelMessages(message);
     this.exec(`INSERT INTO messages (role, content, ts) VALUES ('user', ?, ?)`, message, Date.now());
-    const userMessageRowsWritten = this.rowsWritten;
-    const userMessageRowsRead = this.rowsRead;
 
     const encoder = new TextEncoder();
     const upstream = new AbortController();
@@ -318,7 +210,6 @@ export class SessionAgent extends Agent<Env> {
       const llmMs = Date.now() - llmStart;
       const cost = this.priceOf(promptTokens, completionTokens, reportedCost);
       this.saveAssistant(text + (aborted ? "\n\n_(stopped)_" : ""), promptTokens, completionTokens, cost, llmMs);
-      this.recordRequest(Date.now() - startedAt);
       return { cost, llmMs };
     };
 
@@ -379,10 +270,6 @@ export class SessionAgent extends Agent<Env> {
             completion_tokens: completionTokens,
             cost_usd: result?.cost ?? 0,
             llm_ms: result?.llmMs ?? 0,
-            do_active_ms: Date.now() - startedAt,
-            rows_read: self.rowsRead + userMessageRowsRead,
-            rows_written: self.rowsWritten + userMessageRowsWritten,
-            storage_bytes: self.ctx.storage.sql.databaseSize,
           });
           send({ type: "done" });
           controller.close();
@@ -410,24 +297,30 @@ export class SessionAgent extends Agent<Env> {
     });
   }
 
-  private metrics() {
-    const totals = this.totals();
-    const messageCount = this.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM messages`)[0]?.n ?? 0;
+  /**
+   * What this session knows about itself: the transcript and the LLM spend, which
+   * OpenRouter reports exactly. Cloudflare's own usage is not tracked here — it is
+   * read back from the Analytics API, which is the billing authority.
+   */
+  private summary() {
+    const row = this.exec<{ n: number; prompt: number; completion: number; cost: number }>(
+      `SELECT COUNT(*) AS n,
+              COALESCE(SUM(prompt_tokens), 0) AS prompt,
+              COALESCE(SUM(completion_tokens), 0) AS completion,
+              COALESCE(SUM(cost_usd), 0) AS cost
+       FROM messages`
+    )[0];
+
     return {
       session: this.name,
-      messages: messageCount,
-      usage: {
-        do_requests: totals.requests,
-        do_handler_active_ms: totals.activeMs,
-        do_wall_clock_ms: totals.wallClockMs,
-        do_rows_read: totals.rowsRead,
-        do_rows_written: totals.rowsWritten,
-        sqlite_bytes: totals.storageBytes,
-        prompt_tokens: totals.promptTokens,
-        completion_tokens: totals.completionTokens,
+      messages: row?.n ?? 0,
+      llm: {
+        model: this.env.MODEL,
+        prompt_tokens: row?.prompt ?? 0,
+        completion_tokens: row?.completion ?? 0,
+        cost_usd: row?.cost ?? 0,
       },
-      cost: estimateCost(totals, this.env.MODEL),
-      capacity: sessionsIncludedPerMonth(totals),
+      sqlite_bytes: this.ctx.storage.sql.databaseSize,
     };
   }
 }

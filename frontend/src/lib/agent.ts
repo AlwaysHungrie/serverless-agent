@@ -1,7 +1,13 @@
 /** Server-side access to the Cloudflare Worker that hosts the agent. */
 export const AGENT_URL = process.env.AGENT_URL ?? "http://localhost:8787";
 
-export type SessionRow = { id: string; title: string; created_at: number; updated_at: number };
+export type SessionRow = {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  object_id: string;
+};
 
 export type StoredMessage = {
   id: number;
@@ -14,48 +20,54 @@ export type StoredMessage = {
   ms: number;
 };
 
-/** Per-message usage, streamed to the client as a `data-usage` part. */
+/**
+ * Per-message usage, streamed to the client as a `data-usage` part.
+ * Token counts and cost come from OpenRouter, so they are exact and immediate.
+ * There is deliberately no Cloudflare figure here: its analytics lag minutes, so a
+ * per-message Cloudflare cost could only ever be a guess.
+ */
 export type UsageData = {
   prompt_tokens: number;
   completion_tokens: number;
   cost_usd: number;
   llm_ms: number;
-  do_active_ms?: number;
-  rows_read?: number;
-  rows_written?: number;
 };
 
-export type Metrics = {
+/** What the session knows about itself: transcript size and exact LLM spend. */
+export type Summary = {
   session: string;
   messages: number;
+  llm: { model: string; prompt_tokens: number; completion_tokens: number; cost_usd: number };
+  sqlite_bytes: number;
+};
+
+/** Durable Object usage as reported by Cloudflare, priced at published rates. */
+export type ActualUsage = {
+  session: string;
   usage: {
-    do_requests: number;
-    do_handler_active_ms: number;
-    do_wall_clock_ms: number;
-    do_rows_read: number;
-    do_rows_written: number;
-    sqlite_bytes: number;
-    prompt_tokens: number;
-    completion_tokens: number;
+    requests: number;
+    errors: number;
+    activeTimeUs: number;
+    cpuTimeUs: number;
+    subrequests: number;
+    storageReadUnits: number;
+    storageWriteUnits: number;
+    storageDeletes: number;
+    storedBytesNamespace: number;
+    sampled: boolean;
   };
   cost: {
-    model: string;
     gbSeconds: number;
-    storageGb: number;
-    marginalUsd: {
+    lines: {
       doRequests: number;
       doDuration: number;
       doRowsRead: number;
       doRowsWritten: number;
-      doStorageMonth: number;
       workerRequests: number;
-      llm: number;
     };
     cloudflareUsd: number;
-    totalUsd: number;
-    note: string;
+    namespaceStorageUsdPerMonth: number;
   };
-  capacity: { sessions: number | null; bindingLimit: string };
 };
 
 export function agentUrl(sessionId: string, path: string) {

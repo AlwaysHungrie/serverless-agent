@@ -73,9 +73,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                   completion_tokens: event.completion_tokens,
                   cost_usd: event.cost_usd,
                   llm_ms: event.llm_ms,
-                  do_active_ms: event.do_active_ms,
-                  rows_read: event.rows_read,
-                  rows_written: event.rows_written,
                 },
               });
             } else if (event.type === "error") {

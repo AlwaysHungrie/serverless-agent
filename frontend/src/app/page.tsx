@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Chat } from "@/components/Chat";
 import { CostHeader } from "@/components/CostHeader";
 import { Sidebar } from "@/components/Sidebar";
-import type { Metrics, SessionRow, StoredMessage } from "@/lib/agent";
+import type { ActualUsage, SessionRow, StoredMessage, Summary } from "@/lib/agent";
 
 export default function Home() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -12,7 +12,9 @@ export default function Home() {
   // Keyed by session so switching sessions shows a loader instead of the previous
   // session's transcript, without having to null it out on every selection change.
   const [loaded, setLoaded] = useState<{ sessionId: string; messages: StoredMessage[] } | null>(null);
-  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [actual, setActual] = useState<ActualUsage | null>(null);
+  const [actualError, setActualError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   /** Reads a proxy response, surfacing the Worker-unreachable message as an error. */
@@ -32,13 +34,29 @@ export default function Home() {
     return payload?.sessions ?? [];
   }, [readJson]);
 
-  const loadMetrics = useCallback(
+  const loadSummary = useCallback(
     async (id: string) => {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/metrics`);
-      setMetrics(await readJson<Metrics>(res));
+      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/summary`);
+      setSummary(await readJson<Summary>(res));
     },
     [readJson]
   );
+
+  /**
+   * Cloudflare's analytics are the billing authority, but they lag, so this is a
+   * separate on-demand fetch rather than something refreshed after every message.
+   */
+  const loadActualUsage = useCallback(async (id: string) => {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/usage`);
+    const payload = (await res.json().catch(() => null)) as (ActualUsage & { error?: string }) | null;
+    if (!res.ok || !payload || payload.error) {
+      setActual(null);
+      setActualError(payload?.error ?? `Cloudflare usage unavailable (${res.status}).`);
+      return;
+    }
+    setActual(payload);
+    setActualError(null);
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -55,9 +73,10 @@ export default function Home() {
       const payload = await readJson<{ messages: StoredMessage[] }>(res);
       if (!payload) return;
       setLoaded({ sessionId: selected, messages: payload.messages });
-      await loadMetrics(selected);
+      await loadSummary(selected);
+      await loadActualUsage(selected);
     })();
-  }, [selected, loadMetrics, readJson]);
+  }, [selected, loadSummary, loadActualUsage, readJson]);
 
   const createSession = async () => {
     const res = await fetch("/api/sessions", {
@@ -78,12 +97,12 @@ export default function Home() {
   };
 
   const onTurnEnd = useCallback(() => {
-    if (selected) loadMetrics(selected);
+    if (selected) loadSummary(selected);
     loadSessions();
-  }, [selected, loadMetrics, loadSessions]);
+  }, [selected, loadSummary, loadSessions]);
 
   return (
-    <div className="flex h-screen bg-zinc-900 text-zinc-100">
+    <div className="bg-canvas text-ink flex h-screen">
       <Sidebar
         sessions={sessions}
         selected={selected}
@@ -94,15 +113,21 @@ export default function Home() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         {error && (
-          <div className="border-b border-amber-900 bg-amber-950/60 px-6 py-3 text-xs text-amber-200">
+          <div className="bg-canvas-soft text-ink border-hairline-soft border-b px-8 py-4 text-[14px] leading-[1.43]">
             {error}
           </div>
         )}
         {selected ? (
           <>
-            <CostHeader sessionId={selected} metrics={metrics} />
+            <CostHeader
+              sessionId={selected}
+              summary={summary}
+              actual={actual}
+              actualError={actualError}
+              onRefreshUsage={() => loadActualUsage(selected)}
+            />
             {loaded?.sessionId !== selected ? (
-              <div className="flex flex-1 items-center justify-center text-sm text-zinc-600">
+              <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light">
                 Waking Durable Object…
               </div>
             ) : (
@@ -115,7 +140,7 @@ export default function Home() {
             )}
           </>
         ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-zinc-600">
+          <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light">
             Create a session to start.
           </div>
         )}

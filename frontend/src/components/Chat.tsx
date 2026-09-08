@@ -9,14 +9,12 @@ import { formatMs, formatUsd } from "@/lib/format";
 
 function UsageLine({ usage }: { usage: UsageData }) {
   return (
-    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-zinc-500">
+    <div className="border-hairline-soft text-faint tnum mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t pt-3 text-[12px] leading-[1.33]">
       <span>
         {usage.prompt_tokens} in / {usage.completion_tokens} out
       </span>
-      <span className="text-zinc-400">{formatUsd(usage.cost_usd)}</span>
+      <span className="text-ink font-semibold">{formatUsd(usage.cost_usd)}</span>
       <span>{formatMs(usage.llm_ms)} model</span>
-      {usage.do_active_ms != null && <span>{formatMs(usage.do_active_ms)} DO active</span>}
-      {usage.rows_written != null && <span>{usage.rows_written} rows written</span>}
     </div>
   );
 }
@@ -34,8 +32,10 @@ function Bubble({ message }: { message: ChatUIMessage }) {
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-2xl rounded-lg px-4 py-3 text-sm leading-relaxed ${
-          isUser ? "bg-blue-600 text-white" : "border border-zinc-800 bg-zinc-900 text-zinc-100"
+        className={`max-w-2xl rounded-[24px] px-6 py-5 text-[16px] leading-[1.38] ${
+          isUser
+            ? "bg-ink text-on-primary"
+            : "bg-canvas border-hairline-soft text-ink border"
         }`}
       >
         <div className="whitespace-pre-wrap">{text || (isUser ? "" : "…")}</div>
@@ -102,9 +102,9 @@ export function Chat({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex-1 space-y-4 overflow-y-auto px-6 py-6">
+      <div className="flex-1 space-y-6 overflow-y-auto px-8 py-10">
         {messages.length === 0 && (
-          <p className="pt-16 text-center text-sm text-zinc-600">
+          <p className="text-muted mx-auto max-w-md pt-20 text-center text-[20px] font-light leading-[1.38]">
             Send a message. The Durable Object wakes, streams a reply, and bills for the seconds it
             stays awake.
           </p>
@@ -113,19 +113,19 @@ export function Chat({
           <Bubble key={m.id} message={m} />
         ))}
         {error && (
-          <div className="rounded-lg border border-red-900 bg-red-950/50 px-4 py-3 text-sm text-red-300">
+          <div className="bg-ink text-on-primary rounded-[24px] px-6 py-5 text-[16px] leading-[1.38]">
             {error.message}
           </div>
         )}
         <div ref={bottom} />
       </div>
 
-      <form onSubmit={submit} className="flex gap-2 border-t border-zinc-800 bg-zinc-950 px-6 py-4">
+      <form onSubmit={submit} className="border-hairline-soft flex gap-3 border-t px-8 py-6">
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Message the agent…"
-          className="flex-1 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-zinc-600"
+          className="bg-field placeholder:text-faint text-ink focus:ring-ink h-12 flex-1 rounded-[16px] px-4 text-[16px] outline-none focus:ring-2"
         />
         {streaming ? (
           <button
@@ -134,7 +134,7 @@ export function Chat({
               stop();
               onTurnEnd();
             }}
-            className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 transition hover:border-red-600 hover:text-red-400"
+            className="border-hairline text-ink hover:bg-canvas-soft h-12 shrink-0 rounded-full border px-6 text-[16px] font-semibold transition"
           >
             Stop
           </button>
@@ -142,7 +142,7 @@ export function Chat({
           <button
             type="submit"
             disabled={!input.trim()}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 disabled:opacity-40"
+            className="bg-ink text-on-primary h-12 shrink-0 rounded-full px-6 text-[16px] font-semibold transition hover:opacity-85 disabled:opacity-30"
           >
             Send
           </button>

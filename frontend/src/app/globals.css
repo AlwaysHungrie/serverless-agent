@@ -1,26 +1,54 @@
 @import "tailwindcss";
 
+/* Design tokens — see DESIGN.md. Monochrome ink-on-canvas, one accent blue. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --color-ink: #141414;
+  --color-ink-soft: #262626;
+  --color-canvas: #ffffff;
+  --color-canvas-soft: #f3f3f3;
+  --color-field: #f0f0f0;
+  --color-hairline-soft: #f0f0f0;
+  --color-hairline: #e0e0e0;
+  --color-text-muted: #707070;
+  --color-text-faint: #adadad;
+  --color-accent: #0066ff;
+  --color-on-primary: #ffffff;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-ink: var(--color-ink);
+  --color-ink-soft: var(--color-ink-soft);
+  --color-canvas: var(--color-canvas);
+  --color-canvas-soft: var(--color-canvas-soft);
+  --color-field: var(--color-field);
+  --color-hairline-soft: var(--color-hairline-soft);
+  --color-hairline: var(--color-hairline);
+  --color-muted: var(--color-text-muted);
+  --color-faint: var(--color-text-faint);
+  --color-accent: var(--color-accent);
+  --color-on-primary: var(--color-on-primary);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-inter);
+
+  /* Radius scale: sm 16 / md 24 / full pill. */
+  --radius-sm: 16px;
+  --radius-md: 24px;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-inter), -apple-system, "Helvetica Neue", Arial, sans-serif;
+  font-weight: 450;
+}
+
+/* Saans substitute weights: 650 headings, 450 body, 300 light leads. */
+h1, h2, h3, h4 {
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+/* Cost figures are compared column-to-column, so digits must not reflow. */
+.tnum {
+  font-variant-numeric: tabular-nums;
 }
