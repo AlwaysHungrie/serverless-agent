@@ -1149,8 +1149,7 @@ export function Chat({
       <div className="flex-1 space-y-6 overflow-y-auto px-8 py-10">
         {messages.length === 0 && (
           <p className="text-muted mx-auto max-w-md pt-20 text-center text-[20px] font-light leading-[1.38]">
-            Send a message. The Durable Object wakes, streams a reply, and bills
-            for the seconds it stays awake.
+            Agent is online. Send a message.
           </p>
         )}
         {messages.map((m, i) => {

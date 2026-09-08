@@ -45,7 +45,7 @@ export function Sidebar({
       <div className="flex-1 space-y-2 overflow-y-auto px-4 pb-6">
         {sessions.length === 0 && (
           <p className="text-muted px-2 py-10 text-center text-[14px] leading-[1.43]">
-            No sessions yet. Create one to spin up a Durable Object.
+            No sessions yet.
           </p>
         )}
         {sessions.map((s) => (
@@ -55,9 +55,16 @@ export function Sidebar({
               selected === s.id ? "bg-canvas-soft" : "hover:bg-canvas-soft/60"
             }`}
           >
-            <button onClick={() => onSelect(s.id)} className="min-w-0 flex-1 text-left">
-              <div className="truncate text-[16px] font-semibold leading-[1.38]">{s.title}</div>
-              <div className="text-faint tnum truncate text-[12px] leading-[1.33]">{s.id}</div>
+            <button
+              onClick={() => onSelect(s.id)}
+              className="min-w-0 flex-1 text-left"
+            >
+              <div className="truncate text-[16px] font-semibold leading-[1.38]">
+                {s.title}
+              </div>
+              <div className="text-faint tnum truncate text-[12px] leading-[1.33]">
+                {s.id}
+              </div>
             </button>
             <button
               onClick={() => onDelete(s.id)}
@@ -89,7 +96,6 @@ export function Sidebar({
           <Settings size={18} strokeWidth={1.75} />
         </Link>
       </div>
-
     </aside>
   );
 }
