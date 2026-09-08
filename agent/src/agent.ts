@@ -5,6 +5,8 @@ import type { Schedule } from "agents";
 import { jsonSchema, tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import {
   CAPABILITIES,
+  mcpServerReady,
+  mcpToolSpecs,
   enabled,
   runTool,
   toolsFor,
@@ -12,6 +14,7 @@ import {
   type ToolContext,
 } from "./capabilities";
 import { parseCommand, type Command } from "./commands";
+import type { McpServerRow } from "./mcp";
 import { DEFAULT_CONFIG, type Config, type Memory, type SessionRegistry } from "./registry";
 import {
   Telegram,
@@ -166,6 +169,8 @@ export class SessionAgent extends Think<Env> {
   private schemaReady = false;
   private currentConfig: Config | undefined;
   private memories: Memory[] = [];
+  /** The external MCP servers, reloaded per turn so a connection made mid-session works. */
+  private mcpServers: McpServerRow[] = [];
 
   /** Usage accumulated by `onStepFinish` for the turn that is running now. */
   private turnUsage = { prompt: 0, completion: 0, cost: 0, started: 0 };
@@ -238,6 +243,7 @@ export class SessionAgent extends Think<Env> {
     this.memories = enabled(this.currentConfig, "memory")
       ? await this.registry().recall("", 50)
       : [];
+    this.mcpServers = this.currentConfig.cap_mcp ? await this.registry().mcpServers() : [];
   }
 
   private config(): Config {
@@ -305,6 +311,16 @@ export class SessionAgent extends Think<Env> {
     }
     const ready = CAPABILITIES.filter((c) => enabled(this.config(), c.id)).map((c) => c.label);
     if (ready.length > 0) parts.push(`Capabilities available to you: ${ready.join(", ")}.`);
+    // A connected MCP server's tools are named after it, so naming the servers tells
+    // the model which prefix belongs to which provider.
+    const connected = this.config().cap_mcp ? this.mcpServers.filter(mcpServerReady) : [];
+    if (connected.length > 0) {
+      parts.push(
+        `Connected MCP servers, whose tools are prefixed with their name: ${connected
+          .map((s) => s.name)
+          .join(", ")}.`
+      );
+    }
     parts.push(
       "Files the user attaches are written to the workspace under uploads/, and every message names the ones it carries. Open one with the read tool when the question is about it."
     );
@@ -406,14 +422,19 @@ export class SessionAgent extends Think<Env> {
   private capabilityTools(config: Config): ToolSet {
     const context = this.toolContext(config);
     const tools: ToolSet = {};
-    for (const spec of toolsFor(config)) {
+    // The built-in capability tools, plus whatever the connected MCP servers offer.
+    const specs = [
+      ...toolsFor(config),
+      ...(config.cap_mcp ? mcpToolSpecs(this.mcpServers) : []),
+    ];
+    for (const spec of specs) {
       tools[spec.name] = tool({
         description: spec.description,
         inputSchema: jsonSchema(spec.parameters as never),
         // A failure is returned rather than thrown, so the model reads what went
         // wrong and can correct itself on the next round.
         execute: async (args) =>
-          (await runTool(spec.name, args as Record<string, unknown>, context)).content,
+          (await runTool(spec.name, args as Record<string, unknown>, context, spec)).content,
       });
     }
     return tools;

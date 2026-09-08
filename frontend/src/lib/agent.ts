@@ -110,6 +110,7 @@ export type Config = {
   cap_scheduled_tasks: number;
   cap_memory: number;
   cap_telegram: number;
+  cap_mcp: number;
 
   brave_api_key: string;
   telegram_bot_token: string;
@@ -156,6 +157,40 @@ export function capabilityReady(
     (f) => !f.required || String(config[f.key] ?? "").trim() !== "",
   );
 }
+
+/* --------------------------------------------------------- mcp servers -- */
+
+/** How an external MCP server authenticates this agent. */
+export type McpAuth = "none" | "headers" | "oauth";
+
+/** One tool an MCP server advertises. */
+export type McpTool = {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+};
+
+/**
+ * An external MCP server as the Worker hands it back. Header values, access tokens
+ * and refresh tokens are never included: only the header *names*, so a saved key
+ * shows as set without being sent to the browser.
+ */
+export type McpServer = {
+  id: string;
+  name: string;
+  url: string;
+  auth: McpAuth;
+  enabled: number;
+  header_names: string[];
+  tools: McpTool[];
+  /** False only for an OAuth server nobody has approved yet. */
+  connected: boolean;
+  tools_synced_at: number;
+  /** Why the last tool sync failed. Empty when it worked. */
+  last_error: string;
+  oauth_scope: string;
+  created_at: number;
+};
 
 /** A file the user attached, or an image the agent drew, minus the bytes. */
 export type Attachment = {

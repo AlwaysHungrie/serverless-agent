@@ -1,4 +1,12 @@
 import type { Config, Memory, SessionRegistry } from "./registry";
+import {
+  McpClient,
+  parseHeaders,
+  parseTools,
+  qualifiedName,
+  refreshToken,
+  type McpServerRow,
+} from "./mcp";
 
 /**
  * A capability is something the agent can *do* beyond producing text: reach the web,
@@ -23,7 +31,8 @@ export type CapabilityId =
   | "audio_input"
   | "scheduled_tasks"
   | "memory"
-  | "telegram";
+  | "telegram"
+  | "mcp";
 
 /** A credential or endpoint the user fills in on the capabilities page. */
 export type CapabilityField = {
@@ -220,6 +229,16 @@ export const CAPABILITIES: Capability[] = [
         placeholder: "-1001234567890 or -1001234567890:42",
       },
     ],
+  },
+  {
+    id: "mcp",
+    flag: "cap_mcp",
+    label: "MCP servers",
+    summary: "Connect to external tools and websites hosted elsewhere — Notion, Clickup, etc.",
+    // The servers are rows, not settings, so this capability's editor is its own
+    // component rather than a list of fields.
+    tools: [],
+    fields: [],
   },
   {
     id: "memory",
@@ -504,6 +523,77 @@ export function toolsFor(config: Config): ToolSpec[] {
     .filter((t): t is ToolSpec => !!t);
 }
 
+/* ------------------------------------------------------------ mcp tools -- */
+
+/**
+ * A live client for one server, with its credentials applied.
+ *
+ * An OAuth access token that has expired (or is about to) is refreshed here and
+ * written back, so a connection made weeks ago keeps working without the user being
+ * sent through the provider's consent screen again.
+ */
+export async function mcpClientFor(
+  server: McpServerRow,
+  registry: DurableObjectStub<SessionRegistry>
+): Promise<McpClient> {
+  const headers = server.auth === "headers" ? parseHeaders(server.headers) : {};
+  let bearer = server.auth === "oauth" ? server.oauth_access_token : "";
+
+  const expiring =
+    server.auth === "oauth" &&
+    server.oauth_refresh_token &&
+    server.oauth_expires_at > 0 &&
+    server.oauth_expires_at - Date.now() < 60_000;
+
+  if (expiring) {
+    const tokens = await refreshToken(server.oauth_token_url, {
+      refreshToken: server.oauth_refresh_token,
+      clientId: server.oauth_client_id,
+      clientSecret: server.oauth_client_secret || undefined,
+      resource: server.oauth_resource || undefined,
+    });
+    bearer = tokens.access_token;
+    await registry.updateMcpServer(server.id, {
+      oauth_access_token: tokens.access_token,
+      oauth_refresh_token: tokens.refresh_token ?? server.oauth_refresh_token,
+      oauth_expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : 0,
+    });
+  }
+
+  return new McpClient(server.url, headers, bearer);
+}
+
+/** Whether a server is switched on and has whatever it needs to authenticate. */
+export function mcpServerReady(server: McpServerRow): boolean {
+  if (!server.enabled || !server.url.trim()) return false;
+  if (server.auth === "oauth") return server.oauth_access_token !== "";
+  return true;
+}
+
+/**
+ * The tools of every connected MCP server, as tool specs the agent can register
+ * alongside its own. The schemas are the server's own, passed through untouched, and
+ * the list comes from the cached `tools/list` so a turn costs no extra round trip.
+ */
+export function mcpToolSpecs(servers: McpServerRow[]): ToolSpec[] {
+  const specs: ToolSpec[] = [];
+  for (const server of servers) {
+    if (!mcpServerReady(server)) continue;
+    for (const tool of parseTools(server.tools_json)) {
+      specs.push({
+        name: qualifiedName(server, tool.name),
+        description: `[${server.name}] ${tool.description ?? tool.name}`,
+        parameters: tool.inputSchema ?? { type: "object", properties: {} },
+        async run(args, ctx) {
+          const client = await mcpClientFor(server, ctx.registry);
+          return await client.callTool(tool.name, args);
+        },
+      });
+    }
+  }
+  return specs;
+}
+
 /** OpenRouter's `tools` array for those tools. */
 export function toolDefinitions(config: Config) {
   return toolsFor(config).map((t) => ({
@@ -520,9 +610,11 @@ export function toolDefinitions(config: Config) {
 export async function runTool(
   name: string,
   args: Record<string, unknown>,
-  ctx: ToolContext
+  ctx: ToolContext,
+  /** The spec to run, for tools that live outside `TOOLS` — MCP's, for instance. */
+  spec?: ToolSpec
 ): Promise<{ content: string; ok: boolean }> {
-  const tool = TOOL_BY_NAME.get(name);
+  const tool = spec ?? TOOL_BY_NAME.get(name);
   if (!tool) return { content: `Error: no tool named ${name}.`, ok: false };
   try {
     return { content: await tool.run(args, ctx), ok: true };

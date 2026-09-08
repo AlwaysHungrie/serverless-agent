@@ -1,0 +1,533 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { Check, Link2, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { SECRET_MASK, type McpAuth, type McpServer } from "@/lib/agent";
+import { Toggle } from "@/components/CapabilitySection";
+
+const AUTH_MODES: { id: McpAuth; label: string; hint: string }[] = [
+  {
+    id: "none",
+    label: "None",
+    hint: "An open server, or one whose key is already in its URL.",
+  },
+  {
+    id: "headers",
+    label: "API key",
+    hint: "Sent as headers on every call — how MetaMCP and most key-based servers authenticate.",
+  },
+  {
+    id: "oauth",
+    label: "OAuth",
+    hint: "Approve the agent at the provider. Nothing to paste — how Notion authenticates.",
+  },
+];
+
+/** A header pair while it is being edited. Stored as a JSON object server-side. */
+type HeaderPair = { key: string; value: string };
+
+const pairsFrom = (names: string[]): HeaderPair[] =>
+  names.length > 0
+    ? names.map((key) => ({ key, value: SECRET_MASK }))
+    : [{ key: "", value: "" }];
+
+const objectFrom = (pairs: HeaderPair[]): Record<string, string> =>
+  Object.fromEntries(
+    pairs.filter((p) => p.key.trim()).map((p) => [p.key.trim(), p.value]),
+  );
+
+const input =
+  "bg-field placeholder:text-faint text-ink w-full min-w-0 rounded-[16px] px-4 py-3 text-[14px] outline-none";
+const button =
+  "border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-4 py-2.5 text-[13px] font-semibold transition disabled:opacity-40";
+
+function AuthPicker({
+  value,
+  onChange,
+}: {
+  value: McpAuth;
+  onChange: (v: McpAuth) => void;
+}) {
+  return (
+    <div>
+      <div className="bg-field inline-flex rounded-full p-1">
+        {AUTH_MODES.map((mode) => (
+          <button
+            key={mode.id}
+            onClick={() => onChange(mode.id)}
+            className={`rounded-full px-4 py-1.5 text-[13px] font-semibold transition ${
+              value === mode.id
+                ? "bg-canvas text-ink shadow-sm"
+                : "text-muted hover:text-ink"
+            }`}
+          >
+            {mode.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+        {AUTH_MODES.find((m) => m.id === value)?.hint}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The header editor: a name and a value per row. A value already saved reads back as
+ * the mask and is left alone unless it is typed over, so editing one header never
+ * wipes the key in another.
+ */
+function HeaderEditor({
+  pairs,
+  onChange,
+}: {
+  pairs: HeaderPair[];
+  onChange: (pairs: HeaderPair[]) => void;
+}) {
+  const set = (i: number, patch: Partial<HeaderPair>) =>
+    onChange(pairs.map((p, n) => (n === i ? { ...p, ...patch } : p)));
+
+  return (
+    <div className="space-y-2">
+      <span className="block text-[13px] font-semibold leading-[1.43]">
+        Headers
+      </span>
+      {pairs.map((pair, i) => (
+        <div key={i} className="flex gap-2">
+          <input
+            value={pair.key}
+            placeholder="Authorization"
+            onChange={(e) => set(i, { key: e.target.value })}
+            aria-label="Header name"
+            className={`${input} flex-[2]`}
+          />
+          <input
+            type={pair.value === SECRET_MASK ? "text" : "password"}
+            value={pair.value}
+            placeholder="Bearer sk-…"
+            onFocus={() => pair.value === SECRET_MASK && set(i, { value: "" })}
+            onChange={(e) => set(i, { value: e.target.value })}
+            aria-label="Header value"
+            className={`${input} flex-[3]`}
+          />
+          <button
+            onClick={() => onChange(pairs.filter((_, n) => n !== i))}
+            aria-label="Remove header"
+            className="text-muted hover:text-ink shrink-0 px-2"
+          >
+            <X size={16} strokeWidth={1.75} />
+          </button>
+        </div>
+      ))}
+      <button
+        onClick={() => onChange([...pairs, { key: "", value: "" }])}
+        className="text-muted hover:text-ink text-[13px] font-semibold"
+      >
+        + Add header
+      </button>
+    </div>
+  );
+}
+
+/** One saved server: what it offers, and everything that can be changed about it. */
+function ServerCard({
+  server,
+  onPatch,
+  onAction,
+  onRemove,
+  busy,
+}: {
+  server: McpServer;
+  onPatch: (patch: Record<string, unknown>) => void;
+  onAction: (action: "connect" | "disconnect" | "refresh") => void;
+  onRemove: () => void;
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(server.name);
+  const [url, setUrl] = useState(server.url);
+  const [pairs, setPairs] = useState<HeaderPair[]>(
+    pairsFrom(server.header_names),
+  );
+
+  const status = !server.enabled
+    ? "Off"
+    : server.last_error
+      ? "Not working"
+      : !server.connected
+        ? "Not connected"
+        : `${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`;
+
+  return (
+    <div className="border-hairline-soft rounded-[20px] border p-4">
+      <div className="flex items-start justify-between gap-4">
+        <button
+          onClick={() => setOpen(!open)}
+          className="min-w-0 flex-1 text-left"
+        >
+          <span className="block truncate text-[15px] font-semibold leading-[1.4]">
+            {server.name}
+          </span>
+          <span className="text-muted block truncate text-[12px] font-light leading-[1.33]">
+            {server.url}
+          </span>
+          <span
+            className={`mt-1 inline-block text-[12px] leading-[1.33] ${
+              server.last_error ? "text-ink font-semibold" : "text-faint"
+            }`}
+          >
+            {status}
+          </span>
+        </button>
+        <Toggle
+          on={!!server.enabled}
+          onChange={(v) => onPatch({ enabled: v })}
+        />
+      </div>
+
+      {server.last_error && (
+        <p className="bg-canvas-soft mt-3 rounded-[14px] px-4 py-3 text-[12px] leading-[1.33]">
+          {server.last_error}
+        </p>
+      )}
+
+      {open && (
+        <div className="mt-5 space-y-4">
+          <div className="flex gap-2">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={() =>
+                name.trim() && name !== server.name && onPatch({ name })
+              }
+              aria-label="Server name"
+              className={`${input} flex-1`}
+            />
+          </div>
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onBlur={() => url.trim() && url !== server.url && onPatch({ url })}
+            aria-label="Server URL"
+            className={input}
+          />
+
+          <AuthPicker
+            value={server.auth}
+            onChange={(auth) => onPatch({ auth })}
+          />
+
+          {server.auth === "headers" && (
+            <div className="space-y-3">
+              <HeaderEditor pairs={pairs} onChange={setPairs} />
+              <button
+                onClick={() => onPatch({ headers: objectFrom(pairs) })}
+                disabled={busy}
+                className={button}
+              >
+                Save headers
+              </button>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            {server.auth === "oauth" &&
+              (server.connected ? (
+                <button
+                  onClick={() => onAction("disconnect")}
+                  disabled={busy}
+                  className={button}
+                >
+                  Disconnect
+                </button>
+              ) : (
+                <button
+                  onClick={() => onAction("connect")}
+                  disabled={busy}
+                  className="bg-ink text-canvas shrink-0 rounded-[16px] px-4 py-2.5 text-[13px] font-semibold transition disabled:opacity-40"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <Link2 size={14} strokeWidth={2} />
+                    Connect
+                  </span>
+                </button>
+              ))}
+            <button
+              onClick={() => onAction("refresh")}
+              disabled={busy}
+              className={button}
+            >
+              <span className="inline-flex items-center gap-2">
+                <RefreshCw size={14} strokeWidth={2} />
+                Refresh tools
+              </span>
+            </button>
+            <button onClick={onRemove} disabled={busy} className={button}>
+              <span className="inline-flex items-center gap-2">
+                <Trash2 size={14} strokeWidth={2} />
+                Remove
+              </span>
+            </button>
+          </div>
+
+          {server.tools.length > 0 && (
+            <div>
+              <span className="text-muted block text-[12px] leading-[1.33]">
+                Tools the agent can call
+              </span>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {server.tools.map((tool) => (
+                  <span
+                    key={tool.name}
+                    title={tool.description}
+                    className="bg-field text-ink rounded-full px-3 py-1.5 text-[12px] leading-[1.35]"
+                  >
+                    {tool.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The add form, collapsed to a single button until it is wanted. */
+function AddServer({
+  onAdd,
+  busy,
+}: {
+  onAdd: (body: Record<string, unknown>) => Promise<boolean>;
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [auth, setAuth] = useState<McpAuth>("oauth");
+  const [pairs, setPairs] = useState<HeaderPair[]>([{ key: "", value: "" }]);
+
+  const reset = () => {
+    setName("");
+    setUrl("");
+    setAuth("oauth");
+    setPairs([{ key: "", value: "" }]);
+    setOpen(false);
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="border-hairline text-ink hover:bg-canvas-soft w-full rounded-[20px] border border-dashed py-4 text-[14px] font-semibold transition"
+      >
+        <span className="inline-flex items-center gap-2">
+          <Plus size={16} strokeWidth={2} />
+          Add an MCP server
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="border-hairline-soft space-y-4 rounded-[20px] border p-4">
+      <input
+        value={name}
+        placeholder="Notion"
+        onChange={(e) => setName(e.target.value)}
+        aria-label="Server name"
+        className={input}
+      />
+      <input
+        value={url}
+        placeholder="https://mcp.notion.com/mcp"
+        onChange={(e) => setUrl(e.target.value)}
+        aria-label="Server URL"
+        className={input}
+      />
+      <AuthPicker value={auth} onChange={setAuth} />
+      {auth === "headers" && <HeaderEditor pairs={pairs} onChange={setPairs} />}
+      <div className="flex gap-2">
+        <button
+          onClick={async () => {
+            const added = await onAdd({
+              name,
+              url,
+              auth,
+              ...(auth === "headers" ? { headers: objectFrom(pairs) } : {}),
+            });
+            if (added) reset();
+          }}
+          disabled={busy || !name.trim() || !url.trim()}
+          className="bg-ink text-canvas rounded-[16px] px-5 py-2.5 text-[13px] font-semibold transition disabled:opacity-40"
+        >
+          Add
+        </button>
+        <button onClick={reset} className={button}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** What the provider's redirect left in the query string, if anything. */
+function oauthResult(): { connected: string | null; failed: string | null } {
+  if (typeof window === "undefined") return { connected: null, failed: null };
+  const params = new URLSearchParams(window.location.search);
+  return {
+    connected: params.get("mcp_connected"),
+    failed: params.get("mcp_error"),
+  };
+}
+
+/**
+ * The MCP capability's editor: the servers themselves, since a server is a row rather
+ * than a setting and so cannot be described by the capability's `fields`.
+ *
+ * An OAuth connection leaves the app — the provider's consent screen is the point —
+ * and comes back to this page with the result in the query string.
+ */
+export function McpServers() {
+  const [servers, setServers] = useState<McpServer[]>([]);
+  const [redirectUri, setRedirectUri] = useState("");
+  // The OAuth callback lands back here with its result in the query string. It is
+  // read as the initial state rather than in an effect: it is already there on the
+  // first render, and there is nothing to synchronize with afterwards.
+  const [error, setError] = useState<string | null>(() => oauthResult().failed);
+  const [notice] = useState<string | null>(() => {
+    const { connected } = oauthResult();
+    return connected ? `${connected} is connected.` : null;
+  });
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const res = await fetch("/api/mcp", { cache: "no-store" });
+    const payload = (await res.json().catch(() => null)) as {
+      servers: McpServer[];
+      redirect_uri: string;
+      error?: string;
+    } | null;
+    if (!res.ok || !payload) {
+      setError(payload?.error ?? "Couldn't load your MCP servers.");
+      return;
+    }
+    setServers(payload.servers);
+    setRedirectUri(payload.redirect_uri);
+    setError(null);
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      await load();
+    })();
+  }, [load]);
+
+  // Tidy the URL once the result has been shown, so a refresh does not replay it.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("mcp_connected") && !params.has("mcp_error")) return;
+    params.delete("mcp_connected");
+    params.delete("mcp_error");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}`,
+    );
+  }, []);
+
+  /** Every write goes through here: one server back, or a readable error. */
+  const call = async (
+    path: string,
+    init: RequestInit,
+  ): Promise<McpServer | null> => {
+    setBusy(true);
+    const res = await fetch(path, {
+      headers: { "content-type": "application/json" },
+      ...init,
+    });
+    setBusy(false);
+    const payload = (await res.json().catch(() => null)) as {
+      server?: McpServer;
+      authorize_url?: string;
+      error?: string;
+    } | null;
+    if (!res.ok || !payload) {
+      setError(payload?.error ?? "The agent isn't responding. Try again.");
+      return null;
+    }
+    setError(null);
+    // A connect hands back the provider's consent screen rather than a server.
+    if (payload.authorize_url) {
+      window.location.href = payload.authorize_url;
+      return null;
+    }
+    if (payload.server) {
+      setServers((all) =>
+        all.some((s) => s.id === payload.server!.id)
+          ? all.map((s) => (s.id === payload.server!.id ? payload.server! : s))
+          : [...all, payload.server!],
+      );
+    }
+    return payload.server ?? null;
+  };
+
+  const add = async (body: Record<string, unknown>) =>
+    (await call("/api/mcp", { method: "POST", body: JSON.stringify(body) })) !==
+    null;
+
+  const remove = async (id: string) => {
+    setBusy(true);
+    await fetch(`/api/mcp/${id}`, { method: "DELETE" });
+    setBusy(false);
+    setServers((all) => all.filter((s) => s.id !== id));
+  };
+
+  return (
+    <div className="space-y-4">
+      {notice && (
+        <p className="bg-canvas-soft flex items-center gap-2 rounded-[16px] px-4 py-3 text-[13px] leading-[1.33]">
+          <Check size={14} strokeWidth={2} />
+          {notice}
+        </p>
+      )}
+      {error && (
+        <p className="bg-canvas-soft border-hairline-soft rounded-[16px] border px-4 py-3 text-[13px] leading-[1.33]">
+          {error}
+        </p>
+      )}
+
+      {servers.map((server) => (
+        <ServerCard
+          key={`${server.id}:${server.name}:${server.url}:${server.header_names.join(",")}`}
+          server={server}
+          busy={busy}
+          onPatch={(patch) =>
+            void call(`/api/mcp/${server.id}`, {
+              method: "PATCH",
+              body: JSON.stringify(patch),
+            })
+          }
+          onAction={(action) =>
+            void call(`/api/mcp/${server.id}/${action}`, {
+              method: "POST",
+              body: JSON.stringify({ return_to: window.location.href }),
+            })
+          }
+          onRemove={() => void remove(server.id)}
+        />
+      ))}
+
+      <AddServer onAdd={add} busy={busy} />
+
+      {redirectUri && (
+        <p className="text-faint text-[12px] leading-[1.33]">
+          Expect external providers to redirect to the following URL:{" "}
+          <span className="break-all font-bold">{redirectUri}</span>
+        </p>
+      )}
+    </div>
+  );
+}

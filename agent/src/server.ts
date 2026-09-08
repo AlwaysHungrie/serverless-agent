@@ -7,7 +7,20 @@ import {
   TELEGRAM_WHITELIST_DEFAULTS,
   type CapabilityField,
 } from "./capabilities";
-import type { Config } from "./registry";
+import { EMPTY_MCP_SERVER, type Config } from "./registry";
+import {
+  discoverAuthServer,
+  exchangeCode,
+  parseHeaders,
+  parseTools,
+  pkceChallenge,
+  randomToken,
+  registerClient,
+  type McpAuth,
+  type McpServerRow,
+  type McpServerView,
+} from "./mcp";
+import { mcpClientFor, mcpServerReady } from "./capabilities";
 
 export { SessionAgent } from "./agent";
 export { SessionRegistry } from "./registry";
@@ -170,6 +183,348 @@ async function syncWebhook(
   }
 }
 
+
+/* ------------------------------------------------------------ mcp servers -- */
+
+/** Where the authorization server sends the browser back to. Always this Worker. */
+const redirectUri = (origin: string) => `${origin}/api/mcp/oauth/callback`;
+
+/** A server as the browser may see it: header values and tokens stay in the Worker. */
+function mcpView(row: McpServerRow): McpServerView {
+  const {
+    oauth_client_secret: _secret,
+    oauth_access_token: token,
+    oauth_refresh_token: _refresh,
+    oauth_verifier: _verifier,
+    oauth_state: _state,
+    headers,
+    tools_json,
+    ...rest
+  } = row;
+  return {
+    ...rest,
+    header_names: Object.keys(parseHeaders(headers)),
+    tools: parseTools(tools_json),
+    connected: row.auth !== "oauth" || token !== "",
+  };
+}
+
+/**
+ * Ask a server what it can do, and cache the answer on its row.
+ *
+ * This is what turns a URL into usable tools, so it runs on save, after an OAuth
+ * connection, and whenever the user asks for a refresh. A failure is recorded rather
+ * than thrown: the card shows why, and the server stays editable.
+ */
+async function syncMcpTools(
+  reg: ReturnType<typeof registry>,
+  row: McpServerRow
+): Promise<McpServerRow> {
+  if (!mcpServerReady(row)) {
+    return (await reg.updateMcpServer(row.id, { tools_json: "", last_error: "" })) ?? row;
+  }
+  try {
+    const client = await mcpClientFor(row, reg);
+    const tools = await client.listTools();
+    return (
+      (await reg.updateMcpServer(row.id, {
+        tools_json: JSON.stringify(tools),
+        tools_synced_at: Date.now(),
+        last_error: "",
+      })) ?? row
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return (await reg.updateMcpServer(row.id, { last_error: message })) ?? row;
+  }
+}
+
+/** What a PATCH or POST may set. Credentials aside, every field is user-editable. */
+function validateMcpBody(body: Record<string, unknown>): Partial<McpServerRow> {
+  const patch: Partial<McpServerRow> = {};
+
+  if (body.name !== undefined) {
+    const name = String(body.name).trim();
+    if (!name) throw new Error("name is required");
+    patch.name = name.slice(0, 60);
+  }
+  if (body.url !== undefined) {
+    const raw = String(body.url).trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error(`"${raw}" is not a valid URL`);
+    }
+    if (parsed.protocol !== "https:" && parsed.hostname !== "localhost") {
+      // Credentials travel on every call, so the transport has to be encrypted.
+      throw new Error("an MCP server URL must be https");
+    }
+    patch.url = parsed.toString();
+  }
+  if (body.auth !== undefined) {
+    const auth = String(body.auth) as McpAuth;
+    if (!["none", "headers", "oauth"].includes(auth)) throw new Error(`unknown auth: ${auth}`);
+    patch.auth = auth;
+  }
+  if (body.headers !== undefined) {
+    // Headers arrive as an object; a value left as the mask keeps the stored one.
+    if (typeof body.headers !== "object" || body.headers === null) {
+      throw new Error("headers must be an object");
+    }
+    patch.headers = JSON.stringify(body.headers).slice(0, 8000);
+  }
+  if (body.enabled !== undefined) patch.enabled = body.enabled ? 1 : 0;
+
+  return patch;
+}
+
+/**
+ * Merge a headers patch over what is stored, so a value the browser sent back as the
+ * mask is left alone — the same contract the config secrets follow.
+ */
+function mergeHeaders(current: string, incoming: string): string {
+  const stored = parseHeaders(current);
+  const next = parseHeaders(incoming);
+  for (const [key, value] of Object.entries(next)) {
+    if (value === SECRET_MASK && stored[key] !== undefined) next[key] = stored[key];
+  }
+  return JSON.stringify(next);
+}
+
+/**
+ * Begin an OAuth connection: discover the provider's endpoints, register this app as
+ * a client if it has not been already, and hand back the URL to send the user to.
+ *
+ * The PKCE verifier and the CSRF state are parked on the row; the callback is the
+ * only thing that reads them, and it clears them once the tokens are in.
+ */
+async function startMcpOauth(
+  reg: ReturnType<typeof registry>,
+  row: McpServerRow,
+  origin: string,
+  returnTo: string
+): Promise<string> {
+  const redirect = redirectUri(origin);
+  const { metadata, resource } = await discoverAuthServer(row.url);
+  if (!metadata.authorization_endpoint || !metadata.token_endpoint) {
+    throw new Error("that server does not advertise an OAuth authorization endpoint");
+  }
+
+  let clientId = row.oauth_client_id;
+  let clientSecret = row.oauth_client_secret;
+  // A client registered against a different authorization server is no client at all.
+  if (!clientId || row.oauth_authorize_url !== metadata.authorization_endpoint) {
+    if (!metadata.registration_endpoint) {
+      throw new Error("that server supports neither a saved client nor dynamic registration");
+    }
+    const registered = await registerClient(metadata.registration_endpoint, redirect);
+    clientId = registered.client_id;
+    clientSecret = registered.client_secret ?? "";
+  }
+
+  const verifier = randomToken();
+  const state = randomToken(16);
+  await reg.updateMcpServer(row.id, {
+    auth: "oauth",
+    oauth_client_id: clientId,
+    oauth_client_secret: clientSecret,
+    oauth_authorize_url: metadata.authorization_endpoint,
+    oauth_token_url: metadata.token_endpoint,
+    oauth_registration_url: metadata.registration_endpoint ?? "",
+    oauth_resource: resource,
+    oauth_scope: (metadata.scopes_supported ?? []).join(" "),
+    oauth_verifier: verifier,
+    oauth_state: state,
+    oauth_return_to: returnTo,
+    last_error: "",
+  });
+
+  const authorize = new URL(metadata.authorization_endpoint);
+  authorize.searchParams.set("response_type", "code");
+  authorize.searchParams.set("client_id", clientId);
+  authorize.searchParams.set("redirect_uri", redirect);
+  authorize.searchParams.set("code_challenge", await pkceChallenge(verifier));
+  authorize.searchParams.set("code_challenge_method", "S256");
+  authorize.searchParams.set("state", state);
+  // RFC 8707: bind the token to this server, so it is useless anywhere else.
+  if (resource) authorize.searchParams.set("resource", resource);
+  const scopes = (metadata.scopes_supported ?? []).join(" ");
+  if (scopes) authorize.searchParams.set("scope", scopes);
+  return authorize.toString();
+}
+
+/**
+ * The provider sends the browser back here with a code. It is traded for tokens, the
+ * server's tools are read straight away, and the user lands back on the page they
+ * started from — connected, or with the reason it failed on the card.
+ */
+async function handleOauthCallback(url: URL, env: Env): Promise<Response> {
+  const reg = registry(env);
+  const state = url.searchParams.get("state") ?? "";
+  const row = await reg.mcpServerByState(state);
+  // No row for this state means a stale or forged callback; there is nothing to do.
+  if (!row) return new Response("unknown or expired authorization state", { status: 400 });
+
+  const back = new URL(row.oauth_return_to || `${url.origin}/`);
+  const fail = async (message: string) => {
+    await reg.updateMcpServer(row.id, { oauth_state: "", oauth_verifier: "", last_error: message });
+    back.searchParams.set("mcp_error", message);
+    return Response.redirect(back.toString(), 302);
+  };
+
+  const error = url.searchParams.get("error");
+  if (error) return await fail(url.searchParams.get("error_description") ?? error);
+  const code = url.searchParams.get("code") ?? "";
+  if (!code) return await fail("the provider returned no authorization code");
+
+  try {
+    const tokens = await exchangeCode(row.oauth_token_url, {
+      code,
+      clientId: row.oauth_client_id,
+      clientSecret: row.oauth_client_secret || undefined,
+      redirectUri: redirectUri(url.origin),
+      verifier: row.oauth_verifier,
+      resource: row.oauth_resource || undefined,
+    });
+    const connected = await reg.updateMcpServer(row.id, {
+      oauth_access_token: tokens.access_token,
+      oauth_refresh_token: tokens.refresh_token ?? "",
+      oauth_expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : 0,
+      oauth_scope: tokens.scope ?? row.oauth_scope,
+      oauth_verifier: "",
+      oauth_state: "",
+      last_error: "",
+    });
+    if (connected) await syncMcpTools(reg, connected);
+    back.searchParams.set("mcp_connected", row.name);
+    return Response.redirect(back.toString(), 302);
+  } catch (err) {
+    return await fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Everything under /api/mcp. Returns undefined when the path is not one of these. */
+async function handleMcp(
+  request: Request,
+  env: Env,
+  url: URL,
+  segments: string[]
+): Promise<Response | undefined> {
+  const reg = registry(env);
+  const id = segments[2];
+
+  // The provider's redirect lands here, so it is matched before the :id routes.
+  if (id === "oauth" && segments[3] === "callback") return await handleOauthCallback(url, env);
+
+  if (request.method === "GET" && !id) {
+    const servers = await reg.mcpServers();
+    return withCors(
+      Response.json({
+        servers: servers.map(mcpView),
+        /** Shown on the page, because a provider may ask for it when registering by hand. */
+        redirect_uri: redirectUri(url.origin),
+      })
+    );
+  }
+
+  if (request.method === "POST" && !id) {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    let patch: Partial<McpServerRow>;
+    try {
+      patch = validateMcpBody(body);
+    } catch (err) {
+      return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+    }
+    if (!patch.name || !patch.url) {
+      return withCors(Response.json({ error: "name and url are required" }, { status: 400 }));
+    }
+    const row: McpServerRow = {
+      ...EMPTY_MCP_SERVER,
+      id: crypto.randomUUID().slice(0, 8),
+      created_at: Date.now(),
+      name: patch.name,
+      url: patch.url,
+      auth: patch.auth ?? "none",
+      headers: patch.headers ?? "",
+      enabled: patch.enabled ?? 1,
+    };
+    await reg.addMcpServer(row);
+    // OAuth has nothing to list yet — the tools are read once the user has approved.
+    const synced = row.auth === "oauth" ? row : await syncMcpTools(reg, row);
+    return withCors(Response.json({ server: mcpView(synced) }));
+  }
+
+  if (id && segments[3] === "connect" && request.method === "POST") {
+    const row = await reg.mcpServer(id);
+    if (!row) return withCors(Response.json({ error: "no such server" }, { status: 404 }));
+    const { return_to } = (await request.json().catch(() => ({}))) as { return_to?: string };
+    try {
+      const authorizeUrl = await startMcpOauth(reg, row, url.origin, return_to ?? "");
+      return withCors(Response.json({ authorize_url: authorizeUrl }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await reg.updateMcpServer(id, { last_error: message });
+      return withCors(Response.json({ error: message }, { status: 502 }));
+    }
+  }
+
+  // Forget the tokens without forgetting the server: the URL and name stay put, so
+  // reconnecting is one click rather than a re-entry.
+  if (id && segments[3] === "disconnect" && request.method === "POST") {
+    const row = await reg.updateMcpServer(id, {
+      oauth_access_token: "",
+      oauth_refresh_token: "",
+      oauth_expires_at: 0,
+      oauth_verifier: "",
+      oauth_state: "",
+      tools_json: "",
+      last_error: "",
+    });
+    if (!row) return withCors(Response.json({ error: "no such server" }, { status: 404 }));
+    return withCors(Response.json({ server: mcpView(row) }));
+  }
+
+  if (id && segments[3] === "refresh" && request.method === "POST") {
+    const row = await reg.mcpServer(id);
+    if (!row) return withCors(Response.json({ error: "no such server" }, { status: 404 }));
+    return withCors(Response.json({ server: mcpView(await syncMcpTools(reg, row)) }));
+  }
+
+  if (id && request.method === "PATCH") {
+    const existing = await reg.mcpServer(id);
+    if (!existing) return withCors(Response.json({ error: "no such server" }, { status: 404 }));
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    let patch: Partial<McpServerRow>;
+    try {
+      patch = validateMcpBody(body);
+    } catch (err) {
+      return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+    }
+    if (patch.headers !== undefined) patch.headers = mergeHeaders(existing.headers, patch.headers);
+    // Pointing the server somewhere else invalidates the tokens issued for the old
+    // one, so a moved URL starts unconnected rather than quietly unauthorized.
+    if (patch.url && patch.url !== existing.url) {
+      Object.assign(patch, {
+        oauth_access_token: "",
+        oauth_refresh_token: "",
+        oauth_expires_at: 0,
+        tools_json: "",
+      });
+    }
+    const updated = await reg.updateMcpServer(id, patch);
+    if (!updated) return withCors(Response.json({ error: "no such server" }, { status: 404 }));
+    return withCors(Response.json({ server: mcpView(await syncMcpTools(reg, updated)) }));
+  }
+
+  if (id && request.method === "DELETE") {
+    await reg.removeMcpServer(id);
+    return withCors(Response.json({ ok: true }));
+  }
+
+  return undefined;
+}
+
 /**
  * One Telegram update. The chat is resolved to its session — created on first
  * contact — and the message is handed to that session's own agent, which answers in
@@ -292,6 +647,11 @@ export default {
         const telegram = await syncWebhook(config, url.origin, env.TELEGRAM_API_BASE);
         return withCors(Response.json({ config: redact(config), ...(telegram ? { telegram } : {}) }));
       }
+    }
+
+    if (segments[0] === "api" && segments[1] === "mcp") {
+      const handled = await handleMcp(request, env, url, segments);
+      if (handled) return handled;
     }
 
     // "Why is the bot not answering?" — asked of Telegram itself.
@@ -435,6 +795,7 @@ export default {
             fork: "POST /api/sessions/:id/fork  { count }",
             unstick: "POST /api/sessions/:id/unstick",
             config: "GET|PATCH /api/config",
+            mcp: "GET|POST /api/mcp, PATCH|DELETE /api/mcp/:id, POST /api/mcp/:id/{connect,disconnect,refresh}",
             stream: "POST /agents/session-agent/:id/stream  { message }  -> SSE",
             chat: "POST /agents/session-agent/:id/chat  { message }",
             messages: "GET /agents/session-agent/:id/messages",

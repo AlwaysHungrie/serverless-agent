@@ -7,6 +7,7 @@ import {
   CapabilitySection,
   visionBlockedNote,
 } from "@/components/CapabilitySection";
+import { McpServers } from "@/components/McpServers";
 import type { Capability, Config, ModelOption } from "@/lib/agent";
 
 export default function Capabilities() {
@@ -122,7 +123,10 @@ export default function Capabilities() {
                 // until the chosen model is one of those.
                 blocked={capability.id === "vision" && !model?.vision}
                 blockedNote={visionBlockedNote(model?.label ?? "This model")}
-              />
+              >
+                {/* MCP is configured by the servers themselves, not by fields. */}
+                {capability.id === "mcp" && <McpServers />}
+              </CapabilitySection>
             ))}
           </div>
         )}

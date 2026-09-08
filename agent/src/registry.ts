@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import type { McpServerRow } from "./mcp";
 
 /**
  * App-wide settings, split in two:
@@ -34,6 +35,7 @@ export type Config = {
   cap_scheduled_tasks: number;
   cap_memory: number;
   cap_telegram: number;
+  cap_mcp: number;
 
   /** Brave Search API key. Web search cannot run without it. */
   brave_api_key: string;
@@ -73,6 +75,7 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   cap_scheduled_tasks: 0,
   cap_memory: 0,
   cap_telegram: 0,
+  cap_mcp: 0,
 
   brave_api_key: "",
   image_model: "google/gemini-2.5-flash-image",
@@ -109,7 +112,57 @@ const CONFIG_MIGRATIONS = [
   `telegram_bot_username TEXT NOT NULL DEFAULT ''`,
   `telegram_user_whitelist TEXT NOT NULL DEFAULT ''`,
   `telegram_group_whitelist TEXT NOT NULL DEFAULT ''`,
+  `cap_mcp INTEGER NOT NULL DEFAULT 0`,
 ];
+
+/** The `mcp_servers` columns, in write order, excluding the primary key. */
+const MCP_COLUMNS = [
+  "name",
+  "url",
+  "auth",
+  "headers",
+  "enabled",
+  "oauth_client_id",
+  "oauth_client_secret",
+  "oauth_access_token",
+  "oauth_refresh_token",
+  "oauth_expires_at",
+  "oauth_scope",
+  "oauth_token_url",
+  "oauth_authorize_url",
+  "oauth_registration_url",
+  "oauth_resource",
+  "oauth_verifier",
+  "oauth_state",
+  "oauth_return_to",
+  "tools_json",
+  "tools_synced_at",
+  "last_error",
+  "created_at",
+] as const;
+
+/** A server the user has not filled in yet: every column with nothing in it. */
+export const EMPTY_MCP_SERVER: Omit<McpServerRow, "id" | "name" | "url" | "created_at"> = {
+  auth: "none",
+  headers: "",
+  enabled: 1,
+  oauth_client_id: "",
+  oauth_client_secret: "",
+  oauth_access_token: "",
+  oauth_refresh_token: "",
+  oauth_expires_at: 0,
+  oauth_scope: "",
+  oauth_token_url: "",
+  oauth_authorize_url: "",
+  oauth_registration_url: "",
+  oauth_resource: "",
+  oauth_verifier: "",
+  oauth_state: "",
+  oauth_return_to: "",
+  tools_json: "",
+  tools_synced_at: 0,
+  last_error: "",
+};
 
 /** A fact the agent chose to keep. Memories are app-wide, not per session. */
 export type Memory = {
@@ -207,7 +260,96 @@ export class SessionRegistry extends DurableObject {
          created_at INTEGER NOT NULL
        )`
     );
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS mcp_servers (
+         id TEXT PRIMARY KEY,
+         name TEXT NOT NULL,
+         url TEXT NOT NULL,
+         auth TEXT NOT NULL DEFAULT 'none',
+         headers TEXT NOT NULL DEFAULT '',
+         enabled INTEGER NOT NULL DEFAULT 1,
+         oauth_client_id TEXT NOT NULL DEFAULT '',
+         oauth_client_secret TEXT NOT NULL DEFAULT '',
+         oauth_access_token TEXT NOT NULL DEFAULT '',
+         oauth_refresh_token TEXT NOT NULL DEFAULT '',
+         oauth_expires_at INTEGER NOT NULL DEFAULT 0,
+         oauth_scope TEXT NOT NULL DEFAULT '',
+         oauth_token_url TEXT NOT NULL DEFAULT '',
+         oauth_authorize_url TEXT NOT NULL DEFAULT '',
+         oauth_registration_url TEXT NOT NULL DEFAULT '',
+         oauth_resource TEXT NOT NULL DEFAULT '',
+         oauth_verifier TEXT NOT NULL DEFAULT '',
+         oauth_state TEXT NOT NULL DEFAULT '',
+         oauth_return_to TEXT NOT NULL DEFAULT '',
+         tools_json TEXT NOT NULL DEFAULT '',
+         tools_synced_at INTEGER NOT NULL DEFAULT 0,
+         last_error TEXT NOT NULL DEFAULT '',
+         created_at INTEGER NOT NULL DEFAULT 0
+       )`
+    );
     this.ready = true;
+  }
+
+  /* --------------------------------------------------------- mcp servers -- */
+
+  /**
+   * The external MCP servers, oldest first, credentials and all. Only the Worker
+   * calls this: `server.ts` strips the secrets before anything reaches the browser.
+   */
+  mcpServers(): McpServerRow[] {
+    this.ensureSchema();
+    return this.ctx.storage.sql
+      .exec(`SELECT id, ${MCP_COLUMNS.join(", ")} FROM mcp_servers ORDER BY created_at`)
+      .toArray() as unknown as McpServerRow[];
+  }
+
+  mcpServer(id: string): McpServerRow | undefined {
+    this.ensureSchema();
+    return this.ctx.storage.sql
+      .exec(`SELECT id, ${MCP_COLUMNS.join(", ")} FROM mcp_servers WHERE id = ? LIMIT 1`, id)
+      .toArray()[0] as unknown as McpServerRow | undefined;
+  }
+
+  /** The server an in-flight OAuth callback belongs to, matched on its CSRF state. */
+  mcpServerByState(state: string): McpServerRow | undefined {
+    this.ensureSchema();
+    if (!state) return undefined;
+    return this.ctx.storage.sql
+      .exec(
+        `SELECT id, ${MCP_COLUMNS.join(", ")} FROM mcp_servers WHERE oauth_state = ? LIMIT 1`,
+        state
+      )
+      .toArray()[0] as unknown as McpServerRow | undefined;
+  }
+
+  addMcpServer(row: McpServerRow): McpServerRow {
+    this.ensureSchema();
+    const placeholders = MCP_COLUMNS.map(() => "?").join(", ");
+    this.ctx.storage.sql.exec(
+      `INSERT INTO mcp_servers (id, ${MCP_COLUMNS.join(", ")}) VALUES (?, ${placeholders})`,
+      row.id,
+      ...MCP_COLUMNS.map((c) => row[c])
+    );
+    return row;
+  }
+
+  /** A partial update: only the columns present are written. */
+  updateMcpServer(id: string, patch: Partial<McpServerRow>): McpServerRow | undefined {
+    this.ensureSchema();
+    const keys = MCP_COLUMNS.filter((c) => patch[c] !== undefined);
+    if (keys.length > 0) {
+      this.ctx.storage.sql.exec(
+        `UPDATE mcp_servers SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`,
+        ...keys.map((k) => patch[k] as string | number),
+        id
+      );
+    }
+    return this.mcpServer(id);
+  }
+
+  removeMcpServer(id: string) {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(`DELETE FROM mcp_servers WHERE id = ?`, id);
   }
 
   /** Reads the settings row, seeding it from the Worker default on first use. */

@@ -253,6 +253,7 @@ export function CapabilitySection({
   blocked = false,
   blockedNote,
   tinted = false,
+  children,
 }: {
   capability: Capability;
   config: Config;
@@ -262,6 +263,11 @@ export function CapabilitySection({
   blockedNote?: React.ReactNode;
   /** Wash the section in Telegram's blue, the way a Telegram chat is marked. */
   tinted?: boolean;
+  /**
+   * An editor of the capability's own, shown under its fields. Some capabilities are
+   * configured by more than a list of values — MCP is a set of servers, not settings.
+   */
+  children?: React.ReactNode;
 }) {
   const on = !!config[capability.flag];
   const ready = capabilityReady(capability, config);
@@ -312,13 +318,15 @@ export function CapabilitySection({
             />
           ))}
 
+          {children}
+
           {capability.note && (
             <p className="text-faint text-[12px] leading-[1.33]">
               {capability.note}
             </p>
           )}
 
-          {!ready && (
+          {!ready && capability.fields.length > 0 && (
             <p className="bg-canvas-soft rounded-[16px] px-4 py-3 text-[12px] leading-[1.33]">
               Fill in the fields above to start using this.
             </p>
