@@ -292,6 +292,43 @@ export function addressesBot(message: TelegramMessage, botUsername: string): boo
 }
 
 /**
+ * One whitelist, as the config stores it: entries on their own lines, blank lines
+ * ignored. `/pattern/` is a regular expression, tested against the whole candidate;
+ * anything else is a plain, case-insensitive match with a leading @ ignored.
+ */
+export function whitelistEntries(list: string): string[] {
+  return list
+    .split(/[\n,]/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+}
+
+/**
+ * Whether any of `candidates` is on the list. An empty list allows everything: the
+ * capability is a switch, and a whitelist is the narrowing you opt into.
+ */
+export function allowedBy(list: string, candidates: (string | undefined)[]): boolean {
+  const entries = whitelistEntries(list);
+  if (entries.length === 0) return true;
+  const values = candidates
+    .filter((c): c is string => !!c)
+    .map((c) => c.replace(/^@+/, "").toLowerCase());
+  return entries.some((entry) => {
+    if (entry.length > 1 && entry.startsWith("/") && entry.endsWith("/")) {
+      try {
+        const pattern = new RegExp(entry.slice(1, -1), "i");
+        return values.some((v) => pattern.test(v));
+      } catch {
+        // A half-typed regex matches nothing rather than throwing the update away.
+        return false;
+      }
+    }
+    const wanted = entry.replace(/^@+/, "").toLowerCase();
+    return values.some((v) => v === wanted);
+  });
+}
+
+/**
  * A conversation's name, for the sidebar. A topic is named after the topic, under the
  * group it lives in — Telegram only ever gives the topic's name on the service message
  * that opened it, so a session started mid-topic falls back to the topic's number.

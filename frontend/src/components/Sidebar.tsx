@@ -17,6 +17,7 @@ export function Sidebar({
   onDelete,
   open,
   onClose,
+  onHome,
 }: {
   sessions: SessionRow[];
   selected: string | null;
@@ -26,6 +27,8 @@ export function Sidebar({
   /** Whether the drawer is showing. Only meaningful below the md breakpoint. */
   open: boolean;
   onClose: () => void;
+  /** Close the open session and show the welcome screen. */
+  onHome: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
@@ -61,12 +64,19 @@ export function Sidebar({
         }`}
       >
         <div className="flex items-center justify-between gap-4 px-6 pt-6 pb-4">
-          <div className="min-w-0">
+          <button
+            onClick={() => {
+              onHome();
+              onClose();
+            }}
+            title="Home"
+            className="min-w-0 text-left"
+          >
             <div className="text-2xl font-[650] leading-[1.25]">Baby.</div>
             <div className="text-muted text-[14px] font-light leading-[1.43]">
               Cloud Agent
             </div>
-          </div>
+          </button>
           <div className="flex shrink-0 items-center gap-2">
             <button
               onClick={async () => {

@@ -38,6 +38,11 @@ export type CapabilityField = {
    * uneven to type an id into: most ids would fail for the capability at hand.
    */
   options?: { value: string; label: string }[];
+  /**
+   * The field holds a list, one entry per line, edited as a set of chips rather than
+   * as free text.
+   */
+  list?: boolean;
   /** A capability with an empty required field is enabled but cannot run. */
   required: boolean;
   placeholder?: string;
@@ -77,6 +82,17 @@ const TRANSCRIPTION_MODELS = [
   { value: "openai/gpt-audio-mini", label: "GPT Audio Mini" },
   { value: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash — best quality" },
 ];
+
+/**
+ * What the whitelists start out as the first time Telegram is switched on. A list
+ * that is empty lets everyone in, so the switch would open the bot to the whole of
+ * Telegram the moment it is flipped. These are placeholders that match nothing: the
+ * bot is closed until the owner replaces them with the people and groups it is for.
+ */
+export const TELEGRAM_WHITELIST_DEFAULTS = {
+  telegram_user_whitelist: "@no-user",
+  telegram_group_whitelist: "-1000000000000",
+} as const;
 
 export const CAPABILITIES: Capability[] = [
   {
@@ -166,13 +182,13 @@ export const CAPABILITIES: Capability[] = [
     id: "telegram",
     flag: "cap_telegram",
     label: "Telegram",
-    summary: "Talk to the agent from Telegram, in a DM or in a group.",
+    summary: "Talk to the agent on Telegram, in a DM or in a group.",
     tools: [],
     fields: [
       {
         key: "telegram_bot_token",
         label: "Bot token",
-        hint: "From @BotFather. Saving it points the bot's webhook at this Worker.",
+        hint: "Get a bot token by sending this message \"/newbot\" to @BotFather in Telegram.",
         secret: true,
         required: true,
         placeholder: "123456:ABC…",
@@ -180,10 +196,28 @@ export const CAPABILITIES: Capability[] = [
       {
         key: "telegram_bot_username",
         label: "Bot username",
-        hint: "Without the @. Used for the link back into Telegram, and to spot mentions in groups.",
+        hint: "A Telegram bot username will begin with an @ and ends with bot",
         secret: false,
         required: true,
-        placeholder: "my_agent_bot",
+        placeholder: "@my_agent_bot",
+      },
+      {
+        key: "telegram_user_whitelist",
+        label: "DM whitelist",
+        hint: "Usernames allowed to DM the bot. Empty list allows every user. (Wrap an entry in slashes for a regex, e.g. /^team_/)",
+        secret: false,
+        list: true,
+        required: false,
+        placeholder: "@alice",
+      },
+      {
+        key: "telegram_group_whitelist",
+        label: "Groups whitelist",
+        hint: "Groups and Topics the bot can reply in. Enter group_id or group_id:topic_id (regex supported). You can find group id and topic id by messaging @userinfobot.",
+        secret: false,
+        list: true,
+        required: false,
+        placeholder: "-1001234567890 or -1001234567890:42",
       },
     ],
   },

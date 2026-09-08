@@ -5,6 +5,7 @@ import { Menu } from "lucide-react";
 import { Chat } from "@/components/Chat";
 import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
+import { Welcome } from "@/components/Welcome";
 import {
   telegramLink,
   type SessionRow,
@@ -23,7 +24,11 @@ export default function Home() {
   } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** The bot's handle, so a Telegram session can link back to the conversation. */
+  /**
+   * The bot's handle, so a Telegram session can link back to the conversation — and
+   * so the zero state can offer Telegram only once it actually works. Empty while
+   * the capability is off or unconfigured.
+   */
   const [botUsername, setBotUsername] = useState("");
   /** A forked question handed to one session's composer, waiting to be edited. */
   const [draft, setDraft] = useState<{
@@ -50,8 +55,17 @@ export default function Home() {
   useEffect(() => {
     void fetch("/api/config")
       .then((res) => (res.ok ? res.json() : null))
-      .then((payload: { config?: { telegram_bot_username?: string } } | null) =>
-        setBotUsername(payload?.config?.telegram_bot_username ?? ""),
+      .then(
+        (
+          payload: {
+            config?: { cap_telegram?: number; telegram_bot_username?: string };
+          } | null,
+        ) =>
+          setBotUsername(
+            payload?.config?.cap_telegram
+              ? (payload.config.telegram_bot_username ?? "")
+              : "",
+          ),
       )
       .catch(() => setBotUsername(""));
   }, []);
@@ -159,6 +173,7 @@ export default function Home() {
         onDelete={deleteSession}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        onHome={() => setSelected(null)}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -213,9 +228,10 @@ export default function Home() {
             >
               <Menu size={20} strokeWidth={1.75} />
             </button>
-            <div className="text-muted flex flex-1 items-center justify-center px-6 text-center text-[20px] font-light">
-              Create a session to start.
-            </div>
+            <Welcome
+              onCreate={() => void createSession()}
+              botUsername={botUsername}
+            />
           </>
         )}
       </main>

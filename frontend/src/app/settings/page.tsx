@@ -210,6 +210,7 @@ export default function Settings() {
                 capability={telegram}
                 config={config}
                 set={set}
+                tinted
               />
             )}
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   capabilityReady,
@@ -37,18 +38,152 @@ export function Toggle({
   );
 }
 
-export function Field({
+/**
+ * A list field: one entry per line in the config, a set of chips on screen. Entries
+ * are typed in and committed with Enter, so a whitelist is built one name at a time
+ * rather than as a block of text to get the separators right in.
+ */
+function ListField({
   field,
   value,
   onChange,
+  bordered = false,
 }: {
   field: CapabilityField;
   value: string;
   onChange: (v: string) => void;
+  bordered?: boolean;
 }) {
+  const [draft, setDraft] = useState("");
+  const entries = value
+    .split("\n")
+    .map((e) => e.trim())
+    .filter((e) => e !== "");
+
+  const add = (raw: string) => {
+    const entry = raw.trim();
+    // A duplicate is a no-op rather than an error: nothing about the list changes.
+    if (!entry || entries.includes(entry)) {
+      setDraft("");
+      return;
+    }
+    onChange([...entries, entry].join("\n"));
+    setDraft("");
+  };
+
+  return (
+    <div>
+      <span className="block text-[14px] font-semibold leading-[1.43]">
+        {field.label}
+      </span>
+      <span className="text-muted block text-[12px] font-light leading-[1.33]">
+        {field.hint}
+      </span>
+
+      {entries.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {entries.map((entry) => (
+            <span
+              key={entry}
+              className={`bg-field text-ink flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[13px] leading-[1.35] ${
+                bordered ? "border-hairline border" : ""
+              }`}
+            >
+              <span className="max-w-[220px] truncate">{entry}</span>
+              <button
+                onClick={() =>
+                  onChange(entries.filter((e) => e !== entry).join("\n"))
+                }
+                aria-label={`Remove ${entry}`}
+                className="text-muted hover:text-ink flex h-5 w-5 items-center justify-center rounded-full"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 flex gap-2">
+        <input
+          value={draft}
+          placeholder={field.placeholder}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => add(draft)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add(draft);
+            }
+            if (e.key === "Escape") setDraft("");
+          }}
+          aria-label={field.label}
+          className={`bg-field placeholder:text-faint min-w-0 flex-1 rounded-[16px] px-4 py-3 text-[14px] outline-none ${
+            bordered ? "border-hairline border" : ""
+          }`}
+        />
+        <button
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => add(draft)}
+          disabled={draft.trim() === ""}
+          className="border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-5 text-[14px] font-semibold transition disabled:opacity-40"
+        >
+          Add
+        </button>
+      </div>
+
+      {entries.length === 0 && (
+        <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+          *Empty list allows everyone.
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function Field({
+  field,
+  value,
+  onChange,
+  bordered = false,
+}: {
+  field: CapabilityField;
+  value: string;
+  /** Commit a new value. Called when the field is left, not on every keystroke. */
+  onChange: (v: string) => void;
+  /** Outline the inputs, for a section drawn on a tint rather than on the canvas. */
+  bordered?: boolean;
+}) {
+  // The field holds its own text while it is being typed into. Saving is what
+  // reloads the config, and a saved secret reads back as the mask — so a
+  // save-per-keystroke would replace the half-typed token with dots. Committing on
+  // blur keeps what is on screen the thing the user typed.
+  const [draft, setDraft] = useState(value);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setDraft(value);
+  }, [value, focused]);
+
   // A stored secret arrives masked. Focusing clears it, so typing replaces the key
   // and leaving it alone keeps the one already saved.
-  const masked = field.secret && value === SECRET_MASK;
+  const masked = field.secret && draft === SECRET_MASK;
+
+  const commit = (next: string) => {
+    setDraft(next);
+    if (next !== value) onChange(next);
+  };
+
+  // A list is a set of entries, not a line of text, so it has an editor of its own.
+  if (field.list)
+    return (
+      <ListField
+        field={field}
+        value={value}
+        onChange={onChange}
+        bordered={bordered}
+      />
+    );
+
   return (
     <label className="block">
       <span className="block text-[14px] font-semibold leading-[1.43]">
@@ -61,7 +196,9 @@ export function Field({
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="bg-field text-ink mt-2 w-full appearance-none rounded-[16px] px-4 py-3 text-[14px] outline-none"
+          className={`bg-field text-ink mt-2 w-full appearance-none rounded-[16px] px-4 py-3 text-[14px] outline-none ${
+            bordered ? "border-hairline border" : ""
+          }`}
         >
           {field.options.map((o) => (
             <option key={o.value} value={o.value}>
@@ -72,11 +209,32 @@ export function Field({
       ) : (
         <input
           type={field.secret && !masked ? "password" : "text"}
-          value={value}
+          value={draft}
           placeholder={field.placeholder}
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={() => masked && onChange("")}
-          className="bg-field placeholder:text-faint mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none"
+          onChange={(e) => setDraft(e.target.value)}
+          onFocus={() => {
+            setFocused(true);
+            if (masked) setDraft("");
+          }}
+          onBlur={() => {
+            setFocused(false);
+            // An untouched secret is left alone: the mask means "keep the key".
+            if (field.secret && draft === "") {
+              setDraft(value);
+              return;
+            }
+            commit(draft.trim());
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") {
+              setDraft(value);
+              e.currentTarget.blur();
+            }
+          }}
+          className={`bg-field placeholder:text-faint mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none ${
+            bordered ? "border-hairline border" : ""
+          }`}
         />
       )}
     </label>
@@ -94,6 +252,7 @@ export function CapabilitySection({
   set,
   blocked = false,
   blockedNote,
+  tinted = false,
 }: {
   capability: Capability;
   config: Config;
@@ -101,12 +260,18 @@ export function CapabilitySection({
   /** The switch is dead: something else has to change before this can be used. */
   blocked?: boolean;
   blockedNote?: React.ReactNode;
+  /** Wash the section in Telegram's blue, the way a Telegram chat is marked. */
+  tinted?: boolean;
 }) {
   const on = !!config[capability.flag];
   const ready = capabilityReady(capability, config);
   return (
     <section
-      className={`border-hairline-soft border-t py-7 ${blocked ? "opacity-50" : ""}`}
+      className={`${
+        tinted
+          ? "mb-2 rounded-[24px] bg-gradient-to-b from-[#229ED9]/18 to-transparent px-5 py-6"
+          : "border-hairline-soft border-t py-7"
+      } ${blocked ? "opacity-50" : ""}`}
     >
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
@@ -130,7 +295,9 @@ export function CapabilitySection({
       </div>
 
       {blocked && blockedNote && (
-        <p className="text-muted mt-4 text-[12px] leading-[1.33]">{blockedNote}</p>
+        <p className="text-muted mt-4 text-[12px] leading-[1.33]">
+          {blockedNote}
+        </p>
       )}
 
       {on && !blocked && (
@@ -140,7 +307,8 @@ export function CapabilitySection({
               key={String(field.key)}
               field={field}
               value={String(config[field.key] ?? "")}
-              onChange={(v) => set({ [field.key]: v }, 700)}
+              onChange={(v) => set({ [field.key]: v })}
+              bordered={tinted}
             />
           ))}
 

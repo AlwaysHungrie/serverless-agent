@@ -1,7 +1,12 @@
 import { routeAgentRequest } from "agents";
 import { MODELS, type Env } from "./agent";
-import { Telegram, chatTitle, topicId, type TelegramUpdate } from "./telegram";
-import { CAPABILITIES, SECRET_MASK, type CapabilityField } from "./capabilities";
+import { Telegram, allowedBy, chatTitle, topicId, type TelegramUpdate } from "./telegram";
+import {
+  CAPABILITIES,
+  SECRET_MASK,
+  TELEGRAM_WHITELIST_DEFAULTS,
+  type CapabilityField,
+} from "./capabilities";
 import type { Config } from "./registry";
 
 export { SessionAgent } from "./agent";
@@ -119,7 +124,13 @@ function validateConfig(body: Partial<Config>): Partial<Config> {
     if (typeof value !== "string") throw new Error(`${field.key} must be a string`);
     // The mask is what a secret reads back as, so it means "leave this one alone".
     if (field.secret && value === SECRET_MASK) continue;
-    (patch[field.key] as string) = value.trim().slice(0, 1000);
+    let cleaned = value.trim();
+    // A Telegram handle is written with an @ everywhere it is shown, so the field
+    // accepts one — but the stored form is bare: links and mention matching build
+    // the @ back themselves.
+    if (field.key === "telegram_bot_username") cleaned = cleaned.replace(/^@+/, "");
+    // A list holds many entries, so it gets more room than a single credential.
+    (patch[field.key] as string) = cleaned.slice(0, field.list ? 8000 : 1000);
   }
 
   return patch;
@@ -189,6 +200,23 @@ async function handleWebhook(
   // A forum topic is a conversation of its own, so it keys a session of its own.
   const topic = topicId(message);
   const threadId = topic ? String(topic) : "";
+
+  // The whitelists, when filled in, decide who gets an answer: a DM is judged by who
+  // sent it, a group by which group — and which topic of it — the message is in. An
+  // update from anywhere else is dropped silently, before a session exists for it.
+  const allowed =
+    message.chat.type === "private"
+      ? allowedBy(config.telegram_user_whitelist, [
+          message.from?.username,
+          message.from?.id !== undefined ? String(message.from.id) : undefined,
+        ])
+      : allowedBy(config.telegram_group_whitelist, [
+          threadId ? `${chatId}:${threadId}` : chatId,
+          chatId,
+          message.chat.username,
+        ]);
+  if (!allowed) return new Response("ok");
+
   const existing = await reg.forChat(chatId, threadId);
   const sessionId = existing?.id ?? (await freeSessionId(reg, chatId, threadId));
   if (!existing) {
@@ -243,6 +271,20 @@ export default {
           patch = validateConfig(body);
         } catch (err) {
           return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+        }
+        // Switching Telegram on with both whitelists empty would let all of Telegram
+        // talk to the bot, so the first enable seeds them with entries that match
+        // nothing. Only on the way on, and only over lists nobody has filled in.
+        if (patch.cap_telegram === 1) {
+          const current = await reg.config(env.MODEL);
+          if (!current.cap_telegram) {
+            for (const [key, value] of Object.entries(TELEGRAM_WHITELIST_DEFAULTS)) {
+              const field = key as keyof typeof TELEGRAM_WHITELIST_DEFAULTS;
+              if (patch[field] === undefined && current[field].trim() === "") {
+                patch[field] = value;
+              }
+            }
+          }
         }
         const config = await reg.setConfig(patch, env.MODEL);
         // Saving the token is the whole setup: the bot is pointed at this Worker here

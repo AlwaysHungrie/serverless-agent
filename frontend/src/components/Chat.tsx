@@ -1244,7 +1244,7 @@ export function Chat({
       <div className="flex-1 space-y-6 overflow-y-auto px-4 py-6 md:px-8 md:py-10">
         {messages.length === 0 && (
           <p className="text-muted mx-auto max-w-md pt-20 text-center text-[20px] font-light leading-[1.38]">
-            Agent is online. Send a message.
+            Session Connected. Send a message.
           </p>
         )}
         {messages.map((m, i) => {

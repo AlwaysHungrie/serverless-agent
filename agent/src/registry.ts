@@ -45,6 +45,16 @@ export type Config = {
   telegram_bot_token: string;
   /** The bot's @handle, without the @: a chat needs it to link back to the bot. */
   telegram_bot_username: string;
+  /**
+   * Who may talk to the bot in a DM: newline-separated usernames, or `/regex/`
+   * entries. Empty means anyone.
+   */
+  telegram_user_whitelist: string;
+  /**
+   * Which groups the bot answers in: newline-separated chat ids, `chatId:topicId`
+   * for one forum topic, or `/regex/` entries. Empty means any group.
+   */
+  telegram_group_whitelist: string;
 };
 
 export const DEFAULT_CONFIG: Omit<Config, "model"> = {
@@ -69,6 +79,8 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   transcription_model: "google/gemini-2.5-flash-lite",
   telegram_bot_token: "",
   telegram_bot_username: "",
+  telegram_user_whitelist: "",
+  telegram_group_whitelist: "",
 };
 
 /** The config columns, in the order they are written, excluding the primary key. */
@@ -95,6 +107,8 @@ const CONFIG_MIGRATIONS = [
   `transcription_model TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.transcription_model}'`,
   `telegram_bot_token TEXT NOT NULL DEFAULT ''`,
   `telegram_bot_username TEXT NOT NULL DEFAULT ''`,
+  `telegram_user_whitelist TEXT NOT NULL DEFAULT ''`,
+  `telegram_group_whitelist TEXT NOT NULL DEFAULT ''`,
 ];
 
 /** A fact the agent chose to keep. Memories are app-wide, not per session. */

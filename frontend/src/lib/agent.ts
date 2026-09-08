@@ -114,6 +114,8 @@ export type Config = {
   brave_api_key: string;
   telegram_bot_token: string;
   telegram_bot_username: string;
+  telegram_user_whitelist: string;
+  telegram_group_whitelist: string;
   image_model: string;
   transcription_model: string;
 };
@@ -126,6 +128,8 @@ export type CapabilityField = {
   label: string;
   hint: string;
   secret: boolean;
+  /** The field holds a list, one entry per line, edited as chips. */
+  list?: boolean;
   required: boolean;
   placeholder?: string;
   /** When present the field is a fixed choice, not free text. */
