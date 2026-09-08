@@ -402,7 +402,8 @@ export class SessionAgent extends Agent<Env> {
       mime,
       text: await file.text(),
       data: "",
-      key: "",
+      // Kept as an object too, so the chat can offer the original file back.
+      key: await this.putObject(id, await file.arrayBuffer(), mime),
       bytes: file.size,
     });
     return { body: { attachment: publicAttachment(attachment) }, status: 200 };

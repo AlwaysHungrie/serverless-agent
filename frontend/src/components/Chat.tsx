@@ -241,7 +241,7 @@ function VoiceNote({
 
   return (
     <div
-      className={`rounded-[14px] px-3 py-2.5 ${isUser ? "bg-white/10" : "bg-field"}`}
+      className={`w-fit max-w-full rounded-[14px] px-3 py-2.5 ${isUser ? "bg-white/10" : "bg-field"}`}
     >
       <div className="flex items-center gap-3">
         <button
@@ -287,16 +287,6 @@ function VoiceNote({
         >
           {clock(playing || at > 0 ? total - at : total)}
         </span>
-
-        <DownloadLink
-          sessionId={sessionId}
-          attachment={attachment}
-          className={
-            isUser
-              ? "hover:bg-white/15"
-              : "text-muted hover:text-ink hover:bg-black/[0.04]"
-          }
-        />
       </div>
 
       {attachment.preview && (
@@ -416,7 +406,7 @@ function MessageDocs({
         ) : (
           <div
             key={a.id}
-            className={`flex gap-3 rounded-[14px] px-3 py-2.5 ${
+            className={`flex w-fit max-w-full gap-3 rounded-[14px] px-3 py-2.5 ${
               a.preview ? "items-start" : "items-center"
             } ${isUser ? "bg-white/10" : "bg-field"}`}
           >
@@ -427,7 +417,7 @@ function MessageDocs({
             >
               <FileText size={16} strokeWidth={1.75} />
             </span>
-            <span className="min-w-0 flex-1">
+            <span className="min-w-0 max-w-[320px] flex-1">
               <span className="block truncate text-[14px] leading-[1.35]">
                 {a.name}
               </span>
@@ -446,15 +436,6 @@ function MessageDocs({
                 </span>
               )}
             </span>
-            <DownloadLink
-              sessionId={sessionId}
-              attachment={a}
-              className={
-                isUser
-                  ? "hover:bg-white/15"
-                  : "text-muted hover:text-ink hover:bg-black/[0.04]"
-              }
-            />
           </div>
         ),
       )}
@@ -488,11 +469,6 @@ function MessageMedia({
                 ? "max-h-[360px] object-contain"
                 : "aspect-square object-cover"
             }`}
-          />
-          <DownloadLink
-            sessionId={sessionId}
-            attachment={a}
-            className="absolute top-2 right-2 bg-black/55 text-white opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
           />
         </span>
       ))}
@@ -545,7 +521,7 @@ function DownloadLink({
       download={attachment.name}
       title={`Download ${attachment.name}`}
       aria-label={`Download ${attachment.name}`}
-      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${className}`}
+      className={`flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 ${className}`}
     >
       <Download size={13} strokeWidth={1.75} />
     </a>
@@ -575,12 +551,17 @@ function MessageActions({
   text,
   at,
   isUser,
+  sessionId,
+  downloads,
   onFork,
   onRetry,
 }: {
   text: string;
   at: number | null;
   isUser: boolean;
+  sessionId: string;
+  /** Everything sent with this message that has a file behind it. */
+  downloads: Attachment[];
   onFork?: () => void;
   onRetry?: () => void;
 }) {
@@ -624,6 +605,14 @@ function MessageActions({
           )}
         </button>
       )}
+      {downloads.map((a) => (
+        <DownloadLink
+          key={a.id}
+          sessionId={sessionId}
+          attachment={a}
+          className="text-faint hover:text-ink"
+        />
+      ))}
       {onFork && (
         <button
           onClick={onFork}
@@ -690,7 +679,7 @@ function Bubble({
       className={`flex flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}
     >
       {docs.length > 0 && (
-        <div className="w-full max-w-2xl">
+        <div className="max-w-2xl">
           <MessageDocs docs={docs} isUser={false} sessionId={sessionId} />
         </div>
       )}
@@ -746,6 +735,8 @@ function Bubble({
         text={text}
         at={at}
         isUser={isUser}
+        sessionId={sessionId}
+        downloads={attachments}
         onFork={onFork}
         onRetry={onRetry}
       />
