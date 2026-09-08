@@ -38,6 +38,7 @@ import {
 } from "@/lib/agent";
 import { formatMs, formatUsd } from "@/lib/format";
 import { fitImage } from "@/lib/image";
+import { pdfThumbnail } from "@/lib/pdf";
 import { startRecording, type Recorder } from "@/lib/recorder";
 
 /** How a tool call reads while it runs, once it is done, and when it fails. */
@@ -93,32 +94,13 @@ function UsageLine({ usage }: { usage: UsageData }) {
 }
 
 /** Where the browser reads an attachment's bytes from. */
-function formatChars(chars: number) {
-  return chars >= 1000
-    ? `${(chars / 1000).toFixed(1)}k chars`
-    : `${chars} chars`;
-}
-
-function formatBytes(bytes: number) {
-  return bytes >= 1_000_000
-    ? `${(bytes / 1_000_000).toFixed(1)} MB`
-    : `${Math.max(1, Math.round(bytes / 1000))} kB`;
-}
-
-/** The short type label on a file card: the extension, or the format's own name. */
-function fileLabel(a: Attachment) {
-  if (a.kind === "pdf") return "PDF";
-  const ext = a.name.split(".").pop() ?? "";
-  return ext && ext !== a.name ? ext.toUpperCase() : "TEXT";
-}
-
-/** The line under a file's name: what it is, and how much of it there is. */
-function fileMeta(a: Attachment) {
-  return `${fileLabel(a)} · ${a.kind === "pdf" ? formatBytes(a.bytes) : formatChars(a.chars)}`;
-}
-
 function fileUrl(sessionId: string, id: string) {
   return `/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(id)}`;
+}
+
+/** The render of a PDF's first page, drawn at the head of its card. */
+function thumbUrl(sessionId: string, id: string) {
+  return `${fileUrl(sessionId, id)}/thumb`;
 }
 
 /**
@@ -439,9 +421,10 @@ function AttachmentStrip({
 }
 
 /**
- * Non-image attachments on a sent message: one fixed-width card per file — name, type
- * and size on a line of their own, a sample of the text faded out under them — tinted
- * to sit on whichever bubble it lands in, rather than the composer's light pill.
+ * Non-image attachments on a sent message: one fixed-width card per file. The card
+ * leads with the file's own first words, faded out at the foot of the sample so the
+ * cut reads as a page continuing rather than as text that ended — with the name
+ * sitting in the fade, the way a thumbnail of a first page is captioned.
  */
 function MessageDocs({
   docs,
@@ -470,44 +453,44 @@ function MessageDocs({
               isUser ? "bg-white/10" : "bg-field"
             }`}
           >
-            <div className="flex items-center gap-2.5 px-3 py-2.5">
+            {a.thumb ? (
+              // A PDF shows its own first page. The image is wider than it is tall
+              // here on purpose: the card is a glimpse of the page, not a reader.
               <span
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] ${
-                  isUser ? "bg-white/15" : "bg-canvas border-hairline-soft border"
-                }`}
+                className="block h-[124px] overflow-hidden"
+                style={{ maskImage: FADE, WebkitMaskImage: FADE }}
               >
-                {a.kind === "pdf" ? (
-                  <FileType2 size={16} strokeWidth={1.75} />
-                ) : (
-                  <FileText size={16} strokeWidth={1.75} />
-                )}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={thumbUrl(sessionId, a.id)}
+                  alt=""
+                  className="w-full object-cover object-top"
+                />
               </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[14px] leading-[1.35]">
-                  {a.name}
-                </span>
+            ) : (
+              a.preview && (
                 <span
-                  className={`tnum block text-[12px] leading-[1.33] ${isUser ? "opacity-60" : "text-faint"}`}
+                  className={`block max-h-[7.8em] overflow-hidden px-3 pt-3 font-mono text-[11.5px] leading-[1.3] whitespace-pre-wrap ${
+                    isUser ? "opacity-55" : "text-muted"
+                  }`}
+                  style={{
+                    // The preview is a sample, not the file: fading it out says so
+                    // without a truncation mark that could be read as content.
+                    maskImage: FADE,
+                    WebkitMaskImage: FADE,
+                  }}
                 >
-                  {fileMeta(a)}
+                  {a.preview}
                 </span>
-              </span>
-            </div>
-            {a.preview && (
-              <span
-                className={`block max-h-[3.9em] overflow-hidden px-3 pb-2.5 font-mono text-[11.5px] leading-[1.3] whitespace-pre-wrap ${
-                  isUser ? "opacity-55" : "text-muted"
-                }`}
-                style={{
-                  // The preview is a sample, not the file: fading its last line says so
-                  // without a truncation mark that could be read as content.
-                  maskImage: FADE,
-                  WebkitMaskImage: FADE,
-                }}
-              >
-                {a.preview}
-              </span>
+              )
             )}
+            <span
+              className={`block truncate px-3 pb-2.5 text-[13px] leading-[1.35] ${
+                a.thumb || a.preview ? "pt-1.5" : "pt-2.5"
+              }`}
+            >
+              {a.name}
+            </span>
           </div>
         ),
       )}
@@ -924,6 +907,11 @@ function toUIMessages(rows: StoredMessage[]): ChatUIMessage[] {
   }));
 }
 
+/** A PDF by mime, or by name when the browser sends no type at all. */
+function isPdfFile(file: File): boolean {
+  return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+}
+
 /** The file types the attach button offers, given which input capabilities are on. */
 function acceptFor(ready: Set<string>): string {
   const accept: string[] = [];
@@ -1087,6 +1075,11 @@ export function Chat({
 
       const form = new FormData();
       form.set("file", file);
+      // The card shows the PDF's first page, and only the browser can draw it.
+      if (isPdfFile(file)) {
+        const thumb = await pdfThumbnail(file);
+        if (thumb) form.set("thumbnail", thumb);
+      }
       const res = await fetch(
         `/api/sessions/${encodeURIComponent(sessionId)}/files`,
         {
