@@ -87,7 +87,7 @@ export function SessionHeader({
 
         <div className="mr-auto min-w-0 flex-1">
           {editing ? (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center">
               <input
                 ref={input}
                 value={value}
@@ -101,7 +101,7 @@ export function SessionHeader({
                 }}
                 onBlur={() => void commit()}
                 aria-label="Session title"
-                className="bg-field text-ink focus:ring-ink min-w-0 flex-1 rounded-[12px] px-3 py-1 text-xl font-[650] leading-tight outline-none focus:ring-2 md:text-2xl"
+                className="mr-2 bg-field text-ink focus:ring-ink min-w-0 max-w-64 flex-1 rounded-[12px] px-3 py-1 text-xl font-[650] leading-tight outline-none focus:ring-2 md:text-xl"
               />
               {/* Pressed before blur can fire, so the click still counts. */}
               <button
@@ -147,7 +147,9 @@ export function SessionHeader({
           </div>
         </div>
 
-        <Stat label="Messages" value={formatCount(summary?.messages ?? 0)} />
+        <div className="hidden md:block">
+          <Stat label="Messages" value={formatCount(summary?.messages ?? 0)} />
+        </div>
       </div>
     </header>
   );

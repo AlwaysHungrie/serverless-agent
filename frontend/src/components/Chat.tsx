@@ -16,6 +16,7 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Send,
   Square,
   X,
 } from "lucide-react";
@@ -1465,9 +1466,12 @@ export function Chat({
               <button
                 type="submit"
                 disabled={!input.trim() && attachments.length === 0}
-                className="bg-ink text-on-primary h-12 shrink-0 rounded-full px-6 text-[16px] font-semibold transition hover:opacity-85 disabled:opacity-30"
+                className="bg-ink text-on-primary h-12 min-w-12 shrink-0 rounded-full text-[16px] font-semibold transition hover:opacity-85 disabled:opacity-30"
               >
-                Send
+                <span className="hidden md:block px-6">Send</span>
+                <span className="md:hidden w-12 -ml-0.5 flex items-center justify-center">
+                  <Send size={18} />
+                </span>
               </button>
             )}
           </form>
