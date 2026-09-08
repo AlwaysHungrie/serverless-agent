@@ -125,6 +125,8 @@ export type Attachment = {
   chars: number;
   /** First stretch of a text file, or of a voice note's transcript. */
   preview?: string;
+  /** Whether a render of a PDF's first page exists to draw on its card. */
+  thumb?: boolean;
 };
 
 export type ScheduledTask = { id: string; prompt: string; when: string };

@@ -85,6 +85,8 @@ export type Attachment = {
   data: string;
   /** R2 object key holding the bytes, for images and audio clips. Empty for text. */
   key: string;
+  /** R2 object key of a PNG of the PDF's first page. Empty for everything else. */
+  thumb_key: string;
   bytes: number;
   ts: number;
   /** 0 until the attachment has been sent with a turn. */
@@ -151,6 +153,9 @@ const MAX_UPLOAD_BYTES = {
   audio: 25_000_000,
 } as const;
 
+/** A first-page render at card width. Anything larger is not a thumbnail. */
+const MAX_THUMBNAIL_BYTES = 2_000_000;
+
 const TEXT_EXTENSIONS =
   /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|log|html?|xml|css|jsx?|tsx?|py|rb|go|rs|java|kt|c|h|cpp|sh|sql)$/i;
 
@@ -203,15 +208,18 @@ export class SessionAgent extends Agent<Env> {
          text TEXT NOT NULL DEFAULT '',
          data TEXT NOT NULL DEFAULT '',
          key TEXT NOT NULL DEFAULT '',
+         thumb_key TEXT NOT NULL DEFAULT '',
          bytes INTEGER NOT NULL DEFAULT 0,
          ts INTEGER NOT NULL,
          used INTEGER NOT NULL DEFAULT 0
        )`
     );
-    try {
-      this.exec(`ALTER TABLE attachments ADD COLUMN key TEXT NOT NULL DEFAULT ''`);
-    } catch {
-      // Column already present.
+    for (const col of ["key TEXT NOT NULL DEFAULT ''", "thumb_key TEXT NOT NULL DEFAULT ''"]) {
+      try {
+        this.exec(`ALTER TABLE attachments ADD COLUMN ${col}`);
+      } catch {
+        // Column already present.
+      }
     }
     this.schemaReady = true;
   }
@@ -240,7 +248,9 @@ export class SessionAgent extends Agent<Env> {
 
     // Attachment bytes are served raw so an <img src> can point straight at them.
     if (request.method === "GET" && path === "files" && route[1]) {
-      return await this.serveAttachment(route[1]);
+      return route[2] === "thumb"
+        ? await this.serveThumbnail(route[1])
+        : await this.serveAttachment(route[1]);
     }
 
     let body: unknown;
@@ -313,6 +323,19 @@ export class SessionAgent extends Agent<Env> {
    * Attachment bytes live in R2, so a big image or a long voice note never sits in
    * the Durable Object's SQLite. Rows written before the move still carry a data URL.
    */
+  private async serveThumbnail(id: string): Promise<Response> {
+    const row = this.attachment(id);
+    if (!row?.thumb_key) return new Response("not found", { status: 404 });
+    const object = await this.env.FILES.get(row.thumb_key);
+    if (!object) return new Response("not found", { status: 404 });
+    return new Response(object.body, {
+      headers: {
+        "content-type": "image/png",
+        "cache-control": "public, max-age=31536000, immutable",
+      },
+    });
+  }
+
   private async serveAttachment(id: string): Promise<Response> {
     const row = this.attachment(id);
     // Images and voice notes both keep their bytes; text files have none to serve.
@@ -331,6 +354,21 @@ export class SessionAgent extends Agent<Env> {
     const mime = meta?.match(/^data:([^;]+)/)?.[1] ?? row.mime;
     const binary = Uint8Array.from(atob(base64 ?? ""), (c) => c.charCodeAt(0));
     return new Response(binary, { headers: { "content-type": mime, ...CACHE } });
+  }
+
+  /**
+   * Store the PNG of a PDF's first page. The browser renders it, so a malformed or
+   * oversized image is dropped rather than trusted: the card falls back to its name.
+   */
+  private async putThumbnail(id: string, thumbnail: unknown): Promise<string> {
+    const file = thumbnail as File | null;
+    if (!file || typeof file === "string" || file.size === 0) return "";
+    if (file.size > MAX_THUMBNAIL_BYTES) return "";
+    const key = `${this.name}/${id}-thumb`;
+    await this.env.FILES.put(key, await file.arrayBuffer(), {
+      httpMetadata: { contentType: "image/png" },
+    });
+    return key;
   }
 
   /** Put an upload's bytes in the bucket, namespaced by session, and hand back its key. */
@@ -367,8 +405,8 @@ export class SessionAgent extends Agent<Env> {
   private insertAttachment(row: Omit<Attachment, "ts" | "used">): Attachment {
     const full: Attachment = { ...row, ts: Date.now(), used: 0 };
     this.exec(
-      `INSERT INTO attachments (id, kind, name, mime, text, data, key, bytes, ts, used)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO attachments (id, kind, name, mime, text, data, key, thumb_key, bytes, ts, used)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       full.id,
       full.kind,
       full.name,
@@ -376,6 +414,7 @@ export class SessionAgent extends Agent<Env> {
       full.text,
       full.data,
       full.key,
+      full.thumb_key,
       full.bytes,
       full.ts
     );
@@ -420,7 +459,8 @@ export class SessionAgent extends Agent<Env> {
       }
       // Nothing is extracted here: the pages ride to OpenRouter as a file part and its
       // file-parser plugin turns them into text, which keeps a PDF parser out of the
-      // Worker and out of the upload path.
+      // Worker and out of the upload path. The card's first-page image is rendered by
+      // the browser for the same reason and arrives beside the file.
       const attachment = this.insertAttachment({
         id,
         kind: "pdf",
@@ -429,6 +469,7 @@ export class SessionAgent extends Agent<Env> {
         text: "",
         data: "",
         key: await this.putObject(id, await file.arrayBuffer(), "application/pdf"),
+        thumb_key: await this.putThumbnail(id, form.get("thumbnail")),
         bytes: file.size,
       });
       return { body: { attachment: publicAttachment(attachment) }, status: 200 };
@@ -456,6 +497,7 @@ export class SessionAgent extends Agent<Env> {
         text: "",
         data: "",
         key: await this.putObject(id, await file.arrayBuffer(), mime),
+        thumb_key: "",
         bytes: file.size,
       });
       return { body: { attachment: publicAttachment(attachment) }, status: 200 };
@@ -478,6 +520,7 @@ export class SessionAgent extends Agent<Env> {
         text: "",
         data: "",
         key: await this.putObject(id, await file.arrayBuffer(), mime),
+        thumb_key: "",
         bytes: file.size,
       });
       return { body: { attachment: publicAttachment(attachment) }, status: 200 };
@@ -501,6 +544,7 @@ export class SessionAgent extends Agent<Env> {
       data: "",
       // Kept as an object too, so the chat can offer the original file back.
       key: await this.putObject(id, await file.arrayBuffer(), mime),
+      thumb_key: "",
       bytes: file.size,
     });
     return { body: { attachment: publicAttachment(attachment) }, status: 200 };
@@ -789,9 +833,16 @@ export class SessionAgent extends Agent<Env> {
         const object = await this.env.FILES.get(a.key);
         if (object) key = await this.putObject(a.id, await object.arrayBuffer(), a.mime);
       }
+      // The first-page image is copied the same way: a fork that lost its thumbnails
+      // would redraw every PDF card as a bare name.
+      let thumbKey = "";
+      if (a.thumb_key) {
+        const object = await this.env.FILES.get(a.thumb_key);
+        if (object) thumbKey = await this.putThumbnail(a.id, new File([await object.blob()], "thumb.png"));
+      }
       this.exec(
-        `INSERT OR REPLACE INTO attachments (id, kind, name, mime, text, data, key, bytes, ts, used)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO attachments (id, kind, name, mime, text, data, key, thumb_key, bytes, ts, used)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         a.id,
         a.kind,
         a.name,
@@ -799,6 +850,7 @@ export class SessionAgent extends Agent<Env> {
         a.text,
         key ? "" : a.data,
         key,
+        thumbKey,
         a.bytes,
         a.ts,
         used
@@ -875,6 +927,7 @@ export class SessionAgent extends Agent<Env> {
           text: prompt,
           data: "",
           key: await this.putObject(id, bytes, mime),
+          thumb_key: "",
           bytes: bytes.byteLength,
         });
         // Marked used straight away: it belongs to the reply, not to the next turn.
@@ -1370,6 +1423,8 @@ function publicAttachment(a: Attachment) {
     chars: a.text.length,
     // Enough of the text (or of an audio transcript, once one exists) for the UI.
     preview: a.kind === "text" ? a.text.slice(0, 400) : "",
+    /** Whether a first-page image exists to draw on the file card. */
+    thumb: a.thumb_key !== "",
   };
 }
 
