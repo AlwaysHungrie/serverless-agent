@@ -30,6 +30,7 @@ import type {
 } from "@/app/api/sessions/[id]/chat/route";
 import {
   capabilityReady,
+  describeSessionFailure,
   type Attachment,
   type Capability,
   type Config,
@@ -41,6 +42,9 @@ import { formatMs, formatUsd } from "@/lib/format";
 import { fitImage } from "@/lib/image";
 import { pdfThumbnail } from "@/lib/pdf";
 import { startRecording, type Recorder } from "@/lib/recorder";
+
+/** Kept in step with the Worker's own ceiling, which is what actually enforces it. */
+const MAX_FILES_PER_MESSAGE = 4;
 
 /** How a tool call reads while it runs, once it is done, and when it fails. */
 const TOOL_LABELS: Record<
@@ -92,6 +96,24 @@ function UsageLine({ usage }: { usage: UsageData }) {
       <span>{formatMs(usage.llm_ms)}</span>
     </div>
   );
+}
+
+/**
+ * Why an upload did not land, in the strip under the composer. The Worker's own
+ * refusals — too large, wrong kind, capability off — are written to be read and are
+ * passed through. A failure from underneath it is not: it arrives as a runtime's
+ * internal wording, and naming the file the user picked is more use than quoting it.
+ */
+function uploadFailure(name: string, error?: string): string {
+  const raw = error?.trim();
+  if (!raw) return `Could not upload ${name}.`;
+  const platform = describeSessionFailure(raw);
+  if (platform) return platform;
+  // Anything long, or shaped like an internal error, is not a sentence for a user.
+  if (raw.length > 160 || /^[A-Za-z]*Error\b|SQL |stack|at \w+\.|<[a-z!]/i.test(raw)) {
+    return `Could not upload ${name}.`;
+  }
+  return raw;
 }
 
 /** Where the browser reads an attachment's bytes from. */
@@ -536,26 +558,12 @@ function MessageMedia({
  * Anything that is neither the user nor the agent talking: a dropped stream, a failed
  * turn. Centred and quiet, so it never reads as a message someone sent.
  */
-function SystemNotice({
-  text,
-  onRetry,
-}: {
-  text: string;
-  onRetry?: () => void;
-}) {
+function SystemNotice({ text }: { text: string }) {
   return (
     <div className="flex justify-center">
       <div className="border-hairline-soft text-muted flex max-w-md items-center gap-2.5 rounded-full border px-4 py-2 text-[13px] leading-[1.35]">
         <AlertCircle size={14} strokeWidth={1.75} className="shrink-0" />
         <span className="min-w-0">{text}</span>
-        {onRetry && (
-          <button
-            onClick={onRetry}
-            className="text-ink shrink-0 font-medium underline underline-offset-2"
-          >
-            Retry
-          </button>
-        )}
       </div>
     </div>
   );
@@ -1090,6 +1098,8 @@ export function Chat({
   }, [messages, seen]);
 
   const remove = async (id: string) => {
+    // The strip is what the notice was about, so changing it retires the notice.
+    setUploadError(null);
     setAttachments((a) => a.filter((x) => x.id !== id));
     await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files/${id}`, {
       method: "DELETE",
@@ -1099,14 +1109,65 @@ export function Chat({
   const upload = async (picked: File[]) => {
     setUploading(true);
     setUploadError(null);
-    for (const original of picked) {
+
+    // The Worker enforces this too; catching it here means the files that do fit are
+    // still picked up, rather than the whole drop failing on the one that does not.
+    const room = MAX_FILES_PER_MESSAGE - (attachments.length + ghosts.length);
+    if (picked.length > room) {
+      setUploadError(
+        `A message can carry ${MAX_FILES_PER_MESSAGE} files. Send the rest with the next message.`,
+      );
+      picked = picked.slice(0, Math.max(room, 0));
+      if (picked.length === 0) {
+        setUploading(false);
+        return;
+      }
+    }
+    // Every pick gets its card before any of them is sent. The uploads themselves stay
+    // one at a time — several large files at once is how the Worker gets overwhelmed —
+    // but a queue the user cannot see reads as though only one file was picked up.
+    //
+    // An image previews from the browser's own copy, so the thumbnail is there on pick
+    // rather than after the round trip, and before the re-encode below.
+    const queued = picked.map((original) => ({
+      original,
+      key: `${original.name}-${nextKey.current++}`,
+      preview: original.type.startsWith("image/")
+        ? URL.createObjectURL(original)
+        : null,
+    }));
+    setGhosts((g) => [
+      ...g,
+      ...queued.map(({ key, original, preview }) => ({
+        key,
+        name: original.name,
+        preview,
+      })),
+    ]);
+
+    let aborted = false;
+    // Ids accepted during this pick. The ref behind `kept` only catches up on the
+    // next render, and the reconcile below must not mistake a file it just stored
+    // for one the user cancelled.
+    const accepted: string[] = [];
+
+    /** Nothing more is owed to a file once it is settled, kept or taken back. */
+    const drop = (key: string, preview: string | null) => {
+      cancelled.current.delete(key);
+      controllers.current.delete(key);
+      setGhosts((g) => g.filter((x) => x.key !== key));
+      if (preview) URL.revokeObjectURL(preview);
+    };
+
+    for (const { original, key, preview } of queued) {
+      // Taken back before its turn came up: it is never sent at all. The queue is
+      // one at a time, so most of a multi-file pick is still waiting here.
+      if (cancelled.current.has(key)) {
+        aborted = true;
+        drop(key, preview);
+        continue;
+      }
       const isImage = original.type.startsWith("image/");
-      const key = `${original.name}-${nextKey.current++}`;
-      // An image can be previewed from the browser's own copy straight away, so the
-      // thumbnail appears on pick rather than after the round trip — and before the
-      // re-encode below, which on a large photo takes a moment of its own.
-      const preview = isImage ? URL.createObjectURL(original) : null;
-      setGhosts((g) => [...g, { key, name: original.name, preview }]);
 
       // A photo off a phone is routinely past the ceiling; shrink it rather than
       // sending the user away to resize it. Anything that cannot be shrunk is sent
@@ -1122,37 +1183,66 @@ export function Chat({
         const thumb = await pdfThumbnail(file);
         if (thumb) form.set("thumbnail", thumb);
       }
-      const res = await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/files`,
-        {
+      // Encoding a large image or drawing a PDF's first page takes long enough that
+      // the file can be taken back in the middle of it.
+      if (cancelled.current.has(key)) {
+        aborted = true;
+        drop(key, preview);
+        continue;
+      }
+
+      // Cancelling aborts the request rather than letting the bytes finish arriving
+      // and deleting what they became: on a 7 MB file that is the difference between
+      // stopping and appearing to stop.
+      const controller = new AbortController();
+      controllers.current.set(key, controller);
+
+      type UploadPayload = { attachment?: Attachment; error?: string } | null;
+      let res: Response;
+      let payload: UploadPayload = null;
+      try {
+        res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files`, {
           method: "POST",
           body: form,
-        },
-      );
-      const payload = (await res.json().catch(() => null)) as {
-        attachment?: Attachment;
-        error?: string;
-      } | null;
+          signal: controller.signal,
+        });
+        payload = (await res.json().catch(() => null)) as UploadPayload;
+      } catch (err) {
+        drop(key, preview);
+        // An abort is the user's own doing and needs no telling.
+        if (err instanceof DOMException && err.name === "AbortError") {
+          aborted = true;
+        } else {
+          setUploadError(uploadFailure(file.name));
+        }
+        continue;
+      }
 
-      setGhosts((g) => g.filter((x) => x.key !== key));
-      if (preview) URL.revokeObjectURL(preview);
-
-      // Cancelled while it was in flight: the Worker has already stored it, so the
-      // tidying happens here rather than being left behind.
+      // Cancelled as it landed: the Worker stored it before the abort could reach it,
+      // so the tidying happens here rather than being left behind.
       if (cancelled.current.has(key)) {
-        cancelled.current.delete(key);
+        aborted = true;
+        drop(key, preview);
         if (payload?.attachment) void remove(payload.attachment.id);
         continue;
       }
+      drop(key, preview);
 
       if (!res.ok || !payload?.attachment) {
-        setUploadError(payload?.error ?? `Could not upload ${file.name}.`);
+        setUploadError(uploadFailure(file.name, payload?.error));
         continue;
       }
+      accepted.push(payload.attachment.id);
       setAttachments((a) => [...a, payload.attachment!]);
     }
     setUploading(false);
+    // Cancels are the only way the Worker ends up holding something the strip does
+    // not, so the reconcile is paid for only when one happened.
+    if (aborted) await reconcilePending(accepted);
   };
+
+  /** Held for as long as a send is in flight, so a second Return finds the door shut. */
+  const sending = useRef(false);
 
   /** Counter behind the ghost keys: unique per pick, without reading the clock. */
   const nextKey = useRef(0);
@@ -1160,9 +1250,46 @@ export function Chat({
   /** Uploads dropped by the user before the Worker answered. */
   const cancelled = useRef(new Set<string>());
 
+  /** The request behind each upload in flight, so cancelling can stop it. */
+  const controllers = useRef(new Map<string, AbortController>());
+
+  /** What the strip is holding, readable from async code that outlives a render. */
+  const kept = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    kept.current = new Set(attachments.map((a) => a.id));
+  }, [attachments]);
+
+  /**
+   * Drop anything the Worker is holding for the next turn that the strip is not.
+   *
+   * Aborting a request does not unsend the bytes already on their way: the Worker can
+   * finish storing a file after the browser has stopped listening, and the response
+   * naming it never arrives. That row would then be invisible here and still be sent
+   * with the next message, so the session is asked what it has and told what to drop.
+   */
+  const reconcilePending = async (accepted: string[] = []) => {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files`);
+      const payload = (await res.json()) as { attachments?: Attachment[] };
+      const keep = new Set([...kept.current, ...accepted]);
+      const stray = (payload.attachments ?? []).filter((a) => !keep.has(a.id));
+      await Promise.all(
+        stray.map((a) =>
+          fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files/${a.id}`, {
+            method: "DELETE",
+          }),
+        ),
+      );
+    } catch {
+      // Best effort: a stray file is a wasted upload, not a broken session.
+    }
+  };
+
   /** Take a pending upload off the strip; its row is deleted when it lands. */
   const cancelUpload = (key: string) => {
+    setUploadError(null);
     cancelled.current.add(key);
+    controllers.current.get(key)?.abort();
     setGhosts((g) => {
       const ghost = g.find((x) => x.key === key);
       if (ghost?.preview) URL.revokeObjectURL(ghost.preview);
@@ -1218,25 +1345,46 @@ export function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recording, recordedFor]);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (streaming) return;
+    // A file still on its way belongs to this message, so the message waits for it.
+    // Sending now would either leave the file behind or attach it to the turn after.
+    if (uploading || ghosts.length > 0) return;
     // An attachment on its own is a valid turn: "here is the file" needs no words.
     if (!input.trim() && attachments.length === 0) return;
-    // The attachments ride along as a data part purely so the sent bubble can draw
-    // them at once; the Worker already has them, and takes them from its own table.
-    sendMessage({
-      role: "user",
-      parts: [
-        ...(attachments.length
-          ? [{ type: "data-files" as const, data: { attachments } }]
-          : []),
-        { type: "text" as const, text: input },
-      ],
-    });
+    // Return fires as fast as it is held down, and this function awaits before it
+    // sends — `streaming` has not flipped yet, so the second press would send the
+    // same message again. A ref closes that window because it changes now, not on
+    // the next render.
+    if (sending.current) return;
+    sending.current = true;
+
+    // Taken before the awaits below, so the message is fixed at the moment it was
+    // sent rather than at whatever the composer holds when it finally goes.
+    const text = input;
+    const files = attachments;
     setInput("");
-    // The Worker marks them used as the turn starts; the chips go with them.
     setAttachments([]);
+    setUploadError(null);
+
+    try {
+      // The turn carries every file the session is holding for it, not the ones drawn
+      // here, so anything the strip has let go of has to be gone before the message
+      // leaves — otherwise a cancelled upload arrives with it.
+      await reconcilePending(files.map((a) => a.id));
+      // The attachments ride along as a data part purely so the sent bubble can draw
+      // them at once; the Worker already has them, and takes them from its own table.
+      sendMessage({
+        role: "user",
+        parts: [
+          ...(files.length ? [{ type: "data-files" as const, data: { attachments: files } }] : []),
+          { type: "text" as const, text },
+        ],
+      });
+    } finally {
+      sending.current = false;
+    }
   };
 
   return (
@@ -1284,10 +1432,7 @@ export function Chat({
           </div>
         )}
         {error && (
-          <SystemNotice
-            text={error.message}
-            onRetry={streaming ? undefined : () => void regenerate()}
-          />
+          <SystemNotice text={error.message} />
         )}
         <div ref={bottom} />
       </div>
@@ -1374,7 +1519,7 @@ export function Chat({
             </div>
           )}
 
-          <form onSubmit={submit} className="flex gap-2 md:gap-3">
+          <form onSubmit={(e) => void submit(e)} className="flex gap-2 md:gap-3">
             {canAttach && (
               <>
                 <input
@@ -1465,7 +1610,11 @@ export function Chat({
             ) : (
               <button
                 type="submit"
-                disabled={!input.trim() && attachments.length === 0}
+                disabled={
+                  uploading ||
+                  ghosts.length > 0 ||
+                  (!input.trim() && attachments.length === 0)
+                }
                 className="bg-ink text-on-primary h-12 min-w-12 shrink-0 rounded-full text-[16px] font-semibold transition hover:opacity-85 disabled:opacity-30"
               >
                 <span className="hidden md:block px-6">Send</span>

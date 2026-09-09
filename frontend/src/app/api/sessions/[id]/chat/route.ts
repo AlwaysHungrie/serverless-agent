@@ -3,7 +3,14 @@ import {
   createUIMessageStreamResponse,
   type UIMessage,
 } from "ai";
-import { agentUrl, type Attachment, type UsageData } from "@/lib/agent";
+import {
+  agentUrl,
+  describeSessionFailure,
+  SESSION_CRASHED,
+  SESSION_OUT_OF_MEMORY,
+  type Attachment,
+  type UsageData,
+} from "@/lib/agent";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -42,16 +49,57 @@ function describeStreamError(error: unknown): string {
   }
   const status = raw.match(/^agent (\d{3}): ([\s\S]*)$/);
   if (status) {
-    const detail = (() => {
-      try {
-        return (JSON.parse(status[2]) as { error?: string }).error ?? status[2];
-      } catch {
-        return status[2];
-      }
-    })();
-    return detail.trim() || `The agent returned ${status[1]}.`;
+    const detail = describeAgentBody(status[1], status[2]);
+    return detail || `The agent returned ${status[1]}.`;
   }
-  return raw || "Something went wrong on the way to the agent.";
+  // A failure the object reported mid-stream arrives as its own message rather than
+  // as a status and a body, so it has to be recognised here too — otherwise the
+  // runtime's own wording, SQL statements and all, is what the chat shows.
+  const platform = describeSessionFailure(raw);
+  if (platform) return platform;
+  return raw ? clamp(raw) : "Something went wrong on the way to the agent.";
+}
+
+/**
+ * What the agent said when it failed, as a sentence.
+ *
+ * Its own failures are JSON and can be read out directly. What cannot is a failure
+ * that never reached it: Cloudflare answers a dead isolate with a full HTML error
+ * page, and putting that in a chat bubble renders markup into the transcript and
+ * tells the reader nothing. The code on that page is the only part worth keeping.
+ */
+function describeAgentBody(status: string, body: string): string {
+  const trimmed = body.trim();
+
+  if (/^<(!doctype|html)/i.test(trimmed)) {
+    const code =
+      trimmed.match(/class="cf-error-code"[^>]*>(\d+)/i)?.[1] ??
+      trimmed.match(/\b(1\d{3})\b/)?.[1];
+    if (code === "1102" || /exceeded its memory limit|resource limits/i.test(trimmed)) {
+      return SESSION_OUT_OF_MEMORY;
+    }
+    if (code === "1101") {
+      return SESSION_CRASHED;
+    }
+    return `The agent could not be reached${code ? ` (Cloudflare ${code})` : ""}. Ask again in a moment.`;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: string };
+    const detail = typeof parsed.error === "string" ? parsed.error.trim() : "";
+    if (detail) return describeSessionFailure(detail) ?? clamp(detail);
+  } catch {
+    // Not JSON — fall through and treat it as text.
+  }
+
+  // Anything else: never markup, never a wall. One readable line.
+  const text = trimmed.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  if (!text) return `The agent returned ${status}.`;
+  return describeSessionFailure(text) ?? clamp(text);
+}
+
+function clamp(text: string): string {
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
 }
 
 export async function POST(

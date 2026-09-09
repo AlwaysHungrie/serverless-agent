@@ -7,9 +7,11 @@
  * the same wherever they are typed.
  */
 
-export type Command = "unstick" | "delete" | "new";
+// TEMP — `oom` is a probe for the 128 MB isolate limit, not a feature. Remove it, and
+// its branch in `runCommand`, once the behaviour it exposes has been seen.
+export type Command = "unstick" | "delete" | "new" | "oom";
 
-const COMMANDS: Command[] = ["unstick", "delete", "new"];
+const COMMANDS: Command[] = ["unstick", "delete", "new", "oom"];
 
 /**
  * The command a message is, or nothing if it is just a message.

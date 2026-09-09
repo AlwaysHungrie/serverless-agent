@@ -233,6 +233,44 @@ export type Summary = {
   sqlite_bytes: number;
 };
 
+/**
+ * The two failures that kill the session's instance rather than the turn. They are
+ * named here because the chat has to recognise them: retrying one straight away only
+ * asks the object to do the thing that just killed it, so the notice they produce is
+ * shown without a Retry button.
+ */
+export const SESSION_OUT_OF_MEMORY =
+  "This session ran out of memory and was reset. Send a new message or start a new conversation.";
+
+export const SESSION_CRASHED =
+  "The session crashed while answering. Send a new message or start a new conversation.";
+
+/**
+ * A deploy tears down every running instance, so anything in flight at that moment
+ * fails with wording about the object's code being updated. It is worth its own
+ * sentence — it is nobody's fault, it fixes itself, and it is not a crash.
+ */
+export const SESSION_UPDATED = "Session restarted before your message was processed.";
+
+export function isSessionCrash(text: string): boolean {
+  return text === SESSION_OUT_OF_MEMORY || text === SESSION_CRASHED;
+}
+
+/**
+ * The one sentence worth showing for a failure that came from the platform rather
+ * than from the request. Null when the text is not one of those, and the caller
+ * should say something of its own instead.
+ *
+ * Everything here is matched on wording because that is all the runtime gives us: the
+ * failures arrive as prose inside an error message, not as codes.
+ */
+export function describeSessionFailure(raw: string): string | null {
+  if (/code was updated|reset because its code/i.test(raw)) return SESSION_UPDATED;
+  if (/exceeded its memory limit|Exceeded Memory/i.test(raw)) return SESSION_OUT_OF_MEMORY;
+  if (/isolate|Durable Object.*(reset|reload)/i.test(raw)) return SESSION_CRASHED;
+  return null;
+}
+
 export function agentUrl(sessionId: string, path: string) {
   return `${AGENT_URL}/agents/session-agent/${encodeURIComponent(sessionId)}/${path}`;
 }

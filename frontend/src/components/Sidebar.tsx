@@ -32,6 +32,8 @@ export function Sidebar({
 }) {
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
+  /** The session the delete dialog is asking about, if it is open. */
+  const [confirming, setConfirming] = useState<SessionRow | null>(null);
   // Filtering trails the keystrokes, so a fast typist re-renders the list once
   // rather than once per character.
   const [debounced, setDebounced] = useState("");
@@ -40,6 +42,16 @@ export function Sidebar({
     const timer = setTimeout(() => setDebounced(query), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [query]);
+
+  // A destructive dialog has to be as easy to leave as to open.
+  useEffect(() => {
+    if (!confirming) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirming(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirming]);
 
   const visible = useMemo(() => {
     const needle = debounced.trim().toLowerCase();
@@ -101,7 +113,11 @@ export function Sidebar({
 
         <div className="px-4 pb-3">
           <div className="bg-field flex h-10 items-center gap-2 rounded-[16px] px-3">
-            <Search size={16} strokeWidth={1.75} className="text-faint shrink-0" />
+            <Search
+              size={16}
+              strokeWidth={1.75}
+              className="text-faint shrink-0"
+            />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -154,9 +170,9 @@ export function Sidebar({
                 </div>
               </button>
               <button
-                onClick={() => onDelete(s.id)}
-                title="Delete session and its Durable Object storage"
-                aria-label="Delete session"
+                onClick={() => setConfirming(s)}
+                title={`Delete ${s.title}`}
+                aria-label={`Delete ${s.title}`}
                 className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[16px] leading-none opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
               >
                 ×
@@ -184,6 +200,87 @@ export function Sidebar({
           </Link>
         </div>
       </aside>
+
+      {confirming && (
+        <ConfirmDelete
+          session={confirming}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => {
+            onDelete(confirming.id);
+            setConfirming(null);
+          }}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * Deleting a session takes everything it holds and cannot be undone, so it is asked
+ * rather than done. The consequences are named plainly, and the way out is the easier
+ * of the two choices to reach: the backdrop, the Escape key, or Cancel.
+ *
+ * A Telegram session is worth its own sentence. What is deleted here is this side of
+ * the conversation; the chat itself belongs to Telegram and keeps its messages, and
+ * someone who deletes a session expecting the chat to go with it has been misled.
+ */
+function ConfirmDelete({
+  session,
+  onCancel,
+  onConfirm,
+}: {
+  session: SessionRow;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const telegram = session.source === "telegram";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-5">
+      <button
+        onClick={onCancel}
+        aria-label="Keep session"
+        className="absolute inset-0 bg-black/40"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-delete-title"
+        className="border-hairline bg-canvas relative w-full max-w-sm rounded-[20px] border p-6 shadow-xl"
+      >
+        <h2
+          id="confirm-delete-title"
+          className="text-ink text-[18px] font-[650] leading-[1.35]"
+        >
+          Delete “{session.title}”?
+        </h2>
+        <p className="text-muted mt-2 text-[14px] leading-[1.5]">
+          Its messages, files, and stored data will be deleted permanently. This
+          can’t be undone.
+        </p>
+        {telegram && (
+          <p className="text-muted mt-2 text-[14px] leading-[1.5]">
+            Messages in the Telegram chat aren’t deleted. The bot starts a new
+            session the next time someone writes there.
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            // Focus starts on the way out, not on the deletion: a stray Return should
+            // keep the session, never take it.
+            autoFocus
+            className="border-hairline text-ink hover:bg-canvas-soft rounded-full border px-4 py-2 text-[14px] font-medium transition"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="bg-ink text-on-primary rounded-full px-4 py-2 text-[14px] font-medium transition hover:opacity-85"
+          >
+            Delete session
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

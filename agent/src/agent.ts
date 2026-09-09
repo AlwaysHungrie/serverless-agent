@@ -148,12 +148,28 @@ const TEXT_EXTENSIONS =
  */
 const PDF_PARSE_ENGINE = "mistral-ocr";
 
+/** Where parses are kept: outside the workspace tree the model is shown. */
+const PARSE_CACHE_DIR = ".parse-cache";
+
 /**
- * The stand-in an assistant message carries when its real content is a cached file
- * parse. It only has to survive the AI SDK untouched and never collide with anything
- * a model would write.
+ * The words out of a parse. The content array interleaves text with a rendered image
+ * per page; the images are dropped, which is most of the bytes and none of the meaning
+ * for anything that reads.
  */
-const ANNOTATION_MARKER = "\u241f-openrouter-file-annotation-";
+function annotationText(annotation: FileAnnotation): string {
+  const content = annotation.file?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part): part is { type: "text"; text: string } =>
+      typeof (part as { text?: unknown })?.text === "string" &&
+      (part as { type?: string }).type === "text"
+    )
+    .map((part) => part.text)
+    // A parse arrives one page per entry; the blank line keeps them from running on.
+    .join("\n\n")
+    .trim();
+}
 
 /** One parsed document as OpenRouter hands it back on the assistant delta. */
 type FileAnnotation = { type: string; file?: { name?: string; hash?: string; content?: unknown } };
@@ -184,8 +200,6 @@ export class SessionAgent extends Think<Env> {
   override maxSteps = MAX_TOOL_ROUNDS;
 
   private schemaReady = false;
-  /** Replay token -> the cached parse it stands for, rebuilt with every prompt. */
-  private annotationReplay = new Map<string, unknown>();
   private currentConfig: Config | undefined;
   private memories: Memory[] = [];
   /** The external MCP servers, reloaded per turn so a connection made mid-session works. */
@@ -299,7 +313,7 @@ export class SessionAgent extends Think<Env> {
       apiKey: this.env.OPENROUTER_API_KEY,
       baseURL: "https://openrouter.ai/api/v1",
       async fetch(input, init) {
-        const request = withCostReporting(self.replayFileAnnotations(init as RequestInit));
+        const request = withCostReporting(init as RequestInit);
         const res = await fetch(input as RequestInfo, request as RequestInit);
         if (res.ok) {
           return stripUnsupportedAnnotations(
@@ -412,7 +426,6 @@ export class SessionAgent extends Think<Env> {
     const kept = limit > 0 ? all.slice(-limit) : all;
 
     const messages: ModelMessage[] = [];
-    this.annotationReplay.clear();
     for (const message of kept) {
       const text = textOf(message);
       if (message.role === "assistant") {
@@ -420,36 +433,39 @@ export class SessionAgent extends Think<Env> {
         continue;
       }
       const attachments = this.attachmentsOf(message.id);
-      // A PDF whose parse is already cached is sent as that parse, not as the file:
-      // re-uploading it would make OpenRouter run — and charge for — the parser again.
+      // Parsed on the first turn that needs it, the way a clip is transcribed on the
+      // first turn that needs its words.
       for (const a of attachments) await this.ensureParsed(a);
-      const cached = await this.cachedFileAnnotations(attachments);
-      const parts = await this.fileParts(attachments, new Set(cached.map((c) => c.id)));
+      const parsed = await this.parsedDocuments(attachments);
+      // A PDF that has been parsed travels as its own words. The file itself is only
+      // sent when there is no parse to send instead — a failed parse, or one that came
+      // back empty — because carrying eight megabytes of base64 to a provider that
+      // will only turn it back into this same text is work nobody needs done twice.
+      const parts = await this.fileParts(attachments, new Set(parsed.map((p) => p.id)));
+      const content = [
+        { type: "text" as const, text },
+        ...parsed.map((p) => ({
+          type: "text" as const,
+          text: `--- contents of ${p.name} ---\n${p.text}`,
+        })),
+        ...parts,
+      ];
       messages.push(
-        parts.length === 0
-          ? { role: "user", content: text }
-          : { role: "user", content: [{ type: "text", text }, ...parts] }
+        content.length === 1 ? { role: "user", content: text } : { role: "user", content }
       );
-      // OpenRouter takes a cached parse as an assistant turn carrying the annotation,
-      // standing where the reply to that upload stood.
-      for (const entry of cached) {
-        const token = `${ANNOTATION_MARKER}${entry.id}`;
-        this.annotationReplay.set(token, entry.annotation);
-        messages.push({ role: "assistant", content: token });
-      }
     }
     return messages;
   }
 
   /**
-   * The cached parse for each attachment that has one, in message order. A row whose
-   * file has gone missing is dropped rather than repaired: the PDF is still on hand,
+   * The words of every attachment that has been parsed, in message order. A row whose
+   * file has gone missing is forgotten rather than repaired: the PDF is still on hand,
    * so the worst case is one more parse.
    */
-  private async cachedFileAnnotations(
+  private async parsedDocuments(
     attachments: Attachment[]
-  ): Promise<{ id: string; annotation: unknown }[]> {
-    const found: { id: string; annotation: unknown }[] = [];
+  ): Promise<{ id: string; name: string; text: string }[]> {
+    const found: { id: string; name: string; text: string }[] = [];
     for (const a of attachments) {
       if (a.kind !== "pdf") continue;
       const row = this.exec<{ path: string }>(
@@ -457,12 +473,19 @@ export class SessionAgent extends Think<Env> {
         a.id
       )[0];
       if (!row?.path) continue;
+      // Parses were once cached whole, as JSON. Those rows are dropped rather than
+      // read: their contents are a payload, not a document, and putting one in front
+      // of the model would be worse than parsing the PDF again.
+      if (!row.path.endsWith(".txt")) {
+        this.exec(`DELETE FROM file_cache WHERE attachment_id = ?`, a.id);
+        await this.workspace.rm(row.path, { force: true });
+        continue;
+      }
       try {
-        const json = await this.workspace.readFile(row.path);
-        if (!json) throw new Error("empty");
-        found.push({ id: a.id, annotation: JSON.parse(json) });
+        const text = await this.workspace.readFile(row.path);
+        if (!text?.trim()) throw new Error("empty");
+        found.push({ id: a.id, name: a.name, text });
       } catch {
-        // Unreadable or no longer valid JSON: forget it and let the PDF be sent.
         this.exec(`DELETE FROM file_cache WHERE attachment_id = ?`, a.id);
       }
     }
@@ -475,8 +498,8 @@ export class SessionAgent extends Think<Env> {
    *
    * It takes its own request because OpenRouter does not return annotations on a
    * streamed completion — the parse only comes back on an ordinary one. The reply is
-   * thrown away; what is wanted is the annotation riding along with it, which every
-   * later turn replays instead of re-sending the PDF.
+   * thrown away; what is wanted is the parse riding along with it, whose text stands
+   * in for the document on this turn and every turn after it.
    */
   private async ensureParsed(attachment: Attachment): Promise<void> {
     if (attachment.kind !== "pdf") return;
@@ -545,9 +568,15 @@ export class SessionAgent extends Think<Env> {
   }
 
   /**
-   * Put the parse output OpenRouter returned against the attachment it came from. The
-   * annotation names the file, which is all there is to match on, so the newest PDF
-   * with that name wins — and an unmatched annotation is simply dropped.
+   * Keep what the parse actually said, against the attachment it came from.
+   *
+   * Only the text is kept. A parse also carries a rendered image per page, and those
+   * are the bulk of it — worth nothing to a model that reads text, and worth their
+   * weight in tokens to one that does not. The words are what a question about a
+   * document is answered from.
+   *
+   * The annotation names the file and nothing else, so the newest PDF with that name
+   * wins the match, and an annotation matching nothing is dropped.
    */
   private async cacheFileAnnotations(files: FileAnnotation[]): Promise<void> {
     for (const annotation of files) {
@@ -559,9 +588,17 @@ export class SessionAgent extends Think<Env> {
       )[0];
       if (!row) continue;
       if (this.exec(`SELECT attachment_id FROM file_cache WHERE attachment_id = ?`, row.id)[0]) continue;
-      const path = `uploads/${row.id}/parsed.json`;
+      const text = annotationText(annotation);
+      if (!text.trim()) {
+        console.error(`pdf parse for ${row.id} carried no text`);
+        continue;
+      }
+      // Kept out of `uploads/`, and out of any directory the read and list tools walk:
+      // the parse is plumbing, and a model that finds it sitting beside the PDF will
+      // open it, reason about it, and spend a turn's tool budget on a cache file.
+      const path = `${PARSE_CACHE_DIR}/${row.id}.txt`;
       try {
-        await this.workspace.writeFile(path, JSON.stringify(annotation), "application/json");
+        await this.workspace.writeFile(path, text, "text/plain");
         this.exec(
           `INSERT OR REPLACE INTO file_cache (attachment_id, path, ts) VALUES (?, ?, ?)`,
           row.id,
@@ -572,31 +609,6 @@ export class SessionAgent extends Think<Env> {
         // Caching is an optimisation; failing to cache costs a re-parse, nothing more.
         console.error(`file cache write failed for ${row.id}: ${err instanceof Error ? err.message : err}`);
       }
-    }
-  }
-
-  /**
-   * Swap each replay marker in an outgoing request for the annotation it stands for.
-   * The AI SDK has no way to put `annotations` on an assistant message, so the message
-   * carries a token through it and the real payload is restored here, on the wire.
-   */
-  private replayFileAnnotations(init: RequestInit | undefined): RequestInit | undefined {
-    if (!init || typeof init.body !== "string" || this.annotationReplay.size === 0) return init;
-    if (!init.body.includes(ANNOTATION_MARKER)) return init;
-    try {
-      const body = JSON.parse(init.body) as { messages?: { role?: string; content?: unknown }[] };
-      let touched = false;
-      for (const message of body.messages ?? []) {
-        if (message.role !== "assistant" || typeof message.content !== "string") continue;
-        const annotation = this.annotationReplay.get(message.content);
-        if (!annotation) continue;
-        message.content = "";
-        (message as { annotations?: unknown[] }).annotations = [annotation];
-        touched = true;
-      }
-      return touched ? { ...init, body: JSON.stringify(body) } : init;
-    } catch {
-      return init;
     }
   }
 
@@ -906,6 +918,9 @@ export class SessionAgent extends Think<Env> {
     if (!row || row.used === 1) return;
     this.exec(`DELETE FROM attachments WHERE id = ? AND used = 0`, id);
     if (row.path) await this.workspace.rm(`uploads/${id}`, { recursive: true, force: true });
+    // The parse outlives nothing: the file it describes is gone.
+    this.exec(`DELETE FROM file_cache WHERE attachment_id = ?`, id);
+    await this.workspace.rm(`${PARSE_CACHE_DIR}/${id}.txt`, { force: true });
   }
 
   private async serveAttachment(id: string): Promise<Response> {
@@ -1656,6 +1671,36 @@ export class SessionAgent extends Think<Env> {
    * then calls `finishDelete`.
    */
   private async runCommand(command: Command): Promise<string> {
+    // TEMP — remove with the `oom` command itself. Allocates a megabyte at a time
+    // until the isolate is killed, to see what a session looks like on the way down
+    // and what is left of it afterwards. The strings are held in an array so nothing
+    // can be collected, and logged as they go so the log says how far it got.
+    if (command === "oom") {
+      // Byte buffers rather than strings: a string of one repeated character is the
+      // kind of thing a runtime is free to represent cleverly, and 4 GB of them
+      // surviving says the allocation was never real. A filled Uint8Array cannot be
+      // anything but the bytes it holds.
+      const held: Uint8Array[] = [];
+      let mb = 0;
+      try {
+        for (let i = 0; i < 2048; i++) {
+          const chunk = new Uint8Array(4 * 1024 * 1024);
+          // Written through, so the pages are actually faulted in rather than promised.
+          for (let o = 0; o < chunk.length; o += 4096) chunk[o] = (i + o) & 255;
+          chunk[chunk.length - 1] = 1;
+          held.push(chunk);
+          mb += 4;
+          if (mb % 16 === 0) {
+            console.log(`[oom] holding ${mb} MB across ${held.length} buffers in session ${this.name}`);
+          }
+        }
+      } catch (err) {
+        // An allocation failure is a real answer: the runtime refused before it was killed.
+        console.log(`[oom] allocation threw at ${mb} MB: ${err instanceof Error ? err.message : err}`);
+        return `Allocation failed at ${mb} MB: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      return `Held ${mb} MB without dying — the limit is not being enforced on this path.`;
+    }
     if (command === "unstick") {
       this.unstick();
       return "Cleared this session's turn state. Everything it holds is still here — ask again.";
@@ -1704,6 +1749,8 @@ export class SessionAgent extends Think<Env> {
     this.exec(`DELETE FROM message_text`);
     this.exec(`DELETE FROM attachments`);
     await this.workspace.rm("uploads", { recursive: true, force: true });
+    await this.workspace.rm(PARSE_CACHE_DIR, { recursive: true, force: true });
+    this.exec(`DELETE FROM file_cache`);
     // Anything the model wrote for itself goes too, bytes in the bucket included.
     for (const entry of await this.workspace.readDir("/")) {
       await this.workspace.rm(entry.path, { recursive: true, force: true });
@@ -1843,6 +1890,17 @@ function reportable(error: unknown, session: string): string {
   const raw = error instanceof Error ? error.message : String(error);
   console.error(`turn error in session ${session}: ${raw.slice(0, 4000)}`);
 
+  // The platform's own failures name internals — SQL statements, isolates, reset
+  // reasons — and none of that is an answer to the person who asked a question.
+  if (/code was updated|reset because its code/i.test(raw)) {
+    return "Session restarted before your message was processed.";
+  }
+  if (/exceeded its memory limit|Exceeded Memory/i.test(raw)) {
+    return "This session ran out of memory and was reset. Send a new message or start a new conversation.";
+  }
+  if (/Durable Object.*(reset|reload)|isolate/i.test(raw)) {
+    return "The session crashed while answering. Send a new message or start a new conversation.";
+  }
   if (/Type validation failed|invalid_union|Invalid input/i.test(raw)) {
     return "The provider sent back a response this client could not read.";
   }
