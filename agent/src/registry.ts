@@ -217,6 +217,16 @@ export type SessionRow = {
  * but you cannot ask Cloudflare "which instances exist". So the index lives here, in
  * one well-known object, while each session's data lives in its own SessionAgent.
  */
+/**
+ * The session a Telegram conversation maps to. A DM is one chat, a group is another,
+ * and a forum topic is its own conversation inside a group — so this is what gives
+ * each of them its own session, and keeps giving it the same one.
+ */
+export function sessionIdForChat(chatId: string, threadId = ""): string {
+  const base = `tg-${chatId.replace("-", "n")}`;
+  return threadId ? `${base}-t${threadId}` : base;
+}
+
 export class SessionRegistry extends DurableObject {
   private ready = false;
   /** Token refreshes in flight, by server id, so concurrent callers share one. */
@@ -533,6 +543,28 @@ export class SessionRegistry extends DurableObject {
         threadId
       )
       .toArray()[0] as unknown as SessionRow | undefined;
+  }
+
+  /**
+   * A session id for a chat that has none yet. Normally that is the chat's own id,
+   * but `!new` leaves the previous session in place under exactly that name — so a
+   * generation is appended until the name is free. Without this the "new" session
+   * would be the old Durable Object again, which is the one thing it must not be.
+   *
+   * It lives here rather than at the webhook because `!new` needs the same answer:
+   * the session it hands its scheduled tasks to has to be the one the next message
+   * lands in.
+   */
+  freeChatSessionId(chatId: string, threadId = ""): string {
+    this.ensureSchema();
+    const base = sessionIdForChat(chatId, threadId);
+    if (!this.get(base)) return base;
+    for (let n = 2; n < 1000; n++) {
+      const candidate = `${base}-g${n}`;
+      if (!this.get(candidate)) return candidate;
+    }
+    // A thousand fresh starts in one chat is not a thing; fall back to a unique name.
+    return `${base}-g${crypto.randomUUID().slice(0, 8)}`;
   }
 
   /** One session by id, or nothing. */

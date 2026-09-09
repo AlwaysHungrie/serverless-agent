@@ -37,37 +37,6 @@ function registry(env: Env) {
 }
 
 /**
- * The session a Telegram conversation maps to. A DM is one chat, a group is another,
- * and a forum topic is its own conversation inside a group — so this is what gives
- * each of them its own session, and keeps giving it the same one.
- */
-function sessionIdForChat(chatId: string, threadId = ""): string {
-  const base = `tg-${chatId.replace("-", "n")}`;
-  return threadId ? `${base}-t${threadId}` : base;
-}
-
-/**
- * A session id for a chat that has none. Normally that is just the chat's own id, but
- * `!new` leaves the previous session in place under exactly that name — so a
- * generation is appended until the name is free. Without this the "new" session would
- * be the old Durable Object again, which is the one thing it must not be.
- */
-async function freeSessionId(
-  reg: ReturnType<typeof registry>,
-  chatId: string,
-  threadId: string
-): Promise<string> {
-  const base = sessionIdForChat(chatId, threadId);
-  if (!(await reg.get(base))) return base;
-  for (let n = 2; n < 1000; n++) {
-    const candidate = `${base}-g${n}`;
-    if (!(await reg.get(candidate))) return candidate;
-  }
-  // A thousand fresh starts in one chat is not a thing; fall back to a unique name.
-  return `${base}-g${crypto.randomUUID().slice(0, 8)}`;
-}
-
-/**
  * The webhook's shared secret. Telegram echoes it on every call, and it is derived
  * from the bot token so there is nothing extra for anyone to store or paste.
  */
@@ -615,7 +584,7 @@ async function handleWebhook(
   if (!allowed) return new Response("ok");
 
   const existing = await reg.forChat(chatId, threadId);
-  const sessionId = existing?.id ?? (await freeSessionId(reg, chatId, threadId));
+  const sessionId = existing?.id ?? (await reg.freeChatSessionId(chatId, threadId));
   if (!existing) {
     await reg.create(sessionId, chatTitle(message), env.SessionAgent.idFromName(sessionId).toString(), {
       source: "telegram",

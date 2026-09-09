@@ -15,7 +15,13 @@ import {
 } from "./capabilities";
 import { parseCommand, type Command } from "./commands";
 import type { McpServerRow } from "./mcp";
-import { DEFAULT_CONFIG, type Config, type Memory, type SessionRegistry } from "./registry";
+import {
+  DEFAULT_CONFIG,
+  type Config,
+  type Memory,
+  type SessionRegistry,
+  type SessionRow,
+} from "./registry";
 import {
   Telegram,
   addressesBot,
@@ -123,6 +129,19 @@ const TITLE_PROMPT =
 
 /** How many times a single turn may call tools before it must answer. */
 const MAX_TOOL_ROUNDS = 6;
+
+/**
+ * What a scheduled task's user message is prefixed with. It is the only durable trace
+ * of why a turn ran: an alarm submits the turn and returns, so the reply is written by
+ * a later invocation that has nothing in memory to tell it who asked.
+ */
+const SCHEDULED_PREFIX = "[scheduled task] ";
+
+/**
+ * A pending task, reduced to what re-creating it needs. `when` is a cron expression
+ * or an ISO timestamp — the two forms `scheduleTask` reads back.
+ */
+export type TaskHandover = { when: string; prompt: string };
 
 /**
  * Attachment ceilings, per kind. Bytes spill to R2, so the limits are about what each
@@ -875,6 +894,51 @@ export class SessionAgent extends Think<Env> {
     const questions = messages.filter((m) => m.role === "user");
     if (questions.length === 1 && result.status === "completed") {
       await this.nameSession(textOf(questions[0]), textOf(result.message));
+    }
+
+    // A turn started from a chat posts its own reply; a turn started by an alarm has
+    // no caller to post one, so it is done here, where every completion path lands.
+    const asked = questions[questions.length - 1];
+    if (result.status === "completed" && asked && textOf(asked).startsWith(SCHEDULED_PREFIX)) {
+      await this.deliverToChat(result.message);
+    }
+  }
+
+  /**
+   * Post a reply to the Telegram conversation this session belongs to. Best effort:
+   * the turn is already in the transcript, so a chat that cannot be reached must not
+   * turn a completed task into a failed one.
+   */
+  private async deliverToChat(message: UIMessage): Promise<void> {
+    const config = this.config();
+    if (!enabled(config, "telegram") || !config.telegram_bot_token) return;
+    const row = await this.registry().get(this.name);
+    // A browser session, or one cut loose from its chat by `!new`, has nowhere to post.
+    if (!row?.chat_id) return;
+
+    const bot = new Telegram(config.telegram_bot_token, this.env.TELEGRAM_API_BASE);
+    // The topic is stored as text; a chat without topics keeps it empty.
+    const thread = Number(row.chat_thread_id) || undefined;
+    try {
+      await bot.send(row.chat_id, textOf(message) || "(no reply)", undefined, thread);
+      // Images the turn drew are files in a chat, the same as in an answered message.
+      // Without a start time there is no way to tell this turn's images from the
+      // session's whole history, so none are sent rather than all of them.
+      const drawn = this.turnUsage.started
+        ? this.exec<Attachment>(
+            `SELECT * FROM attachments WHERE kind = 'image' AND ts >= ? ORDER BY ts ASC`,
+            this.turnUsage.started
+          )
+        : [];
+      for (const image of drawn) {
+        const bytes = await this.workspace.readFileBytes(image.path);
+        if (!bytes) continue;
+        await bot.sendPhoto(row.chat_id, toArrayBuffer(bytes), image.name, image.text, thread);
+      }
+    } catch (err) {
+      console.error(
+        `telegram delivery failed for session ${this.name}: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 
@@ -1843,11 +1907,59 @@ export class SessionAgent extends Think<Env> {
       if (!row?.chat_id) {
         return "Nothing to move: this session is not tied to a chat. Start a new one from the sidebar.";
       }
-      await this.registry().detachChat(this.name);
-      return "Starting fresh. This conversation is kept and still readable in the browser; anything said here from now on goes to a new session.";
+      return await this.startOver(row);
     }
     await this.registry().remove(this.name);
     return "Deleted this session and everything in it. The next message starts over.";
+  }
+
+  /**
+   * Hand the chat to a fresh session and go quiet. The successor is created here
+   * rather than left to the next message, because the scheduled tasks have to be
+   * moved onto a session that already exists — and it has to be the same one the next
+   * message will land in, which is what makes the id come from the registry.
+   *
+   * The order is deliberate: the chat is detached first, so no moment exists where
+   * two sessions claim it. If the handover fails after that, the chat still gets a
+   * working session; only the tasks stay behind, and the reply says so.
+   */
+  private async startOver(row: SessionRow): Promise<string> {
+    const tasks = this.taskHandover();
+    const next = await this.registry().freeChatSessionId(row.chat_id, row.chat_thread_id);
+    await this.registry().detachChat(this.name);
+    await this.registry().create(
+      next,
+      "New session",
+      this.env.SessionAgent.idFromName(next).toString(),
+      {
+        source: row.source,
+        chat_id: row.chat_id,
+        chat_type: row.chat_type,
+        chat_username: row.chat_username,
+        chat_thread_id: row.chat_thread_id,
+      }
+    );
+
+    const kept =
+      "Starting fresh. This conversation is kept and still readable in the browser; anything said here from now on goes to a new session.";
+    if (tasks.length === 0) return kept;
+
+    try {
+      const stub = this.env.SessionAgent.get(this.env.SessionAgent.idFromName(next));
+      const { moved, failed } = await stub.adoptTasks(tasks);
+      // Only what the successor actually took on is dropped here, so a task that
+      // could not be re-created still runs somewhere rather than nowhere.
+      if (moved > 0) for (const task of this.listTasks()) await this.cancelTask(task.id);
+      const carried = `${moved} scheduled ${moved === 1 ? "task" : "tasks"} moved across.`;
+      return failed > 0
+        ? `${kept}\n\n${carried} ${failed} could not be — their time has passed.`
+        : `${kept}\n\n${carried}`;
+    } catch (err) {
+      console.error(
+        `task handover failed from ${this.name} to ${next}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return `${kept}\n\nIts scheduled tasks could not be moved and stay with the old session.`;
+    }
   }
 
   /**
@@ -1931,6 +2043,43 @@ export class SessionAgent extends Think<Env> {
   }
 
   /**
+   * The pending tasks as instructions another session can re-create them from. The
+   * raw schedules are read rather than `listTasks`, because what that returns is
+   * written to be read by a person — a cron expression there carries a "cron " label
+   * that `scheduleTask` would not accept back.
+   */
+  private taskHandover(): TaskHandover[] {
+    return [...this.getSchedules<{ prompt: string }>()]
+      .filter((s) => s.callback === "runScheduledTask")
+      .map((s) => ({
+        when: s.type === "cron" ? s.cron : new Date(s.time * 1000).toISOString(),
+        prompt: s.payload?.prompt ?? "",
+      }));
+  }
+
+  /**
+   * Take on the tasks of the session this chat used to point at. Called across
+   * objects, so it is public: the old session hands its work over on `!new` and then
+   * drops it, and a task the successor cannot re-create is reported rather than lost
+   * silently.
+   */
+  async adoptTasks(tasks: TaskHandover[]): Promise<{ moved: number; failed: number }> {
+    this.ensureSchema();
+    let moved = 0;
+    let failed = 0;
+    for (const task of tasks) {
+      try {
+        await this.scheduleTask(task.when, task.prompt);
+        moved++;
+      } catch {
+        // A one-off whose time passed during the handover can no longer be scheduled.
+        failed++;
+      }
+    }
+    return { moved, failed };
+  }
+
+  /**
    * A scheduled task runs a turn with nobody watching: the prompt is stored as the
    * user message and the reply lands in the transcript, so the session reads as a
    * conversation when the user comes back to it. It is submitted rather than awaited,
@@ -1945,7 +2094,7 @@ export class SessionAgent extends Think<Env> {
         {
           id: crypto.randomUUID(),
           role: "user",
-          parts: [{ type: "text", text: `[scheduled task] ${payload.prompt}` }],
+          parts: [{ type: "text", text: `${SCHEDULED_PREFIX}${payload.prompt}` }],
         },
       ],
     });
