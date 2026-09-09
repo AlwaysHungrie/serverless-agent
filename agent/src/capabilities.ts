@@ -118,9 +118,17 @@ export const CAPABILITIES: Capability[] = [
     tools: ["web_search"],
     fields: [
       {
+        key: "brave_api_key",
+        label: "Brave Search API key",
+        hint: "Requires paid subscription.",
+        secret: true,
+        required: false,
+        placeholder: "BSA…",
+      },
+      {
         key: "searxng_url",
         label: "SearXNG URL",
-        hint: "Self-hosted web search. You can run it locally or host it on a server. (Agents need a publicly accessible URL; for local instances, use a tunnel like cloudflared).",
+        hint: "Self-hosted web search fallback, used when no Brave API key is set. You can run it locally or host it on a server yourself. (Agent will need a publicly accessible URL; use a tunnel like cloudflared).",
         secret: false,
         required: false,
         placeholder: "https://local-searxng-project.trycloudflare.com",
@@ -132,14 +140,6 @@ export const CAPABILITIES: Capability[] = [
         secret: true,
         required: false,
         placeholder: "",
-      },
-      {
-        key: "brave_api_key",
-        label: "Brave Search API key",
-        hint: "Paid web search service. Fallback, used when SearXNG is not configured.",
-        secret: true,
-        required: false,
-        placeholder: "BSA…",
       },
     ],
   },
@@ -204,8 +204,8 @@ export const CAPABILITIES: Capability[] = [
   {
     id: "scheduled_tasks",
     flag: "cap_scheduled_tasks",
-    label: "Scheduled tasks",
-    summary: "Have a prompt run later, or on repeat.",
+    label: "Schedule tasks",
+    summary: "Allow the agent to run a task at a specified time or on a recurring schedule.",
     tools: ["schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"],
     fields: [],
   },
@@ -244,7 +244,7 @@ export const CAPABILITIES: Capability[] = [
       {
         key: "telegram_group_whitelist",
         label: "Groups whitelist",
-        hint: "Groups and Topics the bot can reply in. Enter group_id or group_id:topic_id (regex supported). You can find group id and topic id by messaging @userinfobot.",
+        hint: "Groups and Topics the bot can reply in. Enter group_id or group_id:topic_id (regex supported). Empty list allows every group and forum. (You can find group id and topic id by messaging @userinfobot)",
         secret: false,
         list: true,
         required: false,
@@ -266,8 +266,8 @@ export const CAPABILITIES: Capability[] = [
   {
     id: "memory",
     flag: "cap_memory",
-    label: "Memory",
-    summary: "Let the agent remember facts between sessions.",
+    label: "Private Memory",
+    summary: "Let the agent remember facts from conversations. These facts are not shared with other agents.",
     tools: ["remember", "recall"],
     fields: [],
   },
@@ -340,13 +340,14 @@ function htmlToText(html: string): string {
 
 type SearchResult = { title: string; url: string; description?: string };
 
-/** A self-hosted SearXNG instance. Needs `formats: [json]` in its settings.yml. */
+/** A self-hosted SearXNG instance. The fallback for agents with no Brave API key. Needs `formats: [json]` in its settings.yml. */
 async function searxngSearch(
   base: string,
   token: string,
   query: string,
   count: number,
 ): Promise<SearchResult[]> {
+  if (!base) throw new Error("no Brave API key and no SearXNG URL is set");
   const url = `${base}/search?q=${encodeURIComponent(query)}&format=json`;
   const headers: Record<string, string> = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -361,9 +362,8 @@ async function searxngSearch(
     .map((r) => ({ title: r.title ?? r.url!, url: r.url!, description: r.content }));
 }
 
-/** Brave's hosted API. The fallback for agents with no SearXNG instance. */
+/** Brave's hosted API. The default when a key is set. */
 async function braveSearch(key: string, query: string, count: number): Promise<SearchResult[]> {
-  if (!key) throw new Error("no SearXNG URL and no Brave API key is set");
   const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
   const res = await fetch(url, {
     headers: { Accept: "application/json", "X-Subscription-Token": key },
@@ -390,10 +390,15 @@ export const TOOLS: ToolSpec[] = [
       const query = str(args.query).trim();
       if (!query) throw new Error("query was empty");
       const count = Math.min(10, Math.max(1, Number(args.count) || 5));
-      const searxng = str(ctx.config.searxng_url).trim().replace(/\/+$/, "");
-      const results = searxng
-        ? await searxngSearch(searxng, str(ctx.config.searxng_token).trim(), query, count)
-        : await braveSearch(str(ctx.config.brave_api_key), query, count);
+      const brave = str(ctx.config.brave_api_key).trim();
+      const results = brave
+        ? await braveSearch(brave, query, count)
+        : await searxngSearch(
+          str(ctx.config.searxng_url).trim().replace(/\/+$/, ""),
+          str(ctx.config.searxng_token).trim(),
+          query,
+          count,
+        );
       if (results.length === 0) return `No results for "${query}".`;
       return results
         .map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${htmlToText(r.description ?? "")}`)

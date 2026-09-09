@@ -37,9 +37,9 @@ export type Config = {
   cap_telegram: number;
   cap_mcp: number;
 
-  /** Brave Search API key. Only used when `searxng_url` is empty. */
+  /** Brave Search API key. The default web search provider when set. */
   brave_api_key: string;
-  /** Base URL of a self-hosted SearXNG instance. When set, it replaces Brave. */
+  /** Base URL of a self-hosted SearXNG instance. Only used when `brave_api_key` is empty. */
   searxng_url: string;
   /** Bearer token for a guarded SearXNG instance. Blank when the instance is open. */
   searxng_token: string;

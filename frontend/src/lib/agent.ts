@@ -1,5 +1,7 @@
 /** Server-side access to the Cloudflare Worker that hosts the agent. */
-export const AGENT_URL = process.env.AGENT_URL ?? "http://localhost:8787";
+export const AGENT_URL =
+  (process.env.USE_LOCAL_AGENT === "true" ? process.env.LOCALHOST_AGENT_URL : process.env.AGENT_URL) ??
+  "http://localhost:8787";
 
 export type SessionRow = {
   id: string;
