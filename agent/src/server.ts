@@ -839,6 +839,7 @@ export default {
             config: "GET|PATCH /api/config",
             mcp: "GET|POST /api/mcp, PATCH|DELETE /api/mcp/:id, POST /api/mcp/:id/{connect,disconnect,refresh}",
             stream: "POST /agents/session-agent/:id/stream  { message }  -> SSE",
+            live: "GET /agents/session-agent/:id/live  -> SSE, or 204 when idle",
             chat: "POST /agents/session-agent/:id/chat  { message }",
             messages: "GET /agents/session-agent/:id/messages",
             files: "GET|POST /agents/session-agent/:id/files, GET|DELETE .../files/:fileId",

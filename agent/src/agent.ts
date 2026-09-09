@@ -208,6 +208,139 @@ export class SessionAgent extends Think<Env> {
   /** Usage accumulated by `onStepFinish` for the turn that is running now. */
   private turnUsage = { prompt: 0, completion: 0, cost: 0, reported: 0, started: 0 };
 
+  /**
+   * The turn that is streaming right now, if there is one. Every event it has sent is
+   * kept so a browser that reloaded mid-reply can be handed the reply from the start
+   * and then follow the rest of it live; `listeners` are the connections doing that.
+   *
+   * It only lives in memory, which is the right lifetime: if the object is evicted the
+   * turn dies with it, and there is nothing left to replay.
+   */
+  private live: {
+    events: Record<string, unknown>[];
+    listeners: Set<(event: Record<string, unknown>) => void>;
+    closers: Set<() => void>;
+  } | null = null;
+
+  /**
+   * The turn that just finished, and the id of the message it wrote.
+   *
+   * A reload races the end of a turn: the transcript is read a moment before the reply
+   * is banked, and the reconnection arrives a moment after, so neither carries it. The
+   * browser says which message it already has; if this is a later one, it is replayed
+   * instead of being missed until the next reload.
+   */
+  private finished: { events: Record<string, unknown>[]; messageId: string } | null = null;
+
+  /** The message id of the reply Think wrote last, learned in `onChatResponse`. */
+  private lastReplyId = "";
+
+  /** Record an event against the running turn and hand it to everyone attached. */
+  private emit(event: Record<string, unknown>) {
+    const live = this.live;
+    if (!live) return;
+    live.events.push(event);
+    for (const listener of live.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // A connection that has gone away is dropped when its stream is cancelled.
+      }
+    }
+  }
+
+  /** The turn is over: release everyone still attached, and keep it for a late reader. */
+  private endLive() {
+    const live = this.live;
+    this.live = null;
+    if (!live) return;
+    if (this.lastReplyId) {
+      this.finished = { events: live.events, messageId: this.lastReplyId };
+    }
+    for (const close of live.closers) {
+      try {
+        close();
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+
+  /** A finished turn, sent down in one go so the browser can draw the reply it missed. */
+  private replay(events: Record<string, unknown>[]): Response {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const event of events) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        }
+        controller.close();
+      },
+    });
+    return new Response(body, {
+      headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+    });
+  }
+
+  /**
+   * Attach to the turn that is running: the events it has already sent, then the ones
+   * it sends from here on. 204 when nothing is in flight, which is what tells the
+   * browser its transcript is already complete.
+   */
+  private attachLive(has = ""): Response {
+    const live = this.live;
+    if (!live) {
+      // Nothing is running. The only thing worth sending is a turn that ended after
+      // the browser read its transcript, which it names by the last reply it holds.
+      const missed = this.finished;
+      if (!missed || missed.messageId === has) return new Response(null, { status: 204 });
+      return this.replay(missed.events);
+    }
+
+    const encoder = new TextEncoder();
+    let listener: ((event: Record<string, unknown>) => void) | null = null;
+    let closer: (() => void) | null = null;
+
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let open = true;
+        const write = (event: Record<string, unknown>) => {
+          if (!open) return;
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          } catch {
+            open = false;
+          }
+        };
+        for (const event of live.events) write(event);
+        listener = write;
+        closer = () => {
+          if (!open) return;
+          open = false;
+          try {
+            controller.close();
+          } catch {
+            // Already closed.
+          }
+        };
+        live.listeners.add(listener);
+        live.closers.add(closer);
+      },
+      cancel() {
+        if (listener) live.listeners.delete(listener);
+        if (closer) live.closers.delete(closer);
+      },
+    });
+
+    return new Response(body, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
+    });
+  }
+
   private exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): T[] {
     return this.ctx.storage.sql.exec(query, ...(bindings as never[])).toArray() as T[];
   }
@@ -726,6 +859,7 @@ export class SessionAgent extends Think<Env> {
     status: "completed" | "error" | "aborted";
   }): Promise<void> {
     this.ensureSchema();
+    this.lastReplyId = result.message.id;
     this.exec(
       `INSERT OR REPLACE INTO usage (message_id, prompt_tokens, completion_tokens, cost_usd, ms, ts)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -814,6 +948,13 @@ export class SessionAgent extends Think<Env> {
         return Response.json({ error: "body must be { message: string }" }, { status: 400 });
       }
       return await this.streamChat(message, retry === true);
+    }
+
+    // A browser that reloaded mid-reply asks here whether one is still in flight,
+    // naming the last reply its transcript holds so a turn that ended in between is
+    // sent rather than lost.
+    if (request.method === "GET" && path === "live") {
+      return this.attachLive(url.searchParams.get("has") ?? "");
     }
 
     // Attachment bytes are served raw so an <img> src can point straight at them.
@@ -1256,73 +1397,65 @@ export class SessionAgent extends Think<Env> {
     const command = parseCommand(message);
     if (command) return await this.streamCommand(command);
     const userMessage = await this.openTurn(message, retry);
-    const encoder = new TextEncoder();
-    const self = this;
     // Tool events name the call by id; the name arrives once, when it starts.
     const toolNames = new Map<string, string>();
 
-    const body = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        const send = (event: Record<string, unknown>) => {
-          try {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-          } catch {
-            // The client is gone. The turn still finishes, and is still persisted.
-          }
-        };
-
-        try {
-          await self.runTurn({
-            mode: "stream",
-            input: [userMessage],
-            callback: {
-              onStart() {},
-              onEvent(json: string) {
-                const chunk = JSON.parse(json) as {
-                  type: string;
-                  delta?: string;
-                  toolCallId?: string;
-                  toolName?: string;
-                };
-                if (chunk.type === "text-delta" && chunk.delta) {
-                  send({ type: "delta", text: chunk.delta });
-                } else if (chunk.type === "tool-input-start" && chunk.toolCallId) {
-                  toolNames.set(chunk.toolCallId, chunk.toolName ?? "tool");
-                  send({ type: "tool", name: chunk.toolName ?? "tool" });
-                } else if (chunk.type === "tool-output-available" && chunk.toolCallId) {
-                  send({ type: "tool_done", name: toolNames.get(chunk.toolCallId) ?? "tool", ok: true });
-                } else if (chunk.type === "tool-output-error" && chunk.toolCallId) {
-                  send({ type: "tool_done", name: toolNames.get(chunk.toolCallId) ?? "tool", ok: false });
-                }
-              },
-              onDone() {},
-              onError(error: string) {
-                send({ type: "error", error: reportable(error, self.name) });
-              },
+    // The turn runs against the object, not against this request, and every event it
+    // produces is banked as it goes. The response is one listener on that; a browser
+    // that reloads mid-reply opens another and is caught up from the first token.
+    this.finished = null;
+    this.live = { events: [], listeners: new Set(), closers: new Set() };
+    const turn = (async () => {
+      try {
+        await this.runTurn({
+          mode: "stream",
+          input: [userMessage],
+          callback: {
+            onStart: () => {},
+            onEvent: (json: string) => {
+              const chunk = JSON.parse(json) as {
+                type: string;
+                delta?: string;
+                toolCallId?: string;
+                toolName?: string;
+              };
+              if (chunk.type === "text-delta" && chunk.delta) {
+                this.emit({ type: "delta", text: chunk.delta });
+              } else if (chunk.type === "tool-input-start" && chunk.toolCallId) {
+                toolNames.set(chunk.toolCallId, chunk.toolName ?? "tool");
+                this.emit({ type: "tool", name: chunk.toolName ?? "tool" });
+              } else if (chunk.type === "tool-output-available" && chunk.toolCallId) {
+                this.emit({ type: "tool_done", name: toolNames.get(chunk.toolCallId) ?? "tool", ok: true });
+              } else if (chunk.type === "tool-output-error" && chunk.toolCallId) {
+                this.emit({ type: "tool_done", name: toolNames.get(chunk.toolCallId) ?? "tool", ok: false });
+              }
             },
-          });
+            onDone: () => {},
+            onError: (error: string) => {
+              this.emit({ type: "error", error: reportable(error, this.name) });
+            },
+          },
+        });
 
-          send({
-            type: "usage",
-            prompt_tokens: self.turnUsage.prompt,
-            completion_tokens: self.turnUsage.completion,
-            cost_usd: self.turnCost(),
-            llm_ms: self.turnUsage.started ? Date.now() - self.turnUsage.started : 0,
-          });
-        } catch (err) {
-          send({ type: "error", error: reportable(err, self.name) });
-        }
-        controller.close();
-      },
-    });
+        this.emit({
+          type: "usage",
+          prompt_tokens: this.turnUsage.prompt,
+          completion_tokens: this.turnUsage.completion,
+          cost_usd: this.turnCost(),
+          llm_ms: this.turnUsage.started ? Date.now() - this.turnUsage.started : 0,
+        });
+      } catch (err) {
+        this.emit({ type: "error", error: reportable(err, this.name) });
+      } finally {
+        this.emit({ type: "done" });
+        this.endLive();
+      }
+    })();
+    // The object stays resident — and billable — until the turn is done, whether or
+    // not anyone is still listening.
+    this.ctx.waitUntil(turn);
 
-    return new Response(body, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      },
-    });
+    return this.attachLive();
   }
 
   /**

@@ -2,6 +2,7 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   type UIMessage,
+  type UIMessageStreamWriter,
 } from "ai";
 import {
   agentUrl,
@@ -102,6 +103,150 @@ function clamp(text: string): string {
   return text.length > 200 ? `${text.slice(0, 200)}…` : text;
 }
 
+/**
+ * Translate the Durable Object's SSE frames into UI message parts.
+ *
+ * Both the live turn and a reconnection to one already running read the same frames,
+ * so the reconnecting browser redraws the reply — text, tool lines and all — exactly
+ * as the tab that started it saw it.
+ */
+async function bridge(
+  upstream: NonNullable<Response["body"]>,
+  writer: UIMessageStreamWriter<ChatUIMessage>,
+): Promise<void> {
+  // Text is emitted as one part per round, opened on the round's first token and
+  // closed when the round ends in tool calls. Parts then reach the UI in the order
+  // they happened — say something, run a tool, say something more — instead of all
+  // the prose collapsing into one block above all the tool lines.
+  let textId: string | null = null;
+  let round = 0;
+  const running = new Set<string>();
+  const openText = () => {
+    if (textId) return textId;
+    textId = `${crypto.randomUUID()}-${round}`;
+    writer.write({ type: "text-start", id: textId });
+    return textId;
+  };
+  const closeText = () => {
+    if (!textId) return;
+    writer.write({ type: "text-end", id: textId });
+    textId = null;
+  };
+
+  const reader = upstream.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let closed = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += value;
+
+      let cut: number;
+      while ((cut = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, cut);
+        buffer = buffer.slice(cut + 2);
+        if (!frame.startsWith("data: ")) continue;
+
+        const event = JSON.parse(frame.slice(6)) as
+          | { type: "delta"; text: string }
+          | ({ type: "usage" } & UsageData)
+          | { type: "tool"; name: string }
+          | { type: "tool_done"; name: string; ok: boolean }
+          | { type: "error"; error: string }
+          | { type: "done" };
+
+        if (event.type === "delta") {
+          writer.write({
+            type: "text-delta",
+            id: openText(),
+            delta: event.text,
+          });
+        } else if (event.type === "usage") {
+          writer.write({
+            type: "data-usage",
+            data: {
+              prompt_tokens: event.prompt_tokens,
+              completion_tokens: event.completion_tokens,
+              cost_usd: event.cost_usd,
+              llm_ms: event.llm_ms,
+            },
+          });
+        } else if (event.type === "tool" || event.type === "tool_done") {
+          // One part per tool call per round, re-sent as done: the UI keys on the
+          // id and replaces the running line with a finished one.
+          if (event.type === "tool") {
+            closeText();
+            running.add(event.name);
+          }
+          writer.write({
+            type: "data-tool",
+            id: `tool-${round}-${event.name}`,
+            data: {
+              name: event.name,
+              done: event.type === "tool_done",
+              ...(event.type === "tool_done" ? { ok: event.ok } : {}),
+            },
+          });
+          // The round is over once its last tool reports back; anything after this
+          // belongs to the next one.
+          if (event.type === "tool_done") {
+            running.delete(event.name);
+            if (running.size === 0) round++;
+          }
+        } else if (event.type === "error") {
+          throw new Error(event.error);
+        } else if (event.type === "done") {
+          closeText();
+          closed = true;
+        }
+      }
+    }
+  } finally {
+    if (!closed) closeText();
+  }
+}
+
+/**
+ * Reconnect to a reply that is already being written.
+ *
+ * A reload drops the tab's stream but not the turn: the agent goes on answering and
+ * banks what it says. `useChat`'s resume asks here on mount, and the object answers
+ * either with the reply so far — replayed from its first token, then followed live —
+ * or with 204, meaning the transcript that was just loaded is already the whole story.
+ */
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  // The last reply the browser already has, so a turn that ended between its
+  // transcript being read and this call is sent rather than silently missed.
+  const has = new URL(request.url).searchParams.get("has") ?? "";
+  const upstream = await fetch(
+    `${agentUrl(id, "live")}?has=${encodeURIComponent(has)}`,
+    { signal: request.signal },
+  );
+
+  if (upstream.status === 204 || !upstream.body) {
+    return new Response(null, { status: 204 });
+  }
+  if (!upstream.ok) {
+    return new Response(null, { status: 204 });
+  }
+
+  const body = upstream.body;
+  const stream = createUIMessageStream<ChatUIMessage>({
+    execute: async ({ writer }) => {
+      await bridge(body, writer);
+    },
+    onError: (error) => describeStreamError(error),
+  });
+
+  return createUIMessageStreamResponse({ stream });
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -135,100 +280,7 @@ export async function POST(
         throw new Error(`agent ${upstream.status}: ${await upstream.text()}`);
       }
 
-      // Text is emitted as one part per round, opened on the round's first token and
-      // closed when the round ends in tool calls. Parts then reach the UI in the order
-      // they happened — say something, run a tool, say something more — instead of all
-      // the prose collapsing into one block above all the tool lines.
-      let textId: string | null = null;
-      let round = 0;
-      const running = new Set<string>();
-      const openText = () => {
-        if (textId) return textId;
-        textId = `${crypto.randomUUID()}-${round}`;
-        writer.write({ type: "text-start", id: textId });
-        return textId;
-      };
-      const closeText = () => {
-        if (!textId) return;
-        writer.write({ type: "text-end", id: textId });
-        textId = null;
-      };
-
-      const reader = upstream.body
-        .pipeThrough(new TextDecoderStream())
-        .getReader();
-      let buffer = "";
-      let closed = false;
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += value;
-
-          let cut: number;
-          while ((cut = buffer.indexOf("\n\n")) !== -1) {
-            const frame = buffer.slice(0, cut);
-            buffer = buffer.slice(cut + 2);
-            if (!frame.startsWith("data: ")) continue;
-
-            const event = JSON.parse(frame.slice(6)) as
-              | { type: "delta"; text: string }
-              | ({ type: "usage" } & UsageData)
-              | { type: "tool"; name: string }
-              | { type: "tool_done"; name: string; ok: boolean }
-              | { type: "error"; error: string }
-              | { type: "done" };
-
-            if (event.type === "delta") {
-              writer.write({
-                type: "text-delta",
-                id: openText(),
-                delta: event.text,
-              });
-            } else if (event.type === "usage") {
-              writer.write({
-                type: "data-usage",
-                data: {
-                  prompt_tokens: event.prompt_tokens,
-                  completion_tokens: event.completion_tokens,
-                  cost_usd: event.cost_usd,
-                  llm_ms: event.llm_ms,
-                },
-              });
-            } else if (event.type === "tool" || event.type === "tool_done") {
-              // One part per tool call per round, re-sent as done: the UI keys on the
-              // id and replaces the running line with a finished one.
-              if (event.type === "tool") {
-                closeText();
-                running.add(event.name);
-              }
-              writer.write({
-                type: "data-tool",
-                id: `tool-${round}-${event.name}`,
-                data: {
-                  name: event.name,
-                  done: event.type === "tool_done",
-                  ...(event.type === "tool_done" ? { ok: event.ok } : {}),
-                },
-              });
-              // The round is over once its last tool reports back; anything after this
-              // belongs to the next one.
-              if (event.type === "tool_done") {
-                running.delete(event.name);
-                if (running.size === 0) round++;
-              }
-            } else if (event.type === "error") {
-              throw new Error(event.error);
-            } else if (event.type === "done") {
-              closeText();
-              closed = true;
-            }
-          }
-        }
-      } finally {
-        if (!closed) closeText();
-      }
+      await bridge(upstream.body, writer);
     },
     onError: (error) => describeStreamError(error),
   });

@@ -1072,13 +1072,27 @@ export function Chat({
     })();
   }, [sessionId]);
 
+  // The reply the transcript ends with, if it ends with one. It is what the reconnect
+  // names, so the agent knows whether a turn finished while the page was loading.
+  const lastReply =
+    initialMessages[initialMessages.length - 1]?.role === "assistant"
+      ? String(initialMessages[initialMessages.length - 1].id)
+      : "";
+
   const { messages, sendMessage, regenerate, stop, status, error } =
     useChat<ChatUIMessage>({
       id: sessionId,
       messages: toUIMessages(initialMessages),
       transport: new DefaultChatTransport({
         api: `/api/sessions/${encodeURIComponent(sessionId)}/chat`,
+        // Reconnecting is a GET to the same route, not to `<api>/<id>/stream`.
+        prepareReconnectToStreamRequest: ({ api }) => ({
+          api: `${api}?has=${encodeURIComponent(lastReply)}`,
+        }),
       }),
+      // A reload does not stop the turn: the agent keeps answering, so the reply is
+      // picked up where it got to instead of only appearing on the next reload.
+      resume: true,
       onFinish: onTurnEnd,
     });
 
