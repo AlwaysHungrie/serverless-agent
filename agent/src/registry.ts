@@ -37,8 +37,12 @@ export type Config = {
   cap_telegram: number;
   cap_mcp: number;
 
-  /** Brave Search API key. Web search cannot run without it. */
+  /** Brave Search API key. Only used when `searxng_url` is empty. */
   brave_api_key: string;
+  /** Base URL of a self-hosted SearXNG instance. When set, it replaces Brave. */
+  searxng_url: string;
+  /** Bearer token for a guarded SearXNG instance. Blank when the instance is open. */
+  searxng_token: string;
   /** OpenRouter model used for `generate_image`; billed on the existing OpenRouter key. */
   image_model: string;
   /** OpenRouter model used to transcribe audio uploads; same key, same bill. */
@@ -80,6 +84,8 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   cap_mcp: 1,
 
   brave_api_key: "",
+  searxng_url: "",
+  searxng_token: "",
   image_model: "google/gemini-2.5-flash-image",
   transcription_model: "google/gemini-2.5-flash-lite",
   telegram_bot_token: "",
@@ -115,6 +121,8 @@ const CONFIG_MIGRATIONS = [
   `telegram_user_whitelist TEXT NOT NULL DEFAULT ''`,
   `telegram_group_whitelist TEXT NOT NULL DEFAULT ''`,
   `cap_mcp INTEGER NOT NULL DEFAULT 1`,
+  `searxng_url TEXT NOT NULL DEFAULT ''`,
+  `searxng_token TEXT NOT NULL DEFAULT ''`,
 ];
 
 /** The `mcp_servers` columns, in write order, excluding the primary key. */

@@ -1,0 +1,16 @@
+# Opt-in override: drops the token gate and hands port 8080 to SearXNG directly.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.unguarded.yml up -d
+#
+# Assigning caddy a profile that is never activated keeps it from starting, so
+# the port is free for SearXNG. Same port either way — the gate is just gone.
+#
+# Only for a machine where nothing else can reach the port. A public SearXNG with
+# `format: json` on is an open proxy.
+services:
+  caddy:
+    profiles: ["disabled"]
+
+  searxng:
+    ports:
+      - "${SEARXNG_PORT:-8080}:8080"

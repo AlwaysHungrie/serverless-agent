@@ -1,0 +1,92 @@
+# Self-hosted SearXNG: a metasearch engine that fronts Google, Bing, DuckDuckGo,
+# Brave and friends and answers over a plain JSON API. Replaces the Brave API key.
+services:
+  # First-run setup. Generates the instance secret into settings.yml and the API
+  # token into token.txt / token.conf. Runs to completion before SearXNG starts,
+  # and regenerates nothing on every later run.
+  init:
+    image: docker.io/library/alpine:3
+    container_name: searxng-init
+    volumes:
+      - ./:/config
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        rand() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
+        if grep -q 'secret_key: ""' /config/settings.yml; then
+          # Rewrite in place (same inode) so the bind mount keeps working.
+          sed "s|secret_key: \"\"|secret_key: \"$$(rand)\"|" /config/settings.yml > /tmp/s.yml
+          cat /tmp/s.yml > /config/settings.yml
+          echo "generated a new secret_key"
+        else
+          echo "secret_key already set"
+        fi
+
+        # The API token the gate requires. Never printed; written to two files.
+        if [ ! -s /config/token.conf ]; then
+          token=$$(rand)
+          # The token never goes to the logs. It lands in two files: token.txt to
+          # read, and token.conf, the Caddy snippet that enforces it.
+          printf '%s\n' "$$token" > /config/token.txt
+          printf '%s\n' \
+            "@unauthorized not header Authorization \"Bearer $$token\"" \
+            "respond @unauthorized \"unauthorized\" 401" \
+            > /config/token.conf
+          echo "generated a new API token -> token.txt"
+        else
+          echo "API token already generated (see token.txt)"
+        fi
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    # No host port: the token gate owns 8080 and is the only way in. The
+    # unguarded override file swaps that around (see README).
+    expose:
+      - "8080"
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:rw
+      - ./limiter.toml:/etc/searxng/limiter.toml:rw
+    environment:
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-http://localhost:8080/}
+      - UWSGI_WORKERS=${UWSGI_WORKERS:-4}
+      - UWSGI_THREADS=${UWSGI_THREADS:-4}
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  # The token gate on port 8080, and the only way in. The agent sends
+  # `Authorization: Bearer <token>`; only requests carrying it reach SearXNG.
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: searxng-caddy
+    restart: unless-stopped
+    ports:
+      - "${SEARXNG_PORT:-8080}:8081"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./token.conf:/etc/caddy/token.conf:ro
+      - caddy-data:/data
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      searxng:
+        condition: service_started
+
+volumes:
+  caddy-data:

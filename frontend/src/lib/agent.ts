@@ -113,6 +113,8 @@ export type Config = {
   cap_mcp: number;
 
   brave_api_key: string;
+  searxng_url: string;
+  searxng_token: string;
   telegram_bot_token: string;
   telegram_bot_username: string;
   telegram_user_whitelist: string;

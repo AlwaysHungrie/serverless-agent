@@ -1,0 +1,7 @@
+# Private instance: no bot-detection throttling on the API path.
+[botdetection.ip_limit]
+link_token = false
+
+[botdetection.ip_lists]
+pass_ip = []
+block_ip = []

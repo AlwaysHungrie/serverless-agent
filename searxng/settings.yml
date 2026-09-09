@@ -1,0 +1,35 @@
+# Minimal SearXNG config tuned for machine use: JSON on, rate limiter off for the
+# agent, no metrics UI noise. Everything else falls back to upstream defaults.
+use_default_settings: true
+
+general:
+  instance_name: "serverless-agent search"
+  enable_metrics: false
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "3fb8d81090c293876626d3a00898a4ccbe1464fe68a6c9fbffc08d510181d930" # filled in on first run by the `init` service
+  limiter: false # the instance is private; the gate is the token, not the limiter
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  # `json` is what the agent's web_search tool parses. It is off by default upstream.
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 100
+  pool_maxsize: 20
+  enable_http2: true
+
+ui:
+  static_use_hash: true
