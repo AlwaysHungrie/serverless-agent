@@ -141,6 +141,23 @@ const MAX_THUMBNAIL_BYTES = 2_000_000;
 const TEXT_EXTENSIONS =
   /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|log|html?|xml|css|jsx?|tsx?|py|rb|go|rs|java|kt|c|h|cpp|sh|sql)$/i;
 
+/**
+ * Which parser OpenRouter runs over a PDF. `mistral-ocr` is the one that reads scans
+ * and keeps a table's shape, and it is billed per page — which is affordable only
+ * because a document is parsed once per session and replayed after that.
+ */
+const PDF_PARSE_ENGINE = "mistral-ocr";
+
+/**
+ * The stand-in an assistant message carries when its real content is a cached file
+ * parse. It only has to survive the AI SDK untouched and never collide with anything
+ * a model would write.
+ */
+const ANNOTATION_MARKER = "\u241f-openrouter-file-annotation-";
+
+/** One parsed document as OpenRouter hands it back on the assistant delta. */
+type FileAnnotation = { type: string; file?: { name?: string; hash?: string; content?: unknown } };
+
 /** Where an attachment's bytes sit in the workspace. */
 function uploadPath(id: string, name: string): string {
   return `uploads/${id}/${safeName(name)}`;
@@ -167,13 +184,15 @@ export class SessionAgent extends Think<Env> {
   override maxSteps = MAX_TOOL_ROUNDS;
 
   private schemaReady = false;
+  /** Replay token -> the cached parse it stands for, rebuilt with every prompt. */
+  private annotationReplay = new Map<string, unknown>();
   private currentConfig: Config | undefined;
   private memories: Memory[] = [];
   /** The external MCP servers, reloaded per turn so a connection made mid-session works. */
   private mcpServers: McpServerRow[] = [];
 
   /** Usage accumulated by `onStepFinish` for the turn that is running now. */
-  private turnUsage = { prompt: 0, completion: 0, cost: 0, started: 0 };
+  private turnUsage = { prompt: 0, completion: 0, cost: 0, reported: 0, started: 0 };
 
   private exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): T[] {
     return this.ctx.storage.sql.exec(query, ...(bindings as never[])).toArray() as T[];
@@ -225,6 +244,17 @@ export class SessionAgent extends Think<Env> {
          ts INTEGER NOT NULL DEFAULT 0
        )`
     );
+    // What OpenRouter's file parser made of a PDF, so the same PDF is parsed once per
+    // session instead of once per turn. The parse output itself is a workspace file:
+    // it carries the document's text and a base64 image per page, which is far too
+    // large to want in a SQLite row.
+    this.exec(
+      `CREATE TABLE IF NOT EXISTS file_cache (
+         attachment_id TEXT PRIMARY KEY,
+         path TEXT NOT NULL,
+         ts INTEGER NOT NULL
+       )`
+    );
     this.schemaReady = true;
   }
 
@@ -264,12 +294,26 @@ export class SessionAgent extends Think<Env> {
    */
   private openrouter() {
     const session = this.name;
+    const self = this;
     return createOpenAI({
       apiKey: this.env.OPENROUTER_API_KEY,
       baseURL: "https://openrouter.ai/api/v1",
       async fetch(input, init) {
-        const res = await fetch(input as RequestInfo, init as RequestInit);
-        if (res.ok) return res;
+        const request = withCostReporting(self.replayFileAnnotations(init as RequestInit));
+        const res = await fetch(input as RequestInfo, request as RequestInit);
+        if (res.ok) {
+          return stripUnsupportedAnnotations(
+            res,
+            (files) => {
+              // Writing the parse output outlives the stream, so it is handed to the
+              // object's own lifetime rather than awaited inside the reader.
+              self.ctx.waitUntil(self.cacheFileAnnotations(files));
+            },
+            (cost) => {
+              self.turnUsage.reported += cost;
+            }
+          );
+        }
         // An error body is small and not streamed, so reading it here is safe — but
         // it is consumed by the read, so the response has to be rebuilt for the SDK.
         const text = await res.text();
@@ -336,7 +380,7 @@ export class SessionAgent extends Think<Env> {
     this.ensureSchema();
     await this.loadConfig();
     const config = this.config();
-    this.turnUsage = { prompt: 0, completion: 0, cost: 0, started: Date.now() };
+    this.turnUsage = { prompt: 0, completion: 0, cost: 0, reported: 0, started: Date.now() };
 
     return {
       // Chat completions, not Responses: see `getModel`.
@@ -368,20 +412,192 @@ export class SessionAgent extends Think<Env> {
     const kept = limit > 0 ? all.slice(-limit) : all;
 
     const messages: ModelMessage[] = [];
+    this.annotationReplay.clear();
     for (const message of kept) {
       const text = textOf(message);
       if (message.role === "assistant") {
         if (text.trim()) messages.push({ role: "assistant", content: text });
         continue;
       }
-      const parts = await this.fileParts(this.attachmentsOf(message.id));
+      const attachments = this.attachmentsOf(message.id);
+      // A PDF whose parse is already cached is sent as that parse, not as the file:
+      // re-uploading it would make OpenRouter run — and charge for — the parser again.
+      for (const a of attachments) await this.ensureParsed(a);
+      const cached = await this.cachedFileAnnotations(attachments);
+      const parts = await this.fileParts(attachments, new Set(cached.map((c) => c.id)));
       messages.push(
         parts.length === 0
           ? { role: "user", content: text }
           : { role: "user", content: [{ type: "text", text }, ...parts] }
       );
+      // OpenRouter takes a cached parse as an assistant turn carrying the annotation,
+      // standing where the reply to that upload stood.
+      for (const entry of cached) {
+        const token = `${ANNOTATION_MARKER}${entry.id}`;
+        this.annotationReplay.set(token, entry.annotation);
+        messages.push({ role: "assistant", content: token });
+      }
     }
     return messages;
+  }
+
+  /**
+   * The cached parse for each attachment that has one, in message order. A row whose
+   * file has gone missing is dropped rather than repaired: the PDF is still on hand,
+   * so the worst case is one more parse.
+   */
+  private async cachedFileAnnotations(
+    attachments: Attachment[]
+  ): Promise<{ id: string; annotation: unknown }[]> {
+    const found: { id: string; annotation: unknown }[] = [];
+    for (const a of attachments) {
+      if (a.kind !== "pdf") continue;
+      const row = this.exec<{ path: string }>(
+        `SELECT path FROM file_cache WHERE attachment_id = ?`,
+        a.id
+      )[0];
+      if (!row?.path) continue;
+      try {
+        const json = await this.workspace.readFile(row.path);
+        if (!json) throw new Error("empty");
+        found.push({ id: a.id, annotation: JSON.parse(json) });
+      } catch {
+        // Unreadable or no longer valid JSON: forget it and let the PDF be sent.
+        this.exec(`DELETE FROM file_cache WHERE attachment_id = ?`, a.id);
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Parse a PDF once, the way a clip is transcribed once: on the first turn that needs
+   * it, not at upload, so nothing stands between the user and sending their message.
+   *
+   * It takes its own request because OpenRouter does not return annotations on a
+   * streamed completion — the parse only comes back on an ordinary one. The reply is
+   * thrown away; what is wanted is the annotation riding along with it, which every
+   * later turn replays instead of re-sending the PDF.
+   */
+  private async ensureParsed(attachment: Attachment): Promise<void> {
+    if (attachment.kind !== "pdf") return;
+    if (this.exec(`SELECT attachment_id FROM file_cache WHERE attachment_id = ?`, attachment.id)[0]) {
+      return;
+    }
+    const base64 = await this.readBase64(attachment.path);
+    if (!base64) return;
+
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.env.OPENROUTER_API_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.model(),
+          // One token is enough: the annotation is attached to the message either way,
+          // and nothing here reads what the model actually said.
+          max_tokens: 1,
+          usage: { include: true },
+          plugins: [{ id: "file-parser", pdf: { engine: PDF_PARSE_ENGINE } }],
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "." },
+                {
+                  type: "file",
+                  file: {
+                    filename: attachment.name,
+                    file_data: `data:application/pdf;base64,${base64}`,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      });
+      if (!res.ok) {
+        console.error(`pdf parse ${res.status} for ${attachment.id}: ${(await res.text()).slice(0, 500)}`);
+        return;
+      }
+      const json = (await res.json()) as {
+        choices?: { message?: { annotations?: FileAnnotation[] } }[];
+        usage?: { cost?: number };
+      };
+      // The parse is billed on this call, so it belongs to the turn that triggered it.
+      if (typeof json.usage?.cost === "number") this.turnUsage.reported += json.usage.cost;
+
+      const files = (json.choices?.[0]?.message?.annotations ?? []).filter((a) => a?.type === "file");
+      if (files.length === 0) {
+        console.error(`pdf parse returned no annotations for ${attachment.id}`);
+        return;
+      }
+      await this.cacheFileAnnotations(files);
+      console.log(
+        `parsed ${attachment.name} (${attachment.id}) once with ${PDF_PARSE_ENGINE}, cost ${json.usage?.cost ?? "?"}`
+      );
+    } catch (err) {
+      // A failed parse is not a failed turn: the PDF is still sent as a file, and the
+      // only cost is that OpenRouter parses it again on the way through.
+      console.error(`pdf parse failed for ${attachment.id}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /**
+   * Put the parse output OpenRouter returned against the attachment it came from. The
+   * annotation names the file, which is all there is to match on, so the newest PDF
+   * with that name wins — and an unmatched annotation is simply dropped.
+   */
+  private async cacheFileAnnotations(files: FileAnnotation[]): Promise<void> {
+    for (const annotation of files) {
+      const name = annotation.file?.name;
+      if (!name) continue;
+      const row = this.exec<{ id: string }>(
+        `SELECT id FROM attachments WHERE kind = 'pdf' AND name = ? ORDER BY ts DESC LIMIT 1`,
+        name
+      )[0];
+      if (!row) continue;
+      if (this.exec(`SELECT attachment_id FROM file_cache WHERE attachment_id = ?`, row.id)[0]) continue;
+      const path = `uploads/${row.id}/parsed.json`;
+      try {
+        await this.workspace.writeFile(path, JSON.stringify(annotation), "application/json");
+        this.exec(
+          `INSERT OR REPLACE INTO file_cache (attachment_id, path, ts) VALUES (?, ?, ?)`,
+          row.id,
+          path,
+          Date.now()
+        );
+      } catch (err) {
+        // Caching is an optimisation; failing to cache costs a re-parse, nothing more.
+        console.error(`file cache write failed for ${row.id}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
+
+  /**
+   * Swap each replay marker in an outgoing request for the annotation it stands for.
+   * The AI SDK has no way to put `annotations` on an assistant message, so the message
+   * carries a token through it and the real payload is restored here, on the wire.
+   */
+  private replayFileAnnotations(init: RequestInit | undefined): RequestInit | undefined {
+    if (!init || typeof init.body !== "string" || this.annotationReplay.size === 0) return init;
+    if (!init.body.includes(ANNOTATION_MARKER)) return init;
+    try {
+      const body = JSON.parse(init.body) as { messages?: { role?: string; content?: unknown }[] };
+      let touched = false;
+      for (const message of body.messages ?? []) {
+        if (message.role !== "assistant" || typeof message.content !== "string") continue;
+        const annotation = this.annotationReplay.get(message.content);
+        if (!annotation) continue;
+        message.content = "";
+        (message as { annotations?: unknown[] }).annotations = [annotation];
+        touched = true;
+      }
+      return touched ? { ...init, body: JSON.stringify(body) } : init;
+    } catch {
+      return init;
+    }
   }
 
   /**
@@ -389,7 +605,10 @@ export class SessionAgent extends Think<Env> {
    * than read through a tool: a tool result has to be text, so handing a page back
    * that way is not something an OpenAI-shaped API will accept.
    */
-  private async fileParts(attachments: Attachment[]): Promise<
+  private async fileParts(
+    attachments: Attachment[],
+    skip: Set<string> = new Set()
+  ): Promise<
     ({ type: "image"; image: string } | { type: "file"; data: string; mediaType: string; filename: string })[]
   > {
     const parts: (
@@ -398,6 +617,7 @@ export class SessionAgent extends Think<Env> {
     )[] = [];
     for (const a of attachments) {
       if (a.kind !== "image" && a.kind !== "pdf") continue;
+      if (skip.has(a.id)) continue;
       const base64 = await this.readBase64(a.path);
       if (!base64) continue;
       parts.push(
@@ -500,7 +720,7 @@ export class SessionAgent extends Think<Env> {
       result.message.id,
       this.turnUsage.prompt,
       this.turnUsage.completion,
-      this.turnUsage.cost,
+      this.turnCost(),
       this.turnUsage.started ? Date.now() - this.turnUsage.started : 0,
       Date.now()
     );
@@ -510,6 +730,15 @@ export class SessionAgent extends Think<Env> {
     if (questions.length === 1 && result.status === "completed") {
       await this.nameSession(textOf(questions[0]), textOf(result.message));
     }
+  }
+
+  /**
+   * What the turn cost. OpenRouter's own figure is the true one — it includes what the
+   * token estimate cannot see, like a plugin's file-parsing fee — so the token maths is
+   * only a fallback for a model the price table knows and the provider did not report.
+   */
+  private turnCost(): number {
+    return this.turnUsage.reported > 0 ? this.turnUsage.reported : this.turnUsage.cost;
   }
 
   private priceOf(promptTokens: number, completionTokens: number, reported?: number) {
@@ -1053,7 +1282,7 @@ export class SessionAgent extends Think<Env> {
               },
               onDone() {},
               onError(error: string) {
-                send({ type: "error", error });
+                send({ type: "error", error: reportable(error, self.name) });
               },
             },
           });
@@ -1062,11 +1291,11 @@ export class SessionAgent extends Think<Env> {
             type: "usage",
             prompt_tokens: self.turnUsage.prompt,
             completion_tokens: self.turnUsage.completion,
-            cost_usd: self.turnUsage.cost,
+            cost_usd: self.turnCost(),
             llm_ms: self.turnUsage.started ? Date.now() - self.turnUsage.started : 0,
           });
         } catch (err) {
-          send({ type: "error", error: err instanceof Error ? err.message : String(err) });
+          send({ type: "error", error: reportable(err, self.name) });
         }
         controller.close();
       },
@@ -1605,6 +1834,153 @@ function publicAttachment(a: Attachment) {
 }
 
 /**
+ * What a failure may say in a chat bubble. The raw error can be a provider payload of
+ * many thousands of characters — a schema dump with a whole parsed document inside it —
+ * and pasting that at someone tells them nothing while burying the reply. The full text
+ * goes to the log, where it can be read; the chat gets one line.
+ */
+function reportable(error: unknown, session: string): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  console.error(`turn error in session ${session}: ${raw.slice(0, 4000)}`);
+
+  if (/Type validation failed|invalid_union|Invalid input/i.test(raw)) {
+    return "The provider sent back a response this client could not read.";
+  }
+  if (/rate.?limit|429/i.test(raw)) return "The provider is rate limiting this key.";
+  if (/credit|quota|402/i.test(raw)) return "The provider rejected the call for credits or quota.";
+  if (/context length|too large|413/i.test(raw)) return "That turn was too large for the model's context.";
+
+  // Anything unrecognised: the first line only, short enough to read.
+  const first = raw.split("\n")[0].trim();
+  return first.length > 200 ? `${first.slice(0, 200)}…` : first || "The turn failed.";
+}
+
+/**
+ * OpenRouter attaches an `annotations` array to the assistant delta whenever a plugin
+ * enriched the request — the file parser adds one entry per parsed document, carrying
+ * the whole extracted PDF (text plus base64 page images). The AI SDK's OpenAI chat
+ * schema only knows the `url_citation` annotation, so any other kind fails validation
+ * and kills the stream after the request was already paid for. Nothing here reads
+ * annotations, so the safe move is to drop the ones the SDK cannot parse before it
+ * ever sees them.
+ */
+/**
+ * OpenRouter only prices a call if it is asked to: without `usage.include`, the usage
+ * object comes back with token counts and no `cost`, which is why an estimate from a
+ * price table was the only figure available. The AI SDK has no field for this, so it
+ * is set on the wire, next to the other things this wrapper fixes up.
+ */
+function withCostReporting(init: RequestInit | undefined): RequestInit | undefined {
+  if (!init || typeof init.body !== "string") return init;
+  try {
+    const body = JSON.parse(init.body) as { usage?: { include?: boolean } };
+    if (body.usage?.include) return init;
+    body.usage = { ...body.usage, include: true };
+    return { ...init, body: JSON.stringify(body) };
+  } catch {
+    return init;
+  }
+}
+
+function stripUnsupportedAnnotations(
+  res: Response,
+  onFiles?: (files: FileAnnotation[]) => void,
+  onCost?: (cost: number) => void
+): Response {
+  const body = res.body;
+  if (!body) return res;
+  if (!/text\/event-stream/i.test(res.headers.get("content-type") ?? "")) return res;
+
+  const dropped: FileAnnotation[] = [];
+  const keep = (list: unknown) => {
+    if (!Array.isArray(list)) return list;
+    for (const a of list) {
+      // The parse is worth keeping even though the SDK cannot read it: sending it back
+      // on the next turn is what saves parsing the same PDF again.
+      if ((a as FileAnnotation)?.type === "file") dropped.push(a as FileAnnotation);
+    }
+    return list.filter((a) => (a as { type?: string })?.type === "url_citation");
+  };
+
+  // The parse is reported as soon as a frame carries it: a reader that stops early
+  // never reaches the flush, and losing the capture there costs a re-parse.
+  const report = () => {
+    if (dropped.length === 0) return;
+    const files = dropped.splice(0, dropped.length);
+    onFiles?.(files);
+  };
+
+  const clean = (payload: string): string => {
+    // The priced usage rides on the last frame of the stream, and is read on the way
+    // past — the SDK does not surface it, and it is the only true cost of the call.
+    if (payload.includes('"cost"')) {
+      try {
+        const cost = (JSON.parse(payload) as { usage?: { cost?: unknown } }).usage?.cost;
+        if (typeof cost === "number") onCost?.(cost);
+      } catch {
+        // Not a usage frame after all.
+      }
+    }
+    if (!payload.includes('"annotations"')) return payload;
+    try {
+      const json = JSON.parse(payload) as {
+        choices?: { delta?: { annotations?: unknown }; message?: { annotations?: unknown } }[];
+      };
+      let touched = false;
+      for (const choice of json.choices ?? []) {
+        for (const slot of [choice.delta, choice.message]) {
+          if (!slot || slot.annotations == null) continue;
+          const kept = keep(slot.annotations);
+          if (Array.isArray(kept) && kept.length === 0) delete slot.annotations;
+          else slot.annotations = kept;
+          touched = true;
+        }
+      }
+      return touched ? JSON.stringify(json) : payload;
+    } catch {
+      // Not JSON we understand — pass it through and let the SDK decide.
+      return payload;
+    }
+  };
+
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffer = "";
+  const rewrite = (line: string) => {
+    if (!line.startsWith("data: ") || line.slice(6).trim() === "[DONE]") return line;
+    const out = `data: ${clean(line.slice(6))}`;
+    report();
+    return out;
+  };
+
+  const stream = body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        buffer += decoder.decode(chunk, { stream: true });
+        // Rewriting needs whole lines, so only complete ones are forwarded here.
+        let cut: number;
+        while ((cut = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, cut);
+          buffer = buffer.slice(cut + 1);
+          controller.enqueue(encoder.encode(`${rewrite(line)}\n`));
+        }
+      },
+      flush(controller) {
+        buffer += decoder.decode();
+        if (buffer) controller.enqueue(encoder.encode(rewrite(buffer)));
+        report();
+      },
+    })
+  );
+
+  return new Response(stream, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+  });
+}
+
+/**
  * What to say in the chat when a turn does not complete. The status says what kind of
  * failure it was, and Think's own error says why — worth passing on, because the two
  * cases want opposite things from the user: an aborted or errored turn is worth
@@ -1612,7 +1988,7 @@ function publicAttachment(a: Attachment) {
  * someone in a loop.
  */
 function turnFailure(status: string, error?: string): string {
-  const why = error ? ` (${error})` : "";
+  const why = error ? ` (${reportable(error, "turn")})` : "";
   if (status === "aborted") return `That turn was cut short${why}. Ask again?`;
   if (status === "skipped") {
     return `That turn was skipped${why} — an earlier one is probably still running. Give it a moment, then ask again.`;

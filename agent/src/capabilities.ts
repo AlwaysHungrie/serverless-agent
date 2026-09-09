@@ -120,7 +120,6 @@ export const CAPABILITIES: Capability[] = [
       {
         key: "brave_api_key",
         label: "Brave Search API key",
-        hint: "Requires paid subscription.",
         secret: true,
         required: false,
         placeholder: "BSA…",

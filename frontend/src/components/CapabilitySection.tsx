@@ -162,6 +162,10 @@ export function Field({
   // blur keeps what is on screen the thing the user typed.
   const [draft, setDraft] = useState(value);
   const [focused, setFocused] = useState(false);
+  // Whether the field was typed into since it was focused. Clearing a secret and a
+  // secret left untouched both read as an empty draft on blur, so only this tells
+  // "delete the key" apart from "keep the one already saved".
+  const [edited, setEdited] = useState(false);
   useEffect(() => {
     if (!focused) setDraft(value);
   }, [value, focused]);
@@ -213,15 +217,20 @@ export function Field({
           type={field.secret && !masked ? "password" : "text"}
           value={draft}
           placeholder={field.placeholder}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setEdited(true);
+            setDraft(e.target.value);
+          }}
           onFocus={() => {
             setFocused(true);
+            setEdited(false);
             if (masked) setDraft("");
           }}
           onBlur={() => {
             setFocused(false);
             // An untouched secret is left alone: the mask means "keep the key".
-            if (field.secret && draft === "") {
+            // One the user emptied on purpose is cleared.
+            if (field.secret && draft === "" && !edited) {
               setDraft(value);
               return;
             }
@@ -230,6 +239,7 @@ export function Field({
           onKeyDown={(e) => {
             if (e.key === "Enter") e.currentTarget.blur();
             if (e.key === "Escape") {
+              setEdited(false);
               setDraft(value);
               e.currentTarget.blur();
             }
