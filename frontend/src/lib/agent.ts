@@ -127,6 +127,8 @@ export type ReasoningEffort = "off" | "low" | "medium" | "high";
  */
 export type Config = {
   model: string;
+  /** Mirrored from the agent row; set by renaming the agent, not from this page. */
+  agent_name: string;
   system_prompt: string;
   temperature: number;
   max_tokens: number;

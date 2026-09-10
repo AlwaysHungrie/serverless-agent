@@ -3,7 +3,8 @@
 import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Check } from "lucide-react";
-import { CapabilitySection, Field } from "@/components/CapabilitySection";
+import { useUser } from "@clerk/nextjs";
+import { CapabilitySection, ChipList, Field } from "@/components/CapabilitySection";
 import type {
   AgentRow,
   Capability,
@@ -120,9 +121,12 @@ export default function Settings({
   params: Promise<{ agentId: string }>;
 }) {
   const { agentId } = use(params);
+  const { user } = useUser();
+  /** The signed-in address. It is on the list whatever the box says, so it is shown apart from it. */
+  const ownEmail = (user?.primaryEmailAddress?.emailAddress ?? "").toLowerCase();
   const [agent, setAgent] = useState<AgentRow | null>(null);
   const [name, setName] = useState("");
-  /** The access list as the box shows it: one address per line. */
+  /** The stored access list, one address per line, the signed-in address included. */
   const [emails, setEmails] = useState("");
   const [models, setModels] = useState<ModelOption[]>([]);
   const [config, setConfig] = useState<Config | null>(null);
@@ -193,11 +197,10 @@ export default function Settings({
 
   /**
    * Who may open this agent. Your own address is added back by the Worker whatever
-   * this box says: an agent you edited yourself out of would be one you could not
-   * edit back, and an empty list would strand it for everyone.
+   * is sent: an agent you edited yourself out of would be one you could not edit
+   * back, and an empty list would strand it for everyone.
    */
   const saveEmails = async (next: string) => {
-    if (next.trim() === (agent?.allowed_emails ?? "").trim()) return;
     setSaving(true);
     const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: "PATCH",
@@ -215,7 +218,7 @@ export default function Settings({
     }
     setAgent(payload);
     // Take the stored list back: it is lowercased, de-duplicated and shorn of
-    // anything that was not an address, so the box shows what is actually saved.
+    // anything that was not an address, so the chips show what is actually saved.
     setEmails(payload.allowed_emails);
     setError(null);
   };
@@ -249,6 +252,18 @@ export default function Settings({
     if (payload.openrouter) setKeyCheck(payload.openrouter);
     setError(null);
   };
+
+  /**
+   * The list as the editor shows it: everyone but you. Your own address is a fixed
+   * chip instead, so it cannot be deleted by accident — the Worker puts it back
+   * whatever is sent, and a list you had edited yourself out of would be one you
+   * could not edit back.
+   */
+  const others = emails
+    .split("\n")
+    .map((e) => e.trim())
+    .filter((e) => e !== "" && e.toLowerCase() !== ownEmail)
+    .join("\n");
 
   const set = (patch: Partial<Config>, wait = 0) => {
     setConfig((c) => (c ? { ...c, ...patch } : c));
@@ -354,7 +369,8 @@ export default function Settings({
                 className="bg-field placeholder:text-faint w-full resize-y rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
               />
               <p className="text-faint mt-2 text-[12px] leading-[1.33]">
-                {config.system_prompt.length} / 4000
+                {config.system_prompt.length} / 4000 &middot; The agent is always told
+                its name first, whatever this says.
               </p>
             </Row>
 
@@ -464,25 +480,15 @@ export default function Settings({
 
             <Row
               title="Manage access"
-              hint="Comma separated, emails of user who have complete access to manage, chat and read all messages of this agent."
+              hint="Everyone here has complete access to manage, chat and read all messages of this agent."
             >
-              <textarea
-                value={emails}
-                onChange={(e) => setEmails(e.target.value)}
-                onBlur={() => void saveEmails(emails)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    setEmails(agent?.allowed_emails ?? "");
-                    e.currentTarget.blur();
-                  }
-                }}
-                rows={3}
+              <ChipList
+                value={others}
+                onChange={(v) => void saveEmails(v)}
                 placeholder="teammate@example.com"
-                className="bg-field placeholder:text-faint w-full resize-y rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
+                locked={ownEmail ? [ownEmail] : []}
+                emptyNote="Best to keep this list empty."
               />
-              <p className="text-faint mt-2 text-[12px] leading-[1.33]">
-                Best to keep this list empty.
-              </p>
             </Row>
           </div>
         )}

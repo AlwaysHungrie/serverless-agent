@@ -543,8 +543,13 @@ export class SessionAgent extends Think<Env> {
 
   private systemPrompt(): string {
     const parts = [SYSTEM_PROMPT];
+    // The name leads the custom instructions rather than living inside them: it is
+    // set by renaming the agent, so it stays right when the name changes and cannot
+    // be deleted by editing the instructions box.
+    const name = this.config().agent_name.trim();
     const custom = this.config().system_prompt.trim();
-    if (custom) parts.push(custom);
+    const instructions = [...(name ? [`Your name is ${name}.`] : []), ...(custom ? [custom] : [])];
+    if (instructions.length > 0) parts.push(instructions.join("\n"));
     if (this.memories.length > 0) {
       // Memories are injected rather than recalled by tool call, so the model can use
       // what it knows without spending a round trip to find out that it knows it.

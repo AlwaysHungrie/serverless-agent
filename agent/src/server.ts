@@ -772,7 +772,17 @@ async function handleAgents(
       );
       // Seed the settings row so the agent has a model — and its key — the moment
       // it exists, which is what lets it answer without a trip through Settings.
-      await registry(env, row.id).setConfig(key ? { openrouter_api_key: key } : {}, env.MODEL);
+      // Telegram is on from the start, so its whitelists are seeded here for the same
+      // reason the first enable seeds them below: empty lists would let all of
+      // Telegram talk to the bot the moment a token is pasted.
+      await registry(env, row.id).setConfig(
+        {
+          agent_name: row.name,
+          ...TELEGRAM_WHITELIST_DEFAULTS,
+          ...(key ? { openrouter_api_key: key } : {}),
+        },
+        env.MODEL
+      );
       return withCors(Response.json({ ...row, ...(openrouter ? { openrouter } : {}) }));
     }
     return undefined;
@@ -804,6 +814,9 @@ async function handleAgents(
           return withCors(Response.json({ error: "name is required" }, { status: 400 }));
         }
         await dir.rename(agentId, cleaned);
+        // The settings row keeps its own copy: it is what the system prompt tells the
+        // model it is called, and the session object never reads the directory.
+        await registry(env, agentId).setConfig({ agent_name: cleaned }, env.MODEL);
         next = { ...next, name: cleaned };
       }
 

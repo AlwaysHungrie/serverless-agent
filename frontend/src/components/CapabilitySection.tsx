@@ -39,20 +39,33 @@ export function Toggle({
 }
 
 /**
- * A list field: one entry per line in the config, a set of chips on screen. Entries
+ * A list field: one entry per line in the value, a set of chips on screen. Entries
  * are typed in and committed with Enter, so a whitelist is built one name at a time
  * rather than as a block of text to get the separators right in.
+ *
+ * Exported because the access list on the settings page is the same editor: a set of
+ * addresses, one of which — the signed-in user's own — is fixed rather than editable.
  */
-function ListField({
-  field,
+export function ChipList({
+  label,
+  hint,
+  placeholder,
   value,
   onChange,
   bordered = false,
+  locked = [],
+  emptyNote,
 }: {
-  field: CapabilityField;
+  label?: string;
+  hint?: string;
+  placeholder?: string;
   value: string;
   onChange: (v: string) => void;
   bordered?: boolean;
+  /** Chips that are always shown and cannot be removed, and are not part of `value`. */
+  locked?: string[];
+  /** Shown under an otherwise empty list. */
+  emptyNote?: string;
 }) {
   const [draft, setDraft] = useState("");
   const entries = value
@@ -63,7 +76,7 @@ function ListField({
   const add = (raw: string) => {
     const entry = raw.trim();
     // A duplicate is a no-op rather than an error: nothing about the list changes.
-    if (!entry || entries.includes(entry)) {
+    if (!entry || entries.includes(entry) || locked.includes(entry)) {
       setDraft("");
       return;
     }
@@ -71,24 +84,33 @@ function ListField({
     setDraft("");
   };
 
+  const chip = `text-ink flex items-center gap-2 rounded-full py-1.5 text-[13px] leading-[1.35] ${
+    bordered ? "bg-canvas border-hairline border" : "bg-field"
+  }`;
+
   return (
     <div>
-      <span className="block text-[14px] font-semibold leading-[1.43]">
-        {field.label}
-      </span>
-      <span className="text-muted block text-[12px] font-light leading-[1.33]">
-        {field.hint}
-      </span>
+      {label && (
+        <span className="block text-[14px] font-semibold leading-[1.43]">
+          {label}
+        </span>
+      )}
+      {hint && (
+        <span className="text-muted block text-[12px] font-light leading-[1.33]">
+          {hint}
+        </span>
+      )}
 
-      {entries.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
+      {(entries.length > 0 || locked.length > 0) && (
+        <div className={`flex flex-wrap gap-2 ${label || hint ? "mt-3" : ""}`}>
+          {locked.map((entry) => (
+            <span key={entry} className={`${chip} px-3`} title="This is your account">
+              <span className="max-w-[220px] truncate">{entry}</span>
+              <span className="text-faint text-[11px]">You</span>
+            </span>
+          ))}
           {entries.map((entry) => (
-            <span
-              key={entry}
-              className={`text-ink flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[13px] leading-[1.35] ${
-                bordered ? "bg-canvas border-hairline border" : "bg-field"
-              }`}
-            >
+            <span key={entry} className={`${chip} pr-2 pl-3`}>
               <span className="max-w-[220px] truncate">{entry}</span>
               <button
                 onClick={() =>
@@ -107,7 +129,7 @@ function ListField({
       <div className="mt-3 flex gap-2">
         <input
           value={draft}
-          placeholder={field.placeholder}
+          placeholder={placeholder}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={() => add(draft)}
           onKeyDown={(e) => {
@@ -117,7 +139,7 @@ function ListField({
             }
             if (e.key === "Escape") setDraft("");
           }}
-          aria-label={field.label}
+          aria-label={label}
           className={`placeholder:text-faint min-w-0 flex-1 rounded-[16px] px-4 py-3 text-[14px] outline-none ${
             bordered ? "bg-canvas border-hairline border" : "bg-field"
           }`}
@@ -132,11 +154,11 @@ function ListField({
         </button>
       </div>
 
-      {entries.length === 0 && (
+      {entries.length === 0 && emptyNote && (
         <p
           className={`mt-2 text-[12px] leading-[1.33] ${bordered ? "text-muted" : "text-faint"}`}
         >
-          *Empty list allows everyone.
+          {emptyNote}
         </p>
       )}
     </div>
@@ -182,11 +204,14 @@ export function Field({
   // A list is a set of entries, not a line of text, so it has an editor of its own.
   if (field.list)
     return (
-      <ListField
-        field={field}
+      <ChipList
+        label={field.label}
+        hint={field.hint}
+        placeholder={field.placeholder}
         value={value}
         onChange={onChange}
         bordered={bordered}
+        emptyNote="*Empty list allows everyone."
       />
     );
 

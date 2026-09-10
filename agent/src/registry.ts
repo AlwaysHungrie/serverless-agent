@@ -19,6 +19,11 @@ import { McpTokenError, refreshToken, type McpServerRow } from "./mcp";
  */
 export type Config = {
   model: string;
+  /**
+   * The agent's name, mirrored from the directory row so the model can be told what
+   * it is called without the session object having to look the agent up.
+   */
+  agent_name: string;
   /** Appended to the built-in system prompt. Empty means "no custom instructions". */
   system_prompt: string;
   temperature: number;
@@ -73,6 +78,7 @@ export type Config = {
 };
 
 export const DEFAULT_CONFIG: Omit<Config, "model"> = {
+  agent_name: "",
   system_prompt: "",
   temperature: 0.7,
   max_tokens: 0,
@@ -87,7 +93,9 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   cap_audio_input: 0,
   cap_scheduled_tasks: 0,
   cap_memory: 0,
-  cap_telegram: 0,
+  // On from the start: Telegram is how most agents are actually talked to, and the
+  // switch does nothing until a bot token is pasted anyway.
+  cap_telegram: 1,
   // On from the start: an MCP server is only reachable once it has been added and
   // connected, so the switch guards nothing the servers do not already guard.
   cap_mcp: 1,
@@ -110,6 +118,7 @@ const CONFIG_COLUMNS = ["model", ...Object.keys(DEFAULT_CONFIG)] as (keyof Confi
 /** `ALTER TABLE` fragments for every column added after `config` first shipped. */
 const CONFIG_MIGRATIONS = [
   `system_prompt TEXT NOT NULL DEFAULT ''`,
+  `agent_name TEXT NOT NULL DEFAULT ''`,
   `temperature REAL NOT NULL DEFAULT 0.7`,
   `max_tokens INTEGER NOT NULL DEFAULT 0`,
   `reasoning_effort TEXT NOT NULL DEFAULT 'off'`,
