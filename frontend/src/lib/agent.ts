@@ -241,6 +241,78 @@ export type McpServer = {
   created_at: number;
 };
 
+/* -------------------------------------------------------- meta settings -- */
+
+/**
+ * An agent's settings *about* its settings: what its settings and capabilities
+ * should default to, which models it may be switched between at all, and which MCP
+ * templates and servers belong to it.
+ *
+ * Edited only from the home page dialog. Nothing here changes what the agent does on
+ * its own — applying it writes these values into `Config`, and `Config` is still what
+ * every turn reads.
+ */
+export type MetaSettings = {
+  /**
+   * OpenRouter model ids the settings page may offer, typed in rather than picked:
+   * OpenRouter's catalogue is far bigger than the handful the Worker ships. Empty
+   * means the Worker's own list.
+   */
+  models: string[];
+  /** Default tuning values. An absent key keeps the factory default. */
+  defaults: Partial<Pick<Config, MetaTunableKey>>;
+  /**
+   * Settings the agent's own pages may not show or change: config columns and
+   * capability ids. A locked setting is configured here and nowhere else.
+   */
+  locked: string[];
+  /** Per capability id: whether it starts on, and what its fields start out holding. */
+  capabilities: Record<string, MetaCapability>;
+  /**
+   * Open lists of what a fixed-choice field may be set to, by config column — the
+   * image model, the transcription model. Empty leaves the shipped choices alone.
+   */
+  field_options: Record<string, string[]>;
+  mcp: {
+    /** Preset ids offered on the capabilities page. Empty means every preset. */
+    templates: string[];
+    /** Servers added to the agent when defaults are applied, matched by name. */
+    servers: MetaMcpServer[];
+  };
+};
+
+export type MetaTunableKey =
+  | "model"
+  | "system_prompt"
+  | "temperature"
+  | "max_tokens"
+  | "reasoning_effort"
+  | "context_messages"
+  | "openrouter_api_key";
+
+export type MetaCapability = {
+  enabled?: boolean;
+  /** Default field values, by config column. Secrets are never defaults. */
+  fields?: Record<string, string>;
+};
+
+export type MetaMcpServer = {
+  name: string;
+  url: string;
+  auth: McpAuth;
+  /** Default headers, by name. */
+  headers: Record<string, string>;
+};
+
+export const EMPTY_META: MetaSettings = {
+  models: [],
+  defaults: {},
+  locked: [],
+  capabilities: {},
+  field_options: {},
+  mcp: { templates: [], servers: [] },
+};
+
 /** A file the user attached, or an image the agent drew, minus the bytes. */
 export type Attachment = {
   id: string;

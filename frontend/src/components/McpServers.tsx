@@ -454,6 +454,8 @@ export function McpServers({ agentId }: { agentId: string }) {
     return connected ? `${connected} is connected.` : null;
   });
   const [busy, setBusy] = useState(false);
+  /** Preset ids this agent's meta settings offer. Empty means every preset. */
+  const [templates, setTemplates] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     const res = await fetch(base, { cache: "no-store" });
@@ -476,6 +478,21 @@ export function McpServers({ agentId }: { agentId: string }) {
       await load();
     })();
   }, [load]);
+
+  // Which templates the strip offers is a meta setting, so it is read from there.
+  // A failure here is not worth reporting: the strip falls back to every preset.
+  useEffect(() => {
+    void (async () => {
+      const res = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/meta`,
+        { cache: "no-store" },
+      );
+      const payload = (await res.json().catch(() => null)) as {
+        meta?: { mcp?: { templates?: string[] } };
+      } | null;
+      setTemplates(payload?.meta?.mcp?.templates ?? []);
+    })();
+  }, [agentId]);
 
   // Tidy the URL once the result has been shown, so a refresh does not replay it.
   useEffect(() => {
@@ -580,6 +597,8 @@ export function McpServers({ agentId }: { agentId: string }) {
       )}
 
       <McpPresetStrip
+        // Meta settings decide which templates this agent is offered.
+        only={templates}
         onPick={(picked) => {
           setPreset(picked);
           setPicks((n) => n + 1);

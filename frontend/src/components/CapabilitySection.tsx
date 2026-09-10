@@ -49,6 +49,7 @@ export function Toggle({
 export function ChipList({
   label,
   hint,
+  suggestionHint,
   placeholder,
   value,
   onChange,
@@ -66,6 +67,8 @@ export function ChipList({
   locked?: string[];
   /** Shown under an otherwise empty list. */
   emptyNote?: string;
+  /** Hint text shown under the input, always. */
+  suggestionHint?: string;
 }) {
   const [draft, setDraft] = useState("");
   const entries = value
@@ -104,7 +107,11 @@ export function ChipList({
       {(entries.length > 0 || locked.length > 0) && (
         <div className={`flex flex-wrap gap-2 ${label || hint ? "mt-3" : ""}`}>
           {locked.map((entry) => (
-            <span key={entry} className={`${chip} px-3`} title="This is your account">
+            <span
+              key={entry}
+              className={`${chip} px-3`}
+              title="This is your account"
+            >
               <span className="max-w-[220px] truncate">{entry}</span>
               <span className="text-faint text-[11px]">You</span>
             </span>
@@ -153,6 +160,14 @@ export function ChipList({
           Add
         </button>
       </div>
+
+      {suggestionHint && (
+        <p
+          className={`mt-2 text-[12px] leading-[1.33] ${bordered ? "text-muted" : "text-faint"}`}
+        >
+          {suggestionHint}
+        </p>
+      )}
 
       {entries.length === 0 && emptyNote && (
         <p
@@ -211,7 +226,7 @@ export function Field({
         value={value}
         onChange={onChange}
         bordered={bordered}
-        emptyNote="*Empty list allows everyone."
+        suggestionHint="Default options"
       />
     );
 
@@ -371,7 +386,9 @@ export function CapabilitySection({
           {children}
 
           {capability.note && (
-            <p className={`text-[12px] leading-[1.33] ${tint ? "text-muted" : "text-faint"}`}>
+            <p
+              className={`text-[12px] leading-[1.33] ${tint ? "text-muted" : "text-faint"}`}
+            >
               {capability.note}
             </p>
           )}

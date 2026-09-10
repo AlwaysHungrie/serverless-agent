@@ -53,8 +53,11 @@ const DRAG_SLOP = 4;
  */
 export function McpPresetStrip({
   onPick,
+  only = [],
 }: {
   onPick: (preset: McpPreset) => void;
+  /** Preset ids to show. Empty shows every preset. */
+  only?: string[];
 }) {
   const track = useRef<HTMLDivElement>(null);
   const offset = useRef(0);
@@ -97,9 +100,15 @@ export function McpPresetStrip({
 
   // One preset would leave most of the strip empty, so the list is repeated until it
   // is wide enough to look like a strip at all — and then doubled, for the wrap.
+  // An agent's meta settings may narrow the catalogue; a list that narrowed it to
+  // nothing is treated as no restriction, so the strip is never an empty rail.
+  const offered = only.length
+    ? MCP_PRESETS.filter((p) => only.includes(p.id))
+    : MCP_PRESETS;
+  const presets = offered.length ? offered : MCP_PRESETS;
   const filled = Array.from(
-    { length: Math.max(1, Math.ceil(8 / MCP_PRESETS.length)) },
-    () => MCP_PRESETS,
+    { length: Math.max(1, Math.ceil(8 / presets.length)) },
+    () => presets,
   ).flat();
   const tiles = [...filled, ...filled];
 

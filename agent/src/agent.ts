@@ -118,17 +118,29 @@ export type StoredMessage = {
   steps: string;
 };
 
-/** The models the app can be switched between, in the order the settings page lists them. */
-export const MODELS = [
+/** A model the settings page may offer: what it is called, and whether it sees images. */
+export type ModelOption = { id: string; label: string; vision: boolean };
+
+/** The models the app ships with. Meta settings may name any other OpenRouter id. */
+export const MODELS: ModelOption[] = [
   { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", vision: false },
   { id: "anthropic/claude-haiku-4.5", label: "Claude Haiku 4.5", vision: true },
   { id: "openai/gpt-5-mini", label: "GPT-5 Mini", vision: true },
   { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash", vision: true },
-] as const;
+];
 
-/** Whether the chosen model can be sent an image at all. */
+/**
+ * Whether the chosen model can be sent an image at all.
+ *
+ * A model the Worker ships answers for itself. One typed into meta settings is an
+ * OpenRouter id we know nothing about, so it is taken at its word: refusing images
+ * to every custom model would make image input unusable for exactly the deployments
+ * that went and picked their own. A model that cannot see them fails at the call,
+ * with OpenRouter's own message.
+ */
 function modelSeesImages(model: string): boolean {
-  return MODELS.find((m) => m.id === model)?.vision ?? false;
+  const known = MODELS.find((m) => m.id === model);
+  return known ? known.vision : true;
 }
 
 /** Fallback per-token pricing, used when OpenRouter does not return a cost. */

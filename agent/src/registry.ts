@@ -112,6 +112,90 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   telegram_group_whitelist: "",
 };
 
+/**
+ * Meta settings: an agent's settings *about* its settings.
+ *
+ * Where `Config` is what the agent is set to right now, this is what it should be
+ * set to by default — which model choices it is offered at all, which capabilities
+ * arrive switched on, what their fields start out holding, and which MCP templates
+ * and servers belong to it. Applying it writes those defaults into `Config`; nothing
+ * here is read on a turn, so a turn's behaviour still comes from `Config` alone.
+ *
+ * One JSON blob rather than columns: it is nested (per capability, per server) and
+ * nothing queries it, so columns would buy nothing and cost a migration per field.
+ */
+export type MetaSettings = {
+  /**
+   * The OpenRouter model ids the settings page may offer, typed in rather than
+   * picked: OpenRouter's catalogue is far larger than the handful the Worker knows
+   * about, and a deployment that wants one of the others should not need a release.
+   * Empty means the Worker's own list.
+   */
+  models: string[];
+  /** Default tuning values. A key that is absent keeps the factory default. */
+  defaults: Partial<Pick<Config, MetaTunableKey>>;
+  /**
+   * Settings the agent's own pages may not touch: capability ids and config columns.
+   * A locked setting is not shown under the agent at all — it is decided here and
+   * nowhere else, which is what makes this more than a set of starting values.
+   */
+  locked: string[];
+  /** Per capability: whether it starts on, and what its fields start out holding. */
+  capabilities: Record<string, MetaCapability>;
+  /**
+   * Open lists of what a fixed-choice field may be set to, by config column — the
+   * image model and the transcription model. Same reasoning as `models`: the built-in
+   * choices are a starting point, not the limit. An absent or empty list leaves the
+   * field offering what the Worker ships.
+   */
+  field_options: Record<string, string[]>;
+  mcp: {
+    /** Preset ids offered on the capabilities page. Empty means every preset. */
+    templates: string[];
+    /** Servers added to the agent when the defaults are applied, matched by name. */
+    servers: MetaMcpServer[];
+  };
+};
+
+/** The tuning settings a default may be given for. */
+export type MetaTunableKey =
+  | "model"
+  | "system_prompt"
+  | "temperature"
+  | "max_tokens"
+  | "reasoning_effort"
+  | "context_messages"
+  | "openrouter_api_key";
+
+export type MetaCapability = {
+  /** Whether the capability is switched on when the defaults are applied. */
+  enabled?: boolean;
+  /** Default values for that capability's fields, by config column. */
+  fields?: Record<string, string>;
+};
+
+/**
+ * One MCP server the agent should have. OAuth still has to be approved per server —
+ * this only gets the row in place, with the headers it needs, so connecting is a
+ * click rather than a re-entry of the URL.
+ */
+export type MetaMcpServer = {
+  name: string;
+  url: string;
+  auth: "none" | "headers" | "oauth";
+  /** Default headers, by name. Sent as-is to a `headers` server. */
+  headers: Record<string, string>;
+};
+
+export const DEFAULT_META: MetaSettings = {
+  models: [],
+  defaults: {},
+  locked: [],
+  capabilities: {},
+  field_options: {},
+  mcp: { templates: [], servers: [] },
+};
+
 /** The config columns, in the order they are written, excluding the primary key. */
 const CONFIG_COLUMNS = ["model", ...Object.keys(DEFAULT_CONFIG)] as (keyof Config)[];
 
@@ -320,6 +404,12 @@ export class SessionRegistry extends DurableObject {
       }
     }
     this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS meta (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         json TEXT NOT NULL DEFAULT ''
+       )`
+    );
+    this.ctx.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS memories (
          id INTEGER PRIMARY KEY AUTOINCREMENT,
          text TEXT NOT NULL,
@@ -492,6 +582,39 @@ export class SessionRegistry extends DurableObject {
   removeMcpServer(id: string) {
     this.ensureSchema();
     this.ctx.storage.sql.exec(`DELETE FROM mcp_servers WHERE id = ?`, id);
+  }
+
+  /* ------------------------------------------------------- meta settings -- */
+
+  /** The agent's defaults, or the empty set when nobody has set any. */
+  meta(): MetaSettings {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql.exec(`SELECT json FROM meta WHERE id = 1`).toArray()[0] as
+      | { json: string }
+      | undefined;
+    if (!row?.json) return DEFAULT_META;
+    try {
+      const stored = JSON.parse(row.json) as Partial<MetaSettings>;
+      return {
+        ...DEFAULT_META,
+        ...stored,
+        mcp: { ...DEFAULT_META.mcp, ...(stored.mcp ?? {}) },
+      };
+    } catch {
+      // A blob we cannot read is one nobody can fix from the dialog either.
+      return DEFAULT_META;
+    }
+  }
+
+  /** Replaces the whole document: the dialog always sends the settings entire. */
+  setMeta(next: MetaSettings): MetaSettings {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO meta (id, json) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET json = excluded.json`,
+      JSON.stringify(next)
+    );
+    return this.meta();
   }
 
   /** Reads the settings row, seeding it from the Worker default on first use. */

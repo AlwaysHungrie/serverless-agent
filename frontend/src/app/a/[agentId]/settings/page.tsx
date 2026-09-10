@@ -4,7 +4,11 @@ import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Check } from "lucide-react";
 import { useUser } from "@clerk/nextjs";
-import { CapabilitySection, ChipList, Field } from "@/components/CapabilitySection";
+import {
+  CapabilitySection,
+  ChipList,
+  Field,
+} from "@/components/CapabilitySection";
 import type {
   AgentRow,
   Capability,
@@ -123,13 +127,22 @@ export default function Settings({
   const { agentId } = use(params);
   const { user } = useUser();
   /** The signed-in address. It is on the list whatever the box says, so it is shown apart from it. */
-  const ownEmail = (user?.primaryEmailAddress?.emailAddress ?? "").toLowerCase();
+  const ownEmail = (
+    user?.primaryEmailAddress?.emailAddress ?? ""
+  ).toLowerCase();
   const [agent, setAgent] = useState<AgentRow | null>(null);
   const [name, setName] = useState("");
   /** The stored access list, one address per line, the signed-in address included. */
   const [emails, setEmails] = useState("");
   const [models, setModels] = useState<ModelOption[]>([]);
   const [config, setConfig] = useState<Config | null>(null);
+  /**
+   * Settings this agent may not change for itself: config columns and capability
+   * ids, locked in the meta dialog on the home page. A locked setting is not drawn
+   * here at all — the Worker drops it from a PATCH, so an editor for it would be an
+   * edit that silently does nothing.
+   */
+  const [locked, setLocked] = useState<Set<string>>(new Set());
   /** Connecting the bot is setup rather than a tool, so it is shown here, first. */
   const [telegram, setTelegram] = useState<Capability | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -152,6 +165,7 @@ export default function Settings({
         config: Config;
         models: ModelOption[];
         capabilities: Capability[];
+        locked?: string[];
         error?: string;
       } | null;
       if (!res.ok || !payload) {
@@ -163,6 +177,7 @@ export default function Settings({
       }
       setModels(payload.models);
       setConfig(payload.config);
+      setLocked(new Set(payload.locked ?? []));
       setAgent(payload.agent ?? null);
       setName(payload.agent?.name ?? "");
       setEmails(payload.agent?.allowed_emails ?? "");
@@ -209,8 +224,7 @@ export default function Settings({
     });
     setSaving(false);
     const payload = (await res.json().catch(() => null)) as
-      | (AgentRow & { error?: string })
-      | null;
+      (AgentRow & { error?: string }) | null;
     if (!res.ok || !payload?.id) {
       setError(payload?.error ?? "Couldn't save who can open this agent.");
       setEmails(agent?.allowed_emails ?? "");
@@ -318,7 +332,7 @@ export default function Settings({
 
         {config && (
           <div className="mt-8">
-            {telegram && (
+            {telegram && !locked.has("telegram") && (
               <CapabilitySection
                 capability={telegram}
                 config={config}
@@ -327,138 +341,155 @@ export default function Settings({
               />
             )}
 
-            <Row title="Model" hint="Choose which model answers you.">
-              <div className="space-y-2">
-                {models.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => set({ model: m.id })}
-                    className={`flex w-full items-center gap-3 rounded-[16px] px-5 py-4 text-left transition ${
-                      config.model === m.id
-                        ? "bg-canvas-soft"
-                        : "hover:bg-canvas-soft/60"
+            {!locked.has("model") && (
+              <Row title="Model" hint="Choose which model answers you.">
+                <div className="space-y-2">
+                  {models.map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => set({ model: m.id })}
+                      className={`flex w-full items-center gap-3 rounded-[16px] px-5 py-4 text-left transition ${
+                        config.model === m.id
+                          ? "bg-canvas-soft"
+                          : "hover:bg-canvas-soft/60"
+                      }`}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[16px] font-semibold leading-[1.38]">
+                          {m.label}
+                        </span>
+                        <span className="text-faint block truncate text-[12px] leading-[1.33]">
+                          {m.id}
+                          {!m.vision ? " · (no vision)" : ""}
+                        </span>
+                      </span>
+                      {config.model === m.id && (
+                        <Check size={18} strokeWidth={2} className="shrink-0" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </Row>
+            )}
+
+            {!locked.has("system_prompt") && (
+              <Row
+                title="Custom instructions"
+                hint="Tell the agent how to reply, every time."
+              >
+                <textarea
+                  value={config.system_prompt}
+                  onChange={(e) => set({ system_prompt: e.target.value }, 600)}
+                  rows={4}
+                  maxLength={4000}
+                  placeholder="Answer in short paragraphs. Show code before explaining it."
+                  className="bg-field placeholder:text-faint w-full resize-y rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
+                />
+                <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+                  {config.system_prompt.length} / 4000 &middot; The agent is
+                  always told its name first, whatever this says.
+                </p>
+              </Row>
+            )}
+
+            {!locked.has("reasoning_effort") && (
+              <Row
+                title="Extended reasoning"
+                hint="Choose how long the agent thinks before it answers."
+              >
+                <Segmented
+                  options={REASONING.map((r) => ({ id: r.id, label: r.label }))}
+                  value={config.reasoning_effort}
+                  onChange={(v) => set({ reasoning_effort: v })}
+                />
+                <p className="text-faint mt-3 text-[12px] leading-[1.33]">
+                  {
+                    REASONING.find((r) => r.id === config.reasoning_effort)
+                      ?.hint
+                  }
+                </p>
+              </Row>
+            )}
+
+            {!locked.has("temperature") && (
+              <Row
+                title="Creativity"
+                hint="Low keeps answers literal. High makes them varied."
+              >
+                <Slider
+                  value={config.temperature}
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  format={(v) => v.toFixed(1)}
+                  onChange={(v) => set({ temperature: v })}
+                />
+              </Row>
+            )}
+
+            {!locked.has("max_tokens") && (
+              <Row
+                title="Reply length cap"
+                hint="Set how long a single reply can run."
+              >
+                <Slider
+                  value={config.max_tokens}
+                  min={0}
+                  max={8000}
+                  step={250}
+                  format={(v) => (v === 0 ? "No cap" : `${v} tokens`)}
+                  onChange={(v) => set({ max_tokens: v })}
+                />
+              </Row>
+            )}
+
+            {!locked.has("context_messages") && (
+              <Row
+                title="Context window"
+                hint="Choose how much of the chat the agent sees each turn."
+              >
+                <Slider
+                  value={config.context_messages}
+                  min={0}
+                  max={100}
+                  step={2}
+                  format={(v) => (v === 0 ? "Full history" : `Last ${v}`)}
+                  onChange={(v) => set({ context_messages: v })}
+                />
+              </Row>
+            )}
+
+            {!locked.has("openrouter_api_key") && (
+              <Row
+                title="OpenRouter"
+                hint="Your agent cannot function without this."
+              >
+                <Field
+                  field={OPENROUTER_KEY}
+                  value={config.openrouter_api_key}
+                  onChange={(v) => {
+                    setKeyCheck(null);
+                    set({ openrouter_api_key: v });
+                  }}
+                />
+                {keyCheck && (
+                  <p
+                    className={`mt-2 text-[12px] leading-[1.33] ${
+                      keyCheck.ok ? "text-muted" : "text-ink"
                     }`}
                   >
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[16px] font-semibold leading-[1.38]">
-                        {m.label}
-                      </span>
-                      <span className="text-faint block truncate text-[12px] leading-[1.33]">
-                        {m.id}
-                        {!m.vision ? " · (no vision)" : ""}
-                      </span>
-                    </span>
-                    {config.model === m.id && (
-                      <Check size={18} strokeWidth={2} className="shrink-0" />
-                    )}
-                  </button>
-                ))}
-              </div>
-            </Row>
-
-            <Row
-              title="Custom instructions"
-              hint="Tell the agent how to reply, every time."
-            >
-              <textarea
-                value={config.system_prompt}
-                onChange={(e) => set({ system_prompt: e.target.value }, 600)}
-                rows={4}
-                maxLength={4000}
-                placeholder="Answer in short paragraphs. Show code before explaining it."
-                className="bg-field placeholder:text-faint w-full resize-y rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
-              />
-              <p className="text-faint mt-2 text-[12px] leading-[1.33]">
-                {config.system_prompt.length} / 4000 &middot; The agent is always told
-                its name first, whatever this says.
-              </p>
-            </Row>
-
-            <Row
-              title="Extended reasoning"
-              hint="Choose how long the agent thinks before it answers."
-            >
-              <Segmented
-                options={REASONING.map((r) => ({ id: r.id, label: r.label }))}
-                value={config.reasoning_effort}
-                onChange={(v) => set({ reasoning_effort: v })}
-              />
-              <p className="text-faint mt-3 text-[12px] leading-[1.33]">
-                {REASONING.find((r) => r.id === config.reasoning_effort)?.hint}
-              </p>
-            </Row>
-
-            <Row
-              title="Creativity"
-              hint="Low keeps answers literal. High makes them varied."
-            >
-              <Slider
-                value={config.temperature}
-                min={0}
-                max={2}
-                step={0.1}
-                format={(v) => v.toFixed(1)}
-                onChange={(v) => set({ temperature: v })}
-              />
-            </Row>
-
-            <Row
-              title="Reply length cap"
-              hint="Set how long a single reply can run."
-            >
-              <Slider
-                value={config.max_tokens}
-                min={0}
-                max={8000}
-                step={250}
-                format={(v) => (v === 0 ? "No cap" : `${v} tokens`)}
-                onChange={(v) => set({ max_tokens: v })}
-              />
-            </Row>
-
-            <Row
-              title="Context window"
-              hint="Choose how much of the chat the agent sees each turn."
-            >
-              <Slider
-                value={config.context_messages}
-                min={0}
-                max={100}
-                step={2}
-                format={(v) => (v === 0 ? "Full history" : `Last ${v}`)}
-                onChange={(v) => set({ context_messages: v })}
-              />
-            </Row>
-
-            <Row
-              title="OpenRouter"
-              hint="Your agent cannot function without this."
-            >
-              <Field
-                field={OPENROUTER_KEY}
-                value={config.openrouter_api_key}
-                onChange={(v) => {
-                  setKeyCheck(null);
-                  set({ openrouter_api_key: v });
-                }}
-              />
-              {keyCheck && (
-                <p
-                  className={`mt-2 text-[12px] leading-[1.33] ${
-                    keyCheck.ok ? "text-muted" : "text-ink"
-                  }`}
-                >
-                  {keyCheck.ok
-                    ? `This key${keyCheck.label ? ` (${keyCheck.label})` : ""} is valid.`
-                    : "Invalid key"}
-                </p>
-              )}
-              {!config.openrouter_api_key && !keyCheck && (
-                <p className="text-faint mt-2 text-[12px] leading-[1.33]">
-                  A valid Openrouter API key is required.
-                </p>
-              )}
-            </Row>
+                    {keyCheck.ok
+                      ? `This key${keyCheck.label ? ` (${keyCheck.label})` : ""} is valid.`
+                      : "Invalid key"}
+                  </p>
+                )}
+                {!config.openrouter_api_key && !keyCheck && (
+                  <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+                    A valid Openrouter API key is required.
+                  </p>
+                )}
+              </Row>
+            )}
 
             <Row title="Name" hint="What this agent is called, everywhere">
               <input

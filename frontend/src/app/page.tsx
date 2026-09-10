@@ -3,12 +3,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus } from "lucide-react";
+import { Plus, SlidersHorizontal } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
 import { AuthModal } from "@/components/auth/AuthModal";
 import { UserMenu } from "@/components/auth/UserMenu";
+import {
+  MetaSettingsDialog,
+  MetaSettingsForm,
+} from "@/components/MetaSettings";
 import { formatDate } from "@/lib/format";
-import type { AgentRow } from "@/lib/agent";
+import {
+  EMPTY_META,
+  type AgentRow,
+  type Capability,
+  type MetaSettings,
+  type ModelOption,
+} from "@/lib/agent";
 
 /**
  * Every agent in this deployment.
@@ -28,6 +38,8 @@ export default function Agents() {
   const [confirming, setConfirming] = useState<AgentRow | null>(null);
   /** Whether the new-agent dialog is up. */
   const [creating, setCreating] = useState(false);
+  /** The agent whose meta settings — the defaults behind its settings — are open. */
+  const [metaFor, setMetaFor] = useState<AgentRow | null>(null);
   /** Whether the sign-in dialog is up. */
   const [authing, setAuthing] = useState(false);
 
@@ -67,6 +79,7 @@ export default function Agents() {
     name: string,
     key: string,
     emails: string,
+    meta: MetaSettings,
   ): Promise<string | null> => {
     setBusy(true);
     const res = await fetch("/api/agents", {
@@ -76,12 +89,14 @@ export default function Agents() {
         name,
         openrouter_api_key: key,
         allowed_emails: emails,
+        // The second step. Creation is the only time the default model and the
+        // default MCP servers can be chosen, so they travel with this call.
+        meta,
       }),
     });
     setBusy(false);
     const row = (await res.json().catch(() => null)) as
-      | (AgentRow & { error?: string })
-      | null;
+      (AgentRow & { error?: string }) | null;
     if (!res.ok || !row?.id) {
       return row?.error ?? "Couldn't create that agent. Try again.";
     }
@@ -169,7 +184,9 @@ export default function Agents() {
               </p>
             )}
 
-            {agents && agents.length > 0 && (
+            {/* The create tile lives inside this block, not under a non-empty
+                list: an account with no agents is exactly the one that needs it. */}
+            {agents && (
               <div className="mt-8 space-y-2">
                 {agents.map((agent) => (
                   <div
@@ -193,6 +210,17 @@ export default function Agents() {
                     >
                       Settings
                     </Link>
+                    {/* Meta settings are the defaults behind those settings, so they
+                        are reachable only from here — never from the agent's own
+                        pages, where they would read as one more setting. */}
+                    <button
+                      onClick={() => setMetaFor(agent)}
+                      title={`Meta settings for ${agent.name}`}
+                      aria-label={`Meta settings for ${agent.name}`}
+                      className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition"
+                    >
+                      <SlidersHorizontal size={15} strokeWidth={1.75} />
+                    </button>
                     <button
                       onClick={() => setConfirming(agent)}
                       aria-label={`Delete ${agent.name}`}
@@ -218,6 +246,10 @@ export default function Agents() {
 
       {authing && (
         <AuthModal mode="sign-in" onClose={() => setAuthing(false)} />
+      )}
+
+      {metaFor && (
+        <MetaSettingsDialog agent={metaFor} onClose={() => setMetaFor(null)} />
       )}
 
       {creating && (
@@ -265,12 +297,14 @@ export default function Agents() {
 }
 
 /**
- * Name and key, asked for together.
+ * Who the agent is, then what it is: name and key first, its defaults second.
  *
- * The key is here rather than left to Settings because it is what makes an agent able
- * to answer at all: asked for now, the agent works the moment it opens. It is still
- * optional — an agent without one falls back to the deployment's shared key, which is
- * fine for trying something out and wrong for anything that matters.
+ * The key is asked for here rather than left to Settings because it is what makes an
+ * agent able to answer at all. The second step is meta settings, and it is a step
+ * rather than something to come back to: the default model and the default MCP
+ * servers can only be chosen while the agent is being made — a model default applied
+ * later would move an agent that has already answered on one, and a default server
+ * added later would collide by name with one that may be connected.
  */
 function NewAgent({
   busy,
@@ -284,12 +318,17 @@ function NewAgent({
     name: string,
     key: string,
     emails: string,
+    meta: MetaSettings,
   ) => Promise<string | null>;
 }) {
+  const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
   /** Extra addresses, free text. Your own is added by the Worker regardless. */
   const [emails, setEmails] = useState("");
+  const [meta, setMeta] = useState<MetaSettings>(EMPTY_META);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [error, setError] = useState<string | null>(null);
   const field = useRef<HTMLInputElement>(null);
 
@@ -297,11 +336,78 @@ function NewAgent({
     field.current?.focus();
   }, []);
 
+  // The catalogues the second step picks from. There is no agent to hang them off
+  // yet, so they come from the deployment rather than from one agent's config.
+  useEffect(() => {
+    void (async () => {
+      const res = await fetch("/api/agents/catalog", { cache: "no-store" });
+      const payload = (await res.json().catch(() => null)) as {
+        models?: ModelOption[];
+        capabilities?: Capability[];
+      } | null;
+      setModels(payload?.models ?? []);
+      setCapabilities(payload?.capabilities ?? []);
+    })();
+  }, []);
+
   const submit = async () => {
     const cleaned = name.trim();
     if (!cleaned || busy) return;
-    setError(await onCreate(cleaned, key.trim(), emails.trim()));
+    setError(await onCreate(cleaned, key.trim(), emails.trim(), meta));
   };
+
+  if (step === 2) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 px-5 py-10"
+        onClick={onCancel}
+      >
+        <div
+          className="bg-canvas text-ink w-full max-w-lg rounded-[20px] px-6 py-6 shadow-xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <p className="text-faint text-[12px] leading-[1.33]">Step 2 of 2</p>
+          <p className="text-[18px] font-semibold leading-[1.38]">
+            Meta settings
+          </p>
+          <p className="text-muted mt-1 text-[12px] font-light leading-[1.33]">
+            What {name.trim() || "this agent"} starts out as, and what it may
+            change for itself. Locking a setting takes it off the agent&rsquo;s
+            own pages and leaves it here. All of this can be edited later except
+            the default model and the default MCP servers.
+          </p>
+
+          <div className="mt-4">
+            <MetaSettingsForm
+              meta={meta}
+              onChange={setMeta}
+              models={models}
+              capabilities={capabilities}
+              creation
+            />
+          </div>
+
+          {error && <p className="mt-3 text-[12px] leading-[1.33]">{error}</p>}
+
+          <div className="border-hairline-soft mt-2 flex justify-end gap-2 border-t pt-5">
+            <button
+              onClick={() => setStep(1)}
+              className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-[14px] font-semibold transition"
+            >
+              Back
+            </button>
+            <button
+              onClick={() => void submit()}
+              disabled={busy}
+              className="bg-ink text-on-primary h-10 rounded-full px-5 text-[14px] font-semibold transition hover:opacity-85 disabled:opacity-40"
+            >
+              {busy ? "Creating…" : "Create"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -312,6 +418,7 @@ function NewAgent({
         className="bg-canvas w-full max-w-sm rounded-[20px] px-6 py-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
+        <p className="text-faint text-[12px] leading-[1.33]">Step 1 of 2</p>
         <p className="text-[18px] font-semibold leading-[1.38]">
           Create a new agent
         </p>
@@ -324,7 +431,7 @@ function NewAgent({
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") void submit();
+              if (e.key === "Enter" && name.trim()) setStep(2);
               if (e.key === "Escape") onCancel();
             }}
             maxLength={60}
@@ -346,7 +453,7 @@ function NewAgent({
             value={key}
             onChange={(e) => setKey(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") void submit();
+              if (e.key === "Enter" && name.trim()) setStep(2);
               if (e.key === "Escape") onCancel();
             }}
             placeholder="sk-or-v1-…"
@@ -385,11 +492,11 @@ function NewAgent({
             Cancel
           </button>
           <button
-            onClick={() => void submit()}
+            onClick={() => setStep(2)}
             disabled={busy || name.trim() === ""}
             className="bg-ink text-on-primary h-10 rounded-full px-5 text-[14px] font-semibold transition hover:opacity-85 disabled:opacity-40"
           >
-            {busy ? "Creating…" : "Create"}
+            Next
           </button>
         </div>
       </div>

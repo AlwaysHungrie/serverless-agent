@@ -34,6 +34,8 @@ export default function Capabilities({
         config: Config;
         capabilities: Capability[];
         models: ModelOption[];
+        /** Capability ids and columns the meta dialog keeps to itself. */
+        locked?: string[];
         error?: string;
       } | null;
       if (!res.ok || !payload) {
@@ -44,9 +46,12 @@ export default function Capabilities({
       // Telegram is connection setup, not a tool the agent calls: it lives in
       // Settings. MCP goes first: it is the one capability the user builds out
       // themselves, so it is what they come back to this page for.
+      // A locked capability is decided in meta settings and nowhere else, so it is
+      // not drawn here at all — a switch this page cannot save is worse than none.
+      const locked = new Set(payload.locked ?? []);
       setCapabilities(
         payload.capabilities
-          .filter((c) => c.id !== "telegram")
+          .filter((c) => c.id !== "telegram" && !locked.has(c.id))
           .sort((a, b) => Number(b.id === "mcp") - Number(a.id === "mcp")),
       );
       setModels(payload.models);

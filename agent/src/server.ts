@@ -1,11 +1,14 @@
 import { routeAgentRequest } from "agents";
-import { MODELS, type Env } from "./agent";
+import { MODELS, type Env, type ModelOption } from "./agent";
 import { Telegram, allowedBy, chatTitle, topicId, type TelegramUpdate } from "./telegram";
 import {
   CAPABILITIES,
+  CAPABILITY_BY_ID,
   SECRET_MASK,
   TELEGRAM_WHITELIST_DEFAULTS,
+  type Capability,
   type CapabilityField,
+  type CapabilityId,
 } from "./capabilities";
 import {
   EMPTY_MCP_SERVER,
@@ -14,7 +17,12 @@ import {
   normalizeEmails,
   sessionName,
   type AgentRow,
+  DEFAULT_META,
   type Config,
+  type MetaCapability,
+  type MetaMcpServer,
+  type MetaSettings,
+  type MetaTunableKey,
   type SessionRegistry,
 } from "./registry";
 import {
@@ -132,6 +140,14 @@ function withCors(res: Response) {
 
 const REASONING_EFFORTS = ["off", "low", "medium", "high"] as const;
 
+/**
+ * An OpenRouter model id: `vendor/model`, with the suffixes OpenRouter uses for
+ * variants (`:free`, `:nitro`). Deliberately a shape check and not a catalogue —
+ * the catalogue is OpenRouter's, it changes weekly, and meta settings exist so a
+ * deployment can name a model this Worker has never heard of.
+ */
+const MODEL_ID = /^[a-z0-9._-]+\/[a-z0-9._:-]+$/i;
+
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
 /** Every capability toggle, and every credential field any capability declares. */
@@ -159,8 +175,13 @@ function validateConfig(body: Partial<Config>): Partial<Config> {
   const patch: Partial<Config> = {};
 
   if (body.model !== undefined) {
-    if (!MODELS.some((m) => m.id === body.model)) throw new Error(`unknown model: ${body.model}`);
-    patch.model = body.model;
+    // Not checked against the Worker's own list any more: meta settings may name any
+    // OpenRouter id, so the shape is what can be checked here. Which ids this agent
+    // may actually be switched to is enforced where the meta document is readable.
+    if (typeof body.model !== "string" || !MODEL_ID.test(body.model.trim())) {
+      throw new Error(`not an OpenRouter model id: ${String(body.model)}`);
+    }
+    patch.model = body.model.trim();
   }
   if (body.system_prompt !== undefined) {
     if (typeof body.system_prompt !== "string") throw new Error("system_prompt must be a string");
@@ -681,6 +702,312 @@ async function handleMcp(
 }
 
 
+/* ---------------------------------------------------------- meta settings -- */
+
+/** The tuning settings a meta default may be given for. */
+const META_TUNABLES = [
+  "model",
+  "system_prompt",
+  "temperature",
+  "max_tokens",
+  "reasoning_effort",
+  "context_messages",
+  "openrouter_api_key",
+] as const satisfies readonly MetaTunableKey[];
+
+/**
+ * What a lock may name: a tuning column, or a capability. Locking a capability locks
+ * its switch and every field it declares, because half a locked capability — a switch
+ * nobody may flip over credentials anybody may rewrite — is not a useful thing.
+ */
+const LOCKABLE = new Set<string>([
+  ...META_TUNABLES,
+  ...CAPABILITIES.map((c) => c.id),
+]);
+
+/**
+ * What the settings page may offer as models.
+ *
+ * A meta list is ids and nothing else, so anything the Worker already knows about
+ * keeps its label and its vision flag, and anything else is shown as the id it is.
+ * Vision is assumed for a custom id — see `modelSeesImages`.
+ */
+function modelOptions(ids: string[]): ModelOption[] {
+  if (!ids.length) return [...MODELS];
+  return ids.map(
+    (id) => MODELS.find((m) => m.id === id) ?? { id, label: id, vision: true }
+  );
+}
+
+/**
+ * The capabilities as this agent sees them: a fixed-choice field whose options were
+ * widened in meta settings offers those instead. The label of a known choice is kept,
+ * so a familiar model does not become a bare id just because the list was extended.
+ */
+function capabilitiesFor(meta: MetaSettings): Capability[] {
+  const widened = Object.entries(meta.field_options).filter(([, v]) => v.length > 0);
+  if (!widened.length) return CAPABILITIES;
+  const options = new Map(widened);
+  return CAPABILITIES.map((capability) => {
+    if (!capability.fields.some((f) => options.has(String(f.key)))) return capability;
+    return {
+      ...capability,
+      fields: capability.fields.map((field) => {
+        const values = options.get(String(field.key));
+        if (!values) return field;
+        return {
+          ...field,
+          options: values.map((value) => ({
+            value,
+            label: field.options?.find((o) => o.value === value)?.label ?? value,
+          })),
+        };
+      }),
+    };
+  });
+}
+
+/** The config columns a lock covers. A capability's lock covers its whole section. */
+function lockedColumns(locked: string[]): Set<string> {
+  const columns = new Set<string>();
+  for (const key of locked) {
+    const capability = CAPABILITY_BY_ID.get(key as CapabilityId);
+    if (capability) {
+      columns.add(String(capability.flag));
+      for (const field of capability.fields) columns.add(String(field.key));
+    } else {
+      columns.add(key);
+    }
+  }
+  return columns;
+}
+
+/** Config columns a capability owns: its switch, plus every field it declares. */
+const CAPABILITY_FIELD_KEYS = new Set<string>(CAPABILITY_FIELDS.map((f) => String(f.key)));
+
+/**
+ * Meta settings as they may be stored: a whole document, checked the same way a
+ * config PATCH is. Defaults go through `validateConfig`, so a default can never be a
+ * value the settings page itself would refuse — and the apply below can write them
+ * straight in.
+ */
+function validateMeta(
+  body: Partial<MetaSettings>,
+  previous: MetaSettings,
+  { creation }: { creation: boolean }
+): MetaSettings {
+  const meta: MetaSettings = {
+    models: [],
+    defaults: {},
+    locked: [],
+    capabilities: {},
+    field_options: {},
+    mcp: { templates: [], servers: [] },
+  };
+
+  if (body.models !== undefined) {
+    if (!Array.isArray(body.models)) throw new Error("models must be an array");
+    const ids = body.models
+      .filter((id): id is string => typeof id === "string")
+      .map((id) => id.trim())
+      .filter((id) => id !== "");
+    for (const id of ids) {
+      if (!MODEL_ID.test(id)) throw new Error(`not an OpenRouter model id: ${id}`);
+    }
+    meta.models = [...new Set(ids)];
+  }
+
+  if (body.field_options !== undefined) {
+    if (typeof body.field_options !== "object" || body.field_options === null) {
+      throw new Error("field_options must be an object");
+    }
+    for (const [key, values] of Object.entries(body.field_options)) {
+      const field = CAPABILITY_FIELDS.find((f) => String(f.key) === key);
+      // Only a field that is a fixed choice has choices to widen.
+      if (!field?.options) throw new Error(`not a choice field: ${key}`);
+      if (!Array.isArray(values)) throw new Error(`${key} options must be an array`);
+      const cleaned = values
+        .filter((v): v is string => typeof v === "string")
+        .map((v) => v.trim())
+        .filter((v) => v !== "");
+      for (const value of cleaned) {
+        if (!MODEL_ID.test(value)) throw new Error(`not an OpenRouter model id: ${value}`);
+      }
+      meta.field_options[key] = [...new Set(cleaned)];
+    }
+  }
+
+  if (body.defaults !== undefined) {
+    if (typeof body.defaults !== "object" || body.defaults === null) {
+      throw new Error("defaults must be an object");
+    }
+    // Only the tuning keys: a capability's default lives under its capability.
+    const wanted: Partial<Config> = {};
+    for (const key of META_TUNABLES) {
+      const value = body.defaults[key];
+      if (value === undefined) continue;
+      // A secret reads back masked, so the mask on the way in means "keep the one
+      // already stored" — the same contract the config route uses.
+      if (value === SECRET_MASK) {
+        const kept = previous.defaults[key];
+        if (kept !== undefined) (wanted[key] as unknown) = kept;
+        continue;
+      }
+      (wanted[key] as unknown) = value;
+    }
+    meta.defaults = validateConfig(wanted) as MetaSettings["defaults"];
+  }
+
+  if (body.locked !== undefined) {
+    if (!Array.isArray(body.locked)) throw new Error("locked must be an array");
+    const keys = body.locked.filter((k): k is string => typeof k === "string");
+    for (const key of keys) {
+      if (!LOCKABLE.has(key)) throw new Error(`cannot lock: ${key}`);
+    }
+    meta.locked = [...new Set(keys)];
+  }
+
+  if (body.capabilities !== undefined) {
+    if (typeof body.capabilities !== "object" || body.capabilities === null) {
+      throw new Error("capabilities must be an object");
+    }
+    for (const [id, entry] of Object.entries(body.capabilities)) {
+      const capability = CAPABILITY_BY_ID.get(id as CapabilityId);
+      if (!capability) throw new Error(`unknown capability: ${id}`);
+      if (!entry || typeof entry !== "object") continue;
+      const kept: MetaCapability = {};
+      if (entry.enabled !== undefined) kept.enabled = !!entry.enabled;
+      if (entry.fields && typeof entry.fields === "object") {
+        const fields: Record<string, string> = {};
+        for (const [key, value] of Object.entries(entry.fields)) {
+          if (!CAPABILITY_FIELD_KEYS.has(key)) throw new Error(`unknown field: ${key}`);
+          if (typeof value !== "string") throw new Error(`${key} must be a string`);
+          const field = CAPABILITY_FIELDS.find((f) => String(f.key) === key);
+          // A stored secret reads back masked, so the mask means "leave it alone".
+          if (field?.secret && value === SECRET_MASK) {
+            const kept = previous.capabilities[id]?.fields?.[key];
+            if (kept !== undefined) fields[key] = kept;
+            continue;
+          }
+          fields[key] = value.slice(0, 8000);
+        }
+        kept.fields = fields;
+      }
+      meta.capabilities[id] = kept;
+    }
+  }
+
+  if (body.mcp !== undefined) {
+    if (typeof body.mcp !== "object" || body.mcp === null) throw new Error("mcp must be an object");
+    if (body.mcp.templates !== undefined) {
+      if (!Array.isArray(body.mcp.templates)) throw new Error("mcp.templates must be an array");
+      meta.mcp.templates = [
+        ...new Set(body.mcp.templates.filter((t): t is string => typeof t === "string")),
+      ];
+    }
+    if (body.mcp.servers !== undefined) {
+      if (!Array.isArray(body.mcp.servers)) throw new Error("mcp.servers must be an array");
+      meta.mcp.servers = body.mcp.servers.map((server) => {
+        const checked = validateMcpBody({ ...server } as Record<string, unknown>);
+        if (!checked.name || !checked.url) throw new Error("each MCP server needs a name and URL");
+        return {
+          name: checked.name,
+          url: checked.url,
+          auth: (checked.auth ?? "none") as MetaMcpServer["auth"],
+          headers: parseHeaders(checked.headers ?? ""),
+        };
+      });
+    }
+  }
+
+  // Two defaults can only be chosen while the agent is being made. The model is one
+  // the agent may already have answered on, and a default server would collide by
+  // name with a server that may well be connected — so after creation the stored
+  // values stand, whatever the dialog sends.
+  if (!creation) {
+    if (previous.defaults.model !== undefined) meta.defaults.model = previous.defaults.model;
+    else delete meta.defaults.model;
+    meta.mcp.servers = previous.mcp.servers;
+  }
+
+  return meta;
+}
+
+/** Meta settings as the browser may see them: every secret becomes a mask. */
+function redactMeta(meta: MetaSettings): MetaSettings {
+  const defaults = { ...meta.defaults };
+  for (const key of CORE_SECRETS) {
+    if (defaults[key] !== undefined) (defaults[key] as string) = SECRET_MASK;
+  }
+  const capabilities: MetaSettings["capabilities"] = {};
+  for (const [id, entry] of Object.entries(meta.capabilities)) {
+    const fields: Record<string, string> = { ...(entry.fields ?? {}) };
+    for (const field of CAPABILITY_FIELDS) {
+      const key = String(field.key);
+      if (field.secret && fields[key] !== undefined) fields[key] = SECRET_MASK;
+    }
+    capabilities[id] = { ...entry, ...(entry.fields ? { fields } : {}) };
+  }
+  return { ...meta, defaults, capabilities };
+}
+
+/**
+ * Write the defaults into the agent: its tuning, its capability switches and their
+ * fields, and any MCP server it is supposed to have.
+ *
+ * Deliberately explicit rather than automatic. The defaults are what a fresh agent
+ * *should* look like, and an agent that has been tuned by hand should not have that
+ * work undone every time the dialog is saved — so applying them is its own action.
+ *
+ * A server whose name is already taken is left exactly as it is: it may be connected,
+ * and reseeding it would throw away tokens to no purpose.
+ */
+async function applyMeta(
+  reg: Registry,
+  meta: MetaSettings,
+  env: Env,
+  origin: string,
+  agentId: string
+): Promise<{ config: Config; added: string[] }> {
+  const patch: Partial<Config> = { ...meta.defaults };
+
+  for (const [id, entry] of Object.entries(meta.capabilities)) {
+    const capability = CAPABILITY_BY_ID.get(id as CapabilityId);
+    if (!capability) continue;
+    if (entry.enabled !== undefined) (patch[capability.flag] as number) = entry.enabled ? 1 : 0;
+    for (const [key, value] of Object.entries(entry.fields ?? {})) {
+      (patch[key as keyof Config] as string) = value;
+    }
+  }
+
+  const config = await reg.setConfig(validateConfig(patch), env.MODEL);
+
+  const existing = await reg.mcpServers();
+  const taken = new Set(existing.map((s) => s.name.toLowerCase()));
+  const added: string[] = [];
+  for (const wanted of meta.mcp.servers) {
+    if (taken.has(wanted.name.toLowerCase())) continue;
+    const row: McpServerRow = {
+      ...EMPTY_MCP_SERVER,
+      id: crypto.randomUUID().slice(0, 8),
+      created_at: Date.now(),
+      name: wanted.name,
+      url: wanted.url,
+      auth: wanted.auth,
+      headers: JSON.stringify(wanted.headers ?? {}),
+    };
+    await reg.addMcpServer(row);
+    // OAuth has nothing to read until somebody approves it; the rest can list now.
+    if (row.auth !== "oauth") await syncMcpTools(reg, row);
+    added.push(row.name);
+  }
+
+  // The switches just moved, and Telegram's is the one that has an outside effect.
+  await syncWebhook(config, origin, agentId, env.TELEGRAM_API_BASE);
+
+  return { config, added };
+}
+
 /* ----------------------------------------------------------------- agents -- */
 
 /**
@@ -740,7 +1067,20 @@ async function handleAgents(
         name?: string;
         openrouter_api_key?: string;
         allowed_emails?: string | string[];
+        /** The agent's defaults, chosen in the second step of the create dialog. */
+        meta?: Partial<MetaSettings>;
       };
+      // Checked before the agent exists, like the key: a rejected document should
+      // leave nothing behind. Creation is the one time the model default and the
+      // default MCP servers may be set, so this is the call that reads them.
+      let meta: MetaSettings | undefined;
+      if (body.meta) {
+        try {
+          meta = validateMeta(body.meta, DEFAULT_META, { creation: true });
+        } catch (err) {
+          return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+        }
+      }
       const key = (body.openrouter_api_key ?? "").trim().slice(0, 1000);
 
       // The creator is always on the list. Creating an agent you cannot open is
@@ -775,17 +1115,30 @@ async function handleAgents(
       // Telegram is on from the start, so its whitelists are seeded here for the same
       // reason the first enable seeds them below: empty lists would let all of
       // Telegram talk to the bot the moment a token is pasted.
-      await registry(env, row.id).setConfig(
-        {
-          agent_name: row.name,
-          ...TELEGRAM_WHITELIST_DEFAULTS,
-          ...(key ? { openrouter_api_key: key } : {}),
-        },
+      const reg = registry(env, row.id);
+      await reg.setConfig(
+        { agent_name: row.name, ...TELEGRAM_WHITELIST_DEFAULTS },
         env.MODEL
       );
+      // The defaults are applied straight away: an agent made through the dialog is
+      // meant to open already looking the way the second step described it.
+      if (meta) {
+        await reg.setMeta(meta);
+        await applyMeta(reg, meta, env, url.origin, row.id);
+      }
+      // Last, so it wins: a key typed into the first step is about this one agent,
+      // and a default key is about every agent made this way.
+      if (key) await reg.setConfig({ openrouter_api_key: key }, env.MODEL);
       return withCors(Response.json({ ...row, ...(openrouter ? { openrouter } : {}) }));
     }
     return undefined;
+  }
+
+  // The catalogues the create dialog's second step picks from, before there is an
+  // agent to hang them off. Nothing here belongs to anyone, so nothing is checked
+  // beyond the gate every /api route is already behind.
+  if (agentId === "catalog" && request.method === "GET") {
+    return withCors(Response.json({ models: MODELS, capabilities: CAPABILITIES }));
   }
 
   const agent: AgentRow | undefined = await dir.get(agentId);
@@ -853,12 +1206,20 @@ async function handleAgents(
 
   if (section === "config") {
     if (request.method === "GET") {
+      // Meta settings decide which models this agent may be switched between, so the
+      // filtering happens here rather than in the page: a model that is not offered
+      // is one a PATCH from that page will never carry.
+      const meta = await reg.meta();
       return withCors(
         Response.json({
           agent,
           config: redact(await reg.config(env.MODEL)),
-          models: MODELS,
-          capabilities: CAPABILITIES,
+          models: modelOptions(meta.models),
+          capabilities: capabilitiesFor(meta),
+          // What the agent's own pages may not show or change. They are decided in
+          // the meta dialog, so a page that drew them would be offering an edit that
+          // the PATCH below drops on the floor.
+          locked: meta.locked,
         })
       );
     }
@@ -869,6 +1230,21 @@ async function handleAgents(
         patch = validateConfig(body);
       } catch (err) {
         return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+      }
+      // A locked setting belongs to the meta dialog. Dropping it here rather than
+      // refusing the whole PATCH keeps one stale tab from blocking every other
+      // setting in the same save.
+      const meta = await reg.meta();
+      // Which ids this agent may be switched between is a meta setting, so it is
+      // enforced here rather than in `validateConfig`, which cannot see the document.
+      if (patch.model !== undefined && meta.models.length && !meta.models.includes(patch.model)) {
+        return withCors(
+          Response.json({ error: `model not offered: ${patch.model}` }, { status: 400 })
+        );
+      }
+      const locks = lockedColumns(meta.locked);
+      for (const key of Object.keys(patch)) {
+        if (locks.has(key)) delete patch[key as keyof Config];
       }
       // Switching Telegram on with both whitelists empty would let all of Telegram
       // talk to the bot, so the first enable seeds them with entries that match
@@ -899,6 +1275,49 @@ async function handleAgents(
           ...(openrouter ? { openrouter } : {}),
         })
       );
+    }
+    return undefined;
+  }
+
+  if (section === "meta") {
+    if (request.method === "GET") {
+      return withCors(
+        Response.json({
+          agent,
+          meta: redactMeta(await reg.meta()),
+          // The catalogues the dialog picks from: it never keeps its own copy of
+          // what models exist or what a capability's fields are.
+          models: MODELS,
+          capabilities: CAPABILITIES,
+        })
+      );
+    }
+    if (request.method === "PATCH") {
+      const body = (await request.json().catch(() => ({}))) as Partial<MetaSettings> & {
+        apply?: boolean;
+      };
+      let meta: MetaSettings;
+      try {
+        meta = validateMeta(body, await reg.meta(), { creation: false });
+      } catch (err) {
+        return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+      }
+      const saved = await reg.setMeta(meta);
+      // Saving what the defaults are and pushing them onto the agent are separate
+      // acts; the dialog asks for both at once when that is what was meant.
+      const applied = body.apply
+        ? await applyMeta(reg, saved, env, url.origin, agentId)
+        : undefined;
+      return withCors(
+        Response.json({
+          meta: redactMeta(saved),
+          ...(applied ? { config: redact(applied.config), added: applied.added } : {}),
+        })
+      );
+    }
+    if (request.method === "POST") {
+      const applied = await applyMeta(reg, await reg.meta(), env, url.origin, agentId);
+      return withCors(Response.json({ config: redact(applied.config), added: applied.added }));
     }
     return undefined;
   }
@@ -1218,6 +1637,8 @@ export default {
           routes: {
             agents: "GET|POST /api/agents, GET|PATCH|DELETE /api/agents/:agentId",
             config: "GET|PATCH /api/agents/:agentId/config",
+            meta: "GET|PATCH /api/agents/:agentId/meta, POST .../meta (apply defaults)",
+            catalog: "GET /api/agents/catalog  -> models and capabilities",
             mcp: "GET|POST /api/agents/:agentId/mcp, PATCH|DELETE .../mcp/:id, POST .../mcp/:id/{connect,disconnect,refresh}",
             sessions: "GET|POST /api/agents/:agentId/sessions",
             session: "PATCH|DELETE /api/sessions/:sessionId",
