@@ -51,6 +51,21 @@ export type SessionRow = {
 };
 
 /**
+ * One page of the session list. `cursor` is opaque — it is handed back untouched to
+ * ask for the page after this one, and is empty once the list is exhausted.
+ */
+export type SessionPage = {
+  sessions: SessionRow[];
+  has_more: boolean;
+  cursor: string;
+};
+
+/** Sessions asked for per page. One screenful plus room to scroll before the next. */
+export const SESSION_PAGE = 30;
+/** Messages asked for per page, both on open and on each scroll back. */
+export const MESSAGE_PAGE = 30;
+
+/**
  * Where "Continue in Telegram" points. Telegram has a link for every chat, but a
  * different one per kind:
  *
@@ -88,6 +103,18 @@ export type StoredMessage = {
   attachments: Attachment[];
   /** JSON array of `TurnStep`: how an assistant turn unfolded. `[]` when unused. */
   steps?: string;
+};
+
+/**
+ * One window of a transcript, newest-last. `offset` is how many messages precede it:
+ * a fork counts from the start of the conversation, so the number it needs is not
+ * the index within what is drawn.
+ */
+export type TranscriptPage = {
+  messages: StoredMessage[];
+  has_more: boolean;
+  offset: number;
+  total: number;
 };
 
 /**

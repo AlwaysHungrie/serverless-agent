@@ -16,6 +16,8 @@ import {
   emailAllowed,
   normalizeEmails,
   sessionName,
+  MAX_PAGE,
+  SESSION_PAGE,
   type AgentRow,
   DEFAULT_META,
   type Config,
@@ -1035,15 +1037,22 @@ async function deleteAgent(env: Env, origin: string, agentId: string): Promise<v
     }
   }
 
-  for (const session of await reg.list()) {
-    await routeAgentRequest(
-      new Request(`${origin}/agents/session-agent/${encodeURIComponent(session.id)}/destroy`, {
-        method: "POST",
-      }),
-      env
-    ).catch(() => {
-      // `destroy()` aborts the isolate, which can surface as a broken response.
-    });
+  // Deleting an agent has to reach every session it owns, not just the newest page,
+  // so this walks the cursor to the end of the list.
+  for (let cursor = "", more = true; more; ) {
+    const page = await reg.list(MAX_PAGE, cursor);
+    cursor = page.cursor;
+    more = page.has_more;
+    for (const session of page.sessions) {
+      await routeAgentRequest(
+        new Request(`${origin}/agents/session-agent/${encodeURIComponent(session.id)}/destroy`, {
+          method: "POST",
+        }),
+        env
+      ).catch(() => {
+        // `destroy()` aborts the isolate, which can surface as a broken response.
+      });
+    }
   }
 
   await reg.wipe();
@@ -1333,7 +1342,13 @@ async function handleAgents(
 
   if (section === "sessions") {
     if (request.method === "GET") {
-      return withCors(Response.json({ sessions: await reg.list() }));
+      // Paged: the sidebar asks for a screenful and follows the cursor as it scrolls,
+      // so an agent with thousands of sessions costs the same first load as a new one.
+      const limit = Number(url.searchParams.get("limit") ?? SESSION_PAGE);
+      const size = Number.isFinite(limit) ? limit : SESSION_PAGE;
+      return withCors(
+        Response.json(await reg.list(size, url.searchParams.get("cursor") ?? ""))
+      );
     }
     if (request.method === "POST") {
       const { title } = (await request.json().catch(() => ({}))) as { title?: string };
@@ -1645,14 +1660,14 @@ export default {
             meta: "GET|PATCH /api/agents/:agentId/meta, POST .../meta (apply defaults)",
             catalog: "GET /api/agents/catalog  -> models and capabilities",
             mcp: "GET|POST /api/agents/:agentId/mcp, PATCH|DELETE .../mcp/:id, POST .../mcp/:id/{connect,disconnect,refresh}",
-            sessions: "GET|POST /api/agents/:agentId/sessions",
+            sessions: "GET|POST /api/agents/:agentId/sessions  (GET: ?limit&cursor)",
             session: "PATCH|DELETE /api/sessions/:sessionId",
             fork: "POST /api/sessions/:sessionId/fork  { count }",
             unstick: "POST /api/sessions/:sessionId/unstick",
             stream: "POST /agents/session-agent/:sessionId/stream  { message }  -> SSE",
             live: "GET /agents/session-agent/:sessionId/live  -> SSE, or 204 when idle",
             chat: "POST /agents/session-agent/:sessionId/chat  { message }",
-            messages: "GET /agents/session-agent/:sessionId/messages",
+            messages: "GET /agents/session-agent/:sessionId/messages  ?limit&before",
             files: "GET|POST /agents/session-agent/:sessionId/files, GET|DELETE .../files/:fileId",
             tasks: "GET /agents/session-agent/:sessionId/tasks, DELETE .../tasks/:taskId",
             metrics: "GET /agents/session-agent/:sessionId/metrics",

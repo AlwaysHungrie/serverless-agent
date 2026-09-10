@@ -354,6 +354,30 @@ export function sessionIdForChat(agentId: string, chatId: string, threadId = "")
   return sessionName(agentId, threadId ? `${base}-t${threadId}` : base);
 }
 
+/** Sessions per page when the caller does not ask for a size. */
+export const SESSION_PAGE = 30;
+/** The largest page any caller may ask for, sessions or messages alike. */
+export const MAX_PAGE = 200;
+
+/** One page of the session list, plus the cursor that continues it. */
+export type SessionPage = {
+  sessions: SessionRow[];
+  has_more: boolean;
+  /** Pass back as `cursor` for the next page. Empty when the list is exhausted. */
+  cursor: string;
+};
+
+/** A `<updated_at>:<id>` cursor, or undefined when there is none to resume from. */
+function parseCursor(cursor: string): { updated_at: number; id: string } | undefined {
+  if (!cursor) return undefined;
+  const cut = cursor.indexOf(":");
+  if (cut === -1) return undefined;
+  const updated_at = Number(cursor.slice(0, cut));
+  const id = cursor.slice(cut + 1);
+  if (!Number.isFinite(updated_at) || !id) return undefined;
+  return { updated_at, id };
+}
+
 export class SessionRegistry extends DurableObject {
   private ready = false;
   /** Token refreshes in flight, by server id, so concurrent callers share one. */
@@ -645,15 +669,50 @@ export class SessionRegistry extends DurableObject {
     );
   }
 
-  list(): SessionRow[] {
+  /**
+   * One page of sessions, newest first.
+   *
+   * The list is read on every page load and after every turn, and a busy agent
+   * accumulates sessions without bound — so it is paged rather than returned whole.
+   * `cursor` is keyset rather than an offset: sessions are ordered by `updated_at`,
+   * which a turn changes underneath a scroll, and an offset would skip or repeat
+   * rows when that happens. `id` breaks ties between sessions touched in the same
+   * millisecond, and is what makes the cursor a total order.
+   */
+  list(limit = SESSION_PAGE, cursor = ""): SessionPage {
     this.ensureSchema();
-    return this.ctx.storage.sql
-      .exec(
-        `SELECT id, title, created_at, updated_at, object_id, source, chat_id, chat_type,
-                chat_username, chat_thread_id
-         FROM sessions ORDER BY updated_at DESC`
-      )
-      .toArray() as unknown as SessionRow[];
+    const size = Math.max(1, Math.min(limit, MAX_PAGE));
+    const after = parseCursor(cursor);
+    // One row past the page: its existence is the only thing `has_more` needs, and
+    // it is cheaper than a second COUNT over the table.
+    const rows = (
+      after
+        ? this.ctx.storage.sql.exec(
+            `SELECT id, title, created_at, updated_at, object_id, source, chat_id, chat_type,
+                    chat_username, chat_thread_id
+             FROM sessions
+             WHERE updated_at < ? OR (updated_at = ? AND id > ?)
+             ORDER BY updated_at DESC, id ASC LIMIT ?`,
+            after.updated_at,
+            after.updated_at,
+            after.id,
+            size + 1
+          )
+        : this.ctx.storage.sql.exec(
+            `SELECT id, title, created_at, updated_at, object_id, source, chat_id, chat_type,
+                    chat_username, chat_thread_id
+             FROM sessions ORDER BY updated_at DESC, id ASC LIMIT ?`,
+            size + 1
+          )
+    ).toArray() as unknown as SessionRow[];
+
+    const page = rows.slice(0, size);
+    const last = page[page.length - 1];
+    return {
+      sessions: page,
+      has_more: rows.length > size,
+      cursor: rows.length > size && last ? `${last.updated_at}:${last.id}` : "",
+    };
   }
 
   create(

@@ -118,6 +118,25 @@ export type StoredMessage = {
   steps: string;
 };
 
+/**
+ * One window of a transcript, newest-last, plus what the client needs to ask for the
+ * window before it.
+ */
+export type TranscriptPage = {
+  messages: StoredMessage[];
+  /** Whether anything sits before this window. */
+  has_more: boolean;
+  /** How many messages precede the window. A fork's count is absolute, so it needs this. */
+  offset: number;
+  /** Messages in the whole transcript. */
+  total: number;
+};
+
+/** Messages per page when the caller does not ask for a size. */
+export const MESSAGE_PAGE = 30;
+/** The largest transcript page any caller may ask for. */
+export const MAX_MESSAGE_PAGE = 200;
+
 /** A model the settings page may offer: what it is called, and whether it sees images. */
 export type ModelOption = { id: string; label: string; vision: boolean };
 
@@ -1101,7 +1120,11 @@ export class SessionAgent extends Think<Env> {
       } else if (request.method === "DELETE" && path === "tasks" && route[1]) {
         body = { ok: await this.cancelTask(route[1]) };
       } else if (request.method === "GET" && path === "messages") {
-        body = { messages: await this.transcript() };
+        const asked = Number(url.searchParams.get("limit") ?? MESSAGE_PAGE);
+        body = await this.transcript(
+          Number.isFinite(asked) ? asked : MESSAGE_PAGE,
+          url.searchParams.get("before") ?? ""
+        );
       } else if (request.method === "GET" && path === "export") {
         body = await this.exportTurns(Number(url.searchParams.get("count") ?? "0"));
       } else if (request.method === "POST" && path === "import") {
@@ -1726,14 +1749,29 @@ export class SessionAgent extends Think<Env> {
   /* ------------------------------------------------------------- transcript -- */
 
   /**
-   * The transcript as the API serves it: Think's messages, plus what only this agent
-   * knows — the files each question carried, and what each reply cost.
+   * A page of the transcript as the API serves it: Think's messages, plus what only
+   * this agent knows — the files each question carried, and what each reply cost.
+   *
+   * Paged from the end, because that is the end a chat opens at. Each message costs
+   * three extra SQL reads here (its usage row, its typed text, its attachments), so
+   * a long session that returned whole would pay for its entire history on every
+   * open. `before` walks backwards from the oldest message the client holds.
    */
-  private async transcript(): Promise<StoredMessage[]> {
-    const messages = await this.getMessages();
-    return messages
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => {
+  private async transcript(limit = MESSAGE_PAGE, before = ""): Promise<TranscriptPage> {
+    const visible = (await this.getMessages()).filter(
+      (m) => m.role === "user" || m.role === "assistant"
+    );
+
+    // `before` names the oldest message the caller already holds, so the window ends
+    // just before it. An id that is no longer in the transcript — a session reset
+    // under a stale scroll — falls back to the newest page rather than erroring.
+    const end = before ? visible.findIndex((m) => m.id === before) : -1;
+    const upTo = end === -1 ? visible.length : end;
+    const size = Math.max(1, Math.min(limit, MAX_MESSAGE_PAGE));
+    const start = Math.max(0, upTo - size);
+    const page = visible.slice(start, upTo);
+
+    const messages = page.map((m) => {
         const usage = this.exec<{
           prompt_tokens: number;
           completion_tokens: number;
@@ -1755,7 +1793,16 @@ export class SessionAgent extends Think<Env> {
           attachments: this.attachmentsOf(m.id).map(publicAttachment),
           steps: toolLines ? JSON.stringify(steps) : "[]",
         };
-      });
+    });
+
+    return {
+      messages,
+      has_more: start > 0,
+      // How many messages sit before this window. A fork counts from the start of
+      // the transcript, so the client has to know what it is not holding.
+      offset: start,
+      total: visible.length,
+    };
   }
 
   /**

@@ -36,7 +36,9 @@ if (arg === "--summary") {
 } else if (arg === "--reset") {
   console.log(await call("/reset", { method: "POST" }));
 } else if (arg === "--history") {
-  console.log((await call("/messages")).messages);
+  // The route pages from the end; the CLI wants the whole thing, so it asks for the
+  // largest page the agent will serve.
+  console.log((await call("/messages?limit=200")).messages);
 } else {
   if (!arg) {
     console.error('usage: node scripts/chat.mjs <session-id> "message" | --summary | --history | --reset');

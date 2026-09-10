@@ -51,7 +51,7 @@ curl -X POST http://localhost:8787/agents/session-agent/my-session/chat \
 |---|---|
 | `POST /agents/session-agent/:id/chat` | Send a message, get a reply |
 | `POST /agents/session-agent/:id/stream` | Send a message, get an SSE token stream |
-| `GET  /agents/session-agent/:id/messages` | Transcript, with per-message tokens and cost |
+| `GET  /agents/session-agent/:id/messages` | One page of transcript, newest last, with per-message tokens and cost. `?limit` (default 30, max 200) and `?before=<message id>` walk backwards |
 | `GET  /agents/session-agent/:id/summary` | Message count and total LLM spend |
 | `POST /agents/session-agent/:id/reset` | Wipe the session |
 | `GET\|POST /agents/session-agent/:id/files` | List pending attachments / upload one |
@@ -62,7 +62,7 @@ curl -X POST http://localhost:8787/agents/session-agent/my-session/chat \
 | `GET\|PATCH\|DELETE /api/agents/:agentId` | Read / rename / delete an agent and everything it owns. `PATCH` takes `{ name?, allowed_emails? }` |
 | `GET\|PATCH /api/agents/:agentId/config` | That agent's settings, capabilities and their metadata |
 | `GET\|POST /api/agents/:agentId/mcp` | That agent's MCP servers |
-| `GET\|POST /api/agents/:agentId/sessions` | List / create that agent's sessions |
+| `GET\|POST /api/agents/:agentId/sessions` | List / create that agent's sessions. GET takes `?limit` (default 30, max 200) and `?cursor`, and answers `{ sessions, has_more, cursor }` |
 | `PATCH\|DELETE /api/sessions/:sessionId` | Rename / delete a session |
 | `POST /telegram/webhook/:agentId` | One route per agent, because one bot per agent |
 

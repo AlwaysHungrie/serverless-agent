@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -36,6 +36,7 @@ import {
   type Capability,
   type Config,
   type StoredMessage,
+  type TranscriptPage,
   type TurnStep,
   type UsageData,
 } from "@/lib/agent";
@@ -984,37 +985,54 @@ function acceptFor(ready: Set<string>): string {
 }
 
 /**
- * Where a fork taken at message `i` should cut, and what goes back into the
- * composer: the user's question is dropped from the copy and returned as a draft
+ * Where a fork taken at message `i` of the drawn page should cut, and what goes back
+ * into the composer: the user's question is dropped from the copy and returned as a draft
  * so it can be reworded. An assistant reply with no question before it just cuts.
  */
 function forkAt(
   messages: ChatUIMessage[],
   i: number,
+  offset: number,
 ): [count: number, draft: string] {
   const prev = messages[i - 1];
-  if (!prev || prev.role !== "user") return [i, ""];
+  // `offset` is the messages the transcript starts with that were never loaded: the
+  // agent copies the first `count` of the whole conversation, so an index into the
+  // drawn page alone would cut the fork short by everything above it.
+  if (!prev || prev.role !== "user") return [offset + i, ""];
   const draft = prev.parts
     .filter((p) => p.type === "text")
     .map((p) => p.text)
     .join("");
-  return [i - 1, draft];
+  return [offset + i - 1, draft];
 }
 
 export function Chat({
   sessionId,
   initialMessages,
+  initialHasOlder = false,
+  initialOffset = 0,
+  onLoadOlder,
   onTurnEnd,
   onFork,
   initialInput = "",
   continueAt = null,
 }: {
   sessionId: string;
+  /** The newest page of the transcript. Older ones are fetched as it is scrolled. */
   initialMessages: StoredMessage[];
+  /** Whether anything precedes `initialMessages`. */
+  initialHasOlder?: boolean;
+  /** How many messages precede `initialMessages` in the full transcript. */
+  initialOffset?: number;
+  /** The page before the oldest message held, or null when it cannot be read. */
+  onLoadOlder?: (beforeId: string) => Promise<TranscriptPage | null>;
   onTurnEnd: () => void;
   /**
    * Branch the conversation: the first `count` messages become a new session,
    * and `draft` is the question that was dropped, handed back for editing.
+   *
+   * `count` is absolute — counted from the start of the whole transcript, not from
+   * the start of the page drawn — because the agent forks from the beginning.
    */
   onFork: (count: number, draft: string) => void;
   /** Text the composer opens with — a forked question waiting to be re-asked. */
@@ -1042,6 +1060,19 @@ export function Chat({
   const [seen] = useState(() => new Map<string, number>());
   const bottom = useRef<HTMLDivElement>(null);
   const picker = useRef<HTMLInputElement>(null);
+  /** The scrolling element, so a prepend can be pinned against what it pushed down. */
+  const scroller = useRef<HTMLDivElement>(null);
+  const olderSentinel = useRef<HTMLDivElement>(null);
+  /** Whether more transcript sits behind the oldest message drawn. */
+  const [hasOlder, setHasOlder] = useState(initialHasOlder);
+  /** How many messages precede the oldest one held — what a fork's count is offset by. */
+  const [offset, setOffset] = useState(initialOffset);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  /**
+   * Set while older messages are being spliced in, so the effect that follows a new
+   * reply to the bottom does not fire on a prepend and throw the reader back down.
+   */
+  const prepending = useRef(false);
 
   // Which input capabilities are usable decides what may be attached at all. They
   // belong to the agent, and the session id says which agent that is — so there is
@@ -1089,7 +1120,7 @@ export function Chat({
       ? String(initialMessages[initialMessages.length - 1].id)
       : "";
 
-  const { messages, sendMessage, regenerate, stop, status, error } =
+  const { messages, setMessages, sendMessage, regenerate, stop, status, error } =
     useChat<ChatUIMessage>({
       id: sessionId,
       messages: toUIMessages(initialMessages),
@@ -1112,8 +1143,62 @@ export function Chat({
     ready.has("file_ingest") || ready.has("vision") || ready.has("audio_input");
 
   useEffect(() => {
+    // A prepend changes `messages` too, and following it to the bottom would undo
+    // the scroll the reader just made to reach the top.
+    if (prepending.current) {
+      prepending.current = false;
+      return;
+    }
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  /**
+   * Read the page before the oldest message held and splice it in front.
+   *
+   * The scroll position is measured against the bottom of the content rather than
+   * the top: prepending grows the element upward, and holding `scrollHeight -
+   * scrollTop` fixed leaves the message the reader was looking at where it was.
+   */
+  const loadOlder = useCallback(async () => {
+    const box = scroller.current;
+    const oldest = messages[0];
+    if (!onLoadOlder || !oldest || loadingOlder || !hasOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await onLoadOlder(String(oldest.id));
+      if (!page) return;
+      const fromBottom = box ? box.scrollHeight - box.scrollTop : 0;
+      prepending.current = true;
+      // Ids already drawn are skipped: a turn that landed between the two reads can
+      // shift the window, and a duplicate key would break the list.
+      setMessages((current) => {
+        const held = new Set(current.map((m) => m.id));
+        const older = toUIMessages(page.messages).filter((m) => !held.has(m.id));
+        return [...older, ...current];
+      });
+      setHasOlder(page.has_more);
+      setOffset(page.offset);
+      if (box) {
+        // After paint, so the new height is the one being corrected against.
+        requestAnimationFrame(() => {
+          box.scrollTop = box.scrollHeight - fromBottom;
+        });
+      }
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [onLoadOlder, messages, loadingOlder, hasOlder, setMessages]);
+
+  // Older messages arrive when the top of the transcript is scrolled into view.
+  useEffect(() => {
+    const node = olderSentinel.current;
+    if (!node || !hasOlder) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) void loadOlder();
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasOlder, loadOlder]);
 
   // Stamp anything the transcript did not arrive with a time for.
   useEffect(() => {
@@ -1423,7 +1508,18 @@ export function Chat({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex-1 space-y-6 overflow-y-auto px-4 py-6 md:px-8 md:py-10">
+      <div
+        ref={scroller}
+        className="flex-1 space-y-6 overflow-y-auto px-4 py-6 md:px-8 md:py-10"
+      >
+        {hasOlder && (
+          <div
+            ref={olderSentinel}
+            className="text-faint py-2 text-center text-[12px] leading-[1.33]"
+          >
+            {loadingOlder ? "Loading earlier messages…" : ""}
+          </div>
+        )}
         {messages.length === 0 && (
           <p className="text-muted mx-auto max-w-md text-center text-[20px] font-light leading-[1.38]">
             Session Connected. Send a message.
@@ -1446,7 +1542,7 @@ export function Chat({
               // question itself returns to the composer, ready to be edited.
               onFork={
                 m.role === "assistant" && !streaming
-                  ? () => onFork(...forkAt(messages, i))
+                  ? () => onFork(...forkAt(messages, i, offset))
                   : undefined
               }
               onRetry={

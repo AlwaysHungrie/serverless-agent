@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -19,6 +19,8 @@ export function Sidebar({
   agentId,
   agentName,
   sessions,
+  hasMore,
+  onLoadMore,
   selected,
   onSelect,
   onCreate,
@@ -31,6 +33,10 @@ export function Sidebar({
   agentId: string;
   agentName: string;
   sessions: SessionRow[];
+  /** Whether older sessions remain unread behind the ones drawn. */
+  hasMore: boolean;
+  /** Append the next page. Called when the list is scrolled to its end. */
+  onLoadMore: () => Promise<void>;
   selected: string | null;
   onSelect: (id: string) => void;
   onCreate: () => void;
@@ -42,6 +48,9 @@ export function Sidebar({
   onHome: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  /** A page request in flight, so a fast scroll asks for the next page once. */
+  const [loadingMore, setLoadingMore] = useState(false);
+  const sentinel = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   /** The session the delete dialog is asking about, if it is open. */
   const [confirming, setConfirming] = useState<SessionRow | null>(null);
@@ -53,6 +62,23 @@ export function Sidebar({
     const timer = setTimeout(() => setDebounced(query), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [query]);
+
+  /**
+   * Fetch the next page when the end of the list comes into view. Search filters
+   * only what has been loaded, so paging keeps running while a query is typed —
+   * otherwise a match further down the list could never be reached.
+   */
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node || !hasMore) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries[0]?.isIntersecting || loadingMore) return;
+      setLoadingMore(true);
+      void onLoadMore().finally(() => setLoadingMore(false));
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMore, loadingMore, onLoadMore]);
 
   // A destructive dialog has to be as easy to leave as to open.
   useEffect(() => {
@@ -194,6 +220,14 @@ export function Sidebar({
               </button>
             </div>
           ))}
+          {hasMore && (
+            <div
+              ref={sentinel}
+              className="text-faint px-2 py-4 text-center text-[12px] leading-[1.33]"
+            >
+              {loadingMore ? "Loading…" : ""}
+            </div>
+          )}
         </div>
 
         <div className="absolute right-4 bottom-4 flex items-center gap-2">

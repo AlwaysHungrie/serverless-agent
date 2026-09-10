@@ -8,11 +8,15 @@ import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
 import { Welcome } from "@/components/Welcome";
 import {
+  MESSAGE_PAGE,
+  SESSION_PAGE,
   telegramLink,
   type AgentRow,
+  type SessionPage,
   type SessionRow,
   type StoredMessage,
   type Summary,
+  type TranscriptPage,
 } from "@/lib/agent";
 
 /**
@@ -29,12 +33,24 @@ export default function AgentPage({
   const router = useRouter();
   const [agent, setAgent] = useState<AgentRow | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
+  /**
+   * Where the session list has been read up to: the cursor for the next page, and
+   * whether there is one. Empty cursor with `more` false means the list is whole.
+   */
+  const [sessionCursor, setSessionCursor] = useState<{
+    cursor: string;
+    more: boolean;
+  }>({ cursor: "", more: false });
   const [selected, setSelected] = useState<string | null>(null);
   // Keyed by session so switching sessions shows a loader instead of the previous
   // session's transcript, without having to null it out on every selection change.
   const [loaded, setLoaded] = useState<{
     sessionId: string;
     messages: StoredMessage[];
+    /** Whether older messages remain unread behind the ones held here. */
+    hasOlder: boolean;
+    /** How many messages precede the oldest one held. A fork's count is absolute. */
+    offset: number;
   } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -92,13 +108,46 @@ export default function AgentPage({
       .catch(() => setBotUsername(""));
   }, [agentId, router]);
 
+  /**
+   * The newest page of sessions, replacing whatever was held.
+   *
+   * Called after anything that reorders the list — a new session, a rename, the end
+   * of a turn — so it deliberately drops pages that were scrolled into: keeping them
+   * across a reorder would show rows twice. The scroll starts again from the top,
+   * which is where the list has just changed anyway.
+   */
   const loadSessions = useCallback(async () => {
-    const payload = await readJson<{ sessions: SessionRow[] }>(
-      await fetch(`/api/agents/${encodeURIComponent(agentId)}/sessions`),
+    const payload = await readJson<SessionPage>(
+      await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/sessions?limit=${SESSION_PAGE}`,
+      ),
     );
     setSessions(payload?.sessions ?? []);
+    setSessionCursor({
+      cursor: payload?.cursor ?? "",
+      more: payload?.has_more ?? false,
+    });
     return payload?.sessions ?? [];
   }, [readJson, agentId]);
+
+  /** The page after the one the sidebar is showing, appended to it. */
+  const loadMoreSessions = useCallback(async () => {
+    if (!sessionCursor.more || !sessionCursor.cursor) return;
+    const payload = await readJson<SessionPage>(
+      await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/sessions?limit=${SESSION_PAGE}` +
+          `&cursor=${encodeURIComponent(sessionCursor.cursor)}`,
+      ),
+    );
+    if (!payload) return;
+    // A session touched between the two reads can arrive on both pages; keying by id
+    // keeps the first copy rather than drawing it twice.
+    setSessions((current) => {
+      const seen = new Set(current.map((s) => s.id));
+      return [...current, ...payload.sessions.filter((s) => !seen.has(s.id))];
+    });
+    setSessionCursor({ cursor: payload.cursor, more: payload.has_more });
+  }, [readJson, agentId, sessionCursor]);
 
   const loadSummary = useCallback(
     async (id: string) => {
@@ -122,14 +171,36 @@ export default function AgentPage({
     if (!selected) return;
     void (async () => {
       const res = await fetch(
-        `/api/sessions/${encodeURIComponent(selected)}/messages`,
+        `/api/sessions/${encodeURIComponent(selected)}/messages?limit=${MESSAGE_PAGE}`,
       );
-      const payload = await readJson<{ messages: StoredMessage[] }>(res);
+      const payload = await readJson<TranscriptPage>(res);
       if (!payload) return;
-      setLoaded({ sessionId: selected, messages: payload.messages });
+      setLoaded({
+        sessionId: selected,
+        messages: payload.messages,
+        hasOlder: payload.has_more,
+        offset: payload.offset,
+      });
       await loadSummary(selected);
     })();
   }, [selected, loadSummary, readJson]);
+
+  /**
+   * The window of transcript before `beforeId`, handed to the chat to prepend. The
+   * page owns the fetch so the chat does not have to know the route; the chat owns
+   * where the messages land, because it is the one holding them.
+   */
+  const loadOlderMessages = useCallback(
+    async (beforeId: string): Promise<TranscriptPage | null> => {
+      if (!selected) return null;
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(selected)}/messages` +
+          `?limit=${MESSAGE_PAGE}&before=${encodeURIComponent(beforeId)}`,
+      );
+      return await readJson<TranscriptPage>(res);
+    },
+    [selected, readJson],
+  );
 
   const createSession = async () => {
     // No title: the session is called "New session" until the agent names it from
@@ -194,6 +265,8 @@ export default function AgentPage({
         agentId={agentId}
         agentName={agent?.name ?? ""}
         sessions={sessions}
+        hasMore={sessionCursor.more}
+        onLoadMore={loadMoreSessions}
         selected={selected}
         onSelect={setSelected}
         onCreate={createSession}
@@ -227,6 +300,9 @@ export default function AgentPage({
                 key={selected}
                 sessionId={selected}
                 initialMessages={loaded.messages}
+                initialHasOlder={loaded.hasOlder}
+                initialOffset={loaded.offset}
+                onLoadOlder={loadOlderMessages}
                 onTurnEnd={onTurnEnd}
                 initialInput={draft?.sessionId === selected ? draft.text : ""}
                 onFork={(count, text) =>
