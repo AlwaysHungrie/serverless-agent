@@ -928,6 +928,11 @@ function validateMeta(
     if (previous.defaults.model !== undefined) meta.defaults.model = previous.defaults.model;
     else delete meta.defaults.model;
     meta.mcp.servers = previous.mcp.servers;
+    // Which capabilities an agent started with, and what they started holding, is
+    // likewise a creation-time answer: the agent has been running on them since, and
+    // re-applying a different set would switch things on and off underneath it. What
+    // stays open afterwards is the lock — who may change a capability, not what it is.
+    meta.capabilities = previous.capabilities;
   }
 
   return meta;

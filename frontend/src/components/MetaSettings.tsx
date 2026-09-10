@@ -325,6 +325,11 @@ export function MetaSettingsForm({
     return widened.length ? widened : (field.options ?? []).map((o) => o.value);
   };
 
+  /** Every fixed-choice field any capability declares: the image and audio models. */
+  const choiceFields = capabilities.flatMap((c) =>
+    c.fields.filter((f) => f.options && f.options.length > 0),
+  );
+
   const setFieldOptions = (field: CapabilityField, values: string[]) =>
     patch({
       field_options: { ...meta.field_options, [String(field.key)]: values },
@@ -346,6 +351,29 @@ export function MetaSettingsForm({
           suggestionsHint="Default options"
         />
       </Section>
+
+      {/* The choice fields — the image and transcription models — are lists of
+          OpenRouter ids like the one above, so they are edited beside it rather
+          than inside the capability that happens to use them. The capability
+          keeps the part that is its own: which of these it starts on. */}
+      {choiceFields.map((field) => (
+        <Section
+          key={String(field.key)}
+          title={`${field.label} options`}
+          hint="Enter any valid Openrouter model slug. An empty list will offer all default options to the user."
+        >
+          <IdList
+            value={meta.field_options[String(field.key)] ?? []}
+            onChange={(next) => setFieldOptions(field, next)}
+            placeholder={field.options?.[0]?.value}
+            suggestions={(field.options ?? []).map((o) => ({
+              id: o.value,
+              label: o.label,
+            }))}
+            suggestionsHint="Default options"
+          />
+        </Section>
+      ))}
 
       <Section title="Model" {...lock("model")}>
         <Frozen frozen={!creation} reason={frozenReason}>
@@ -548,7 +576,7 @@ export function MetaSettingsForm({
 
       <Section
         title="Capabilities"
-        hint="Internal and external capabilities the agent arrives with, and their default values."
+        hint="Internal capabilities the agent arrives with, and their default values."
       >
         <div className="space-y-2">
           {capabilities.map((capability) => {
@@ -577,7 +605,11 @@ export function MetaSettingsForm({
                       onChange={(v) => setLocked(capability.id, v)}
                       what={capability.label}
                     />
-                    {!capability.alwaysOn && (
+                    {/* After creation the only thing left to decide about a
+                        capability is who may change it. Whether it is on, and what
+                        it holds, is the agent's own business by then — so the
+                        switch is not shown rather than shown dead. */}
+                    {creation && !capability.alwaysOn && (
                       <Toggle
                         on={on}
                         onChange={(v) =>
@@ -587,7 +619,8 @@ export function MetaSettingsForm({
                     )}
                   </span>
                 </div>
-                {capability.fields.length > 0 &&
+                {creation &&
+                  capability.fields.length > 0 &&
                   (on || capability.alwaysOn) && (
                     <div className="mt-3 space-y-3">
                       {capability.fields.map((field) => {
@@ -595,25 +628,9 @@ export function MetaSettingsForm({
                         const values = optionsFor(field);
                         return (
                           <div key={key} className="space-y-3">
-                            {/* A fixed choice is only fixed in the agent's own pages.
-                              Here the list itself is the setting, and the field
-                              below picks this agent's default out of it. */}
-                            {field.options && (
-                              <IdList
-                                label={`${field.label} options`}
-                                hint="Type any OpenRouter id. Empty offers the ones this deployment ships with."
-                                value={meta.field_options[key] ?? []}
-                                onChange={(next) =>
-                                  setFieldOptions(field, next)
-                                }
-                                placeholder="google/gemini-3-pro-image"
-                                suggestions={(field.options ?? []).map((o) => ({
-                                  id: o.value,
-                                  label: o.label,
-                                }))}
-                                emptyNote="Empty offers the shipped choices."
-                              />
-                            )}
+                            {/* A fixed choice offers whatever its list above holds,
+                              so this picks the default out of that rather than out
+                              of the choices the Worker ships with. */}
                             <Field
                               field={
                                 field.options
@@ -650,7 +667,7 @@ export function MetaSettingsForm({
 
       <Section
         title="MCP templates"
-        hint="Which provider templates this agent is offered on its capabilities page. None ticked offers all of them."
+        hint="MCP templates provide easier way to the user to add an MCP server. If none are selected, all of them are presented to the user."
       >
         <div className="flex flex-wrap gap-2">
           {MCP_PRESETS.map((preset) => {
@@ -683,12 +700,12 @@ export function MetaSettingsForm({
       </Section>
 
       <Section
-        title="Default MCP servers"
-        hint="Servers the agent is created with. An OAuth server still has to be connected once from the capabilities page; its headers are filled in for you."
+        title="MCP servers"
+        hint="External capabilities the agent comes pre configred with"
       >
         <Frozen
           frozen={!creation}
-          reason="Can only be added while the agent is being created — a server added later would collide by name."
+          reason="Can only be added while the agent is being created."
         >
           <McpDefaults
             servers={meta.mcp.servers}
@@ -713,7 +730,6 @@ export function MetaSettingsDialog({
   const [models, setModels] = useState<ModelOption[]>([]);
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const base = `/api/agents/${encodeURIComponent(agent.id)}/meta`;
@@ -737,14 +753,22 @@ export function MetaSettingsDialog({
     })();
   }, [base]);
 
-  /** Save the document, optionally pushing it onto the agent in the same call. */
-  const save = async (apply: boolean) => {
+  /**
+   * Save, and push what was saved onto the agent.
+   *
+   * These were two buttons once — record the defaults, and separately apply them.
+   * The split stopped meaning anything: what is still editable here after creation
+   * is the option lists, the templates and the locks, and every one of those is live
+   * the moment it is stored. Locking a setting to a value you then had to apply by
+   * hand was the last of it, and locking a setting *is* deciding its value.
+   */
+  const save = async () => {
     if (!meta) return;
     setBusy(true);
     const res = await fetch(base, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...meta, apply }),
+      body: JSON.stringify({ ...meta, apply: true }),
     });
     setBusy(false);
     const payload = (await res.json().catch(() => null)) as {
@@ -758,12 +782,7 @@ export function MetaSettingsDialog({
     }
     setMeta(payload.meta);
     setError(null);
-    setNote(
-      apply
-        ? `Defaults applied to ${agent.name}.` +
-            (payload.added?.length ? ` Added ${payload.added.join(", ")}.` : "")
-        : "Saved.",
-    );
+    onClose();
   };
 
   return (
@@ -818,23 +837,21 @@ export function MetaSettingsDialog({
             />
 
             <div className="border-hairline-soft flex items-center justify-between gap-3 border-t pt-5">
-              <span className="text-faint text-[12px] leading-[1.33]">
-                {busy ? "Saving…" : (note ?? "")}
-              </span>
+              <span />
               <div className="flex gap-2">
                 <button
-                  onClick={() => void save(false)}
+                  onClick={onClose}
                   disabled={busy}
                   className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-[14px] font-semibold transition disabled:opacity-40"
                 >
-                  Save
+                  Cancel
                 </button>
                 <button
-                  onClick={() => void save(true)}
+                  onClick={() => void save()}
                   disabled={busy}
                   className="bg-ink text-on-primary h-10 rounded-full px-5 text-[14px] font-semibold transition hover:opacity-85 disabled:opacity-40"
                 >
-                  Save &amp; apply now
+                  {busy ? "Saving…" : "Save"}
                 </button>
               </div>
             </div>

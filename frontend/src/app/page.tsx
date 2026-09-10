@@ -96,7 +96,8 @@ export default function Agents() {
     });
     setBusy(false);
     const row = (await res.json().catch(() => null)) as
-      (AgentRow & { error?: string }) | null;
+      | (AgentRow & { error?: string })
+      | null;
     if (!res.ok || !row?.id) {
       return row?.error ?? "Couldn't create that agent. Try again.";
     }
@@ -371,10 +372,9 @@ function NewAgent({
             Meta settings
           </p>
           <p className="text-muted mt-1 text-[12px] font-light leading-[1.33]">
-            What {name.trim() || "this agent"} starts out as, and what it may
-            change for itself. Locking a setting takes it off the agent&rsquo;s
-            own pages and leaves it here. All of this can be edited later except
-            the default model and the default MCP servers.
+            Set the defaults for {name.trim() || "this agent"}, and choose what
+            its owner can change. A locked setting will not be shown to the
+            owner for configuration.
           </p>
 
           <div className="mt-4">
