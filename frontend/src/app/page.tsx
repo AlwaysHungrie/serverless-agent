@@ -205,12 +205,6 @@ export default function Agents() {
                         Last used {formatDate(agent.updated_at)}
                       </span>
                     </Link>
-                    <Link
-                      href={`/a/${encodeURIComponent(agent.id)}/settings`}
-                      className="text-muted hover:text-ink shrink-0 text-[14px] transition"
-                    >
-                      Settings
-                    </Link>
                     {/* Meta settings are the defaults behind those settings, so they
                         are reachable only from here — never from the agent's own
                         pages, where they would read as one more setting. */}
@@ -220,8 +214,15 @@ export default function Agents() {
                       aria-label={`Meta settings for ${agent.name}`}
                       className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition"
                     >
-                      <SlidersHorizontal size={15} strokeWidth={1.75} />
+                      Admin Settings
                     </button>
+                    <Link
+                      href={`/a/${encodeURIComponent(agent.id)}/settings`}
+                      className="text-muted hover:text-ink shrink-0 text-[14px] transition"
+                    >
+                      <SlidersHorizontal size={15} strokeWidth={1.75} />
+                    </Link>
+
                     <button
                       onClick={() => setConfirming(agent)}
                       aria-label={`Delete ${agent.name}`}
