@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
-import { SignInButton, SignUpButton, UserButton, useAuth } from "@clerk/nextjs";
+import { useAuth } from "@clerk/nextjs";
+import { AuthModal } from "@/components/auth/AuthModal";
+import { UserMenu } from "@/components/auth/UserMenu";
 import { formatDate } from "@/lib/format";
 import type { AgentRow } from "@/lib/agent";
 
@@ -26,6 +28,8 @@ export default function Agents() {
   const [confirming, setConfirming] = useState<AgentRow | null>(null);
   /** Whether the new-agent dialog is up. */
   const [creating, setCreating] = useState(false);
+  /** Whether the sign-in dialog is up. */
+  const [authing, setAuthing] = useState(false);
 
   const load = useCallback(async () => {
     const res = await fetch("/api/agents", { cache: "no-store" });
@@ -34,7 +38,9 @@ export default function Agents() {
       error?: string;
     } | null;
     if (!res.ok || !payload?.agents) {
-      setError(payload?.error ?? "Couldn't load your agents. Refresh to try again.");
+      setError(
+        payload?.error ?? "Couldn't load your agents. Refresh to try again.",
+      );
       setAgents([]);
       return;
     }
@@ -93,143 +99,126 @@ export default function Agents() {
   return (
     <div className="bg-canvas text-ink min-h-screen">
       <div className="mx-auto w-full max-w-2xl px-5 py-10 md:px-8 md:py-14">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-[32px] font-[650] leading-[1.2]">
+              Cloud Agents.
+            </h1>
+            <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
+              Personal, Always Accessible AI Agents
+            </p>
+          </div>
+          {isLoaded && isSignedIn && (
+            <div className="flex shrink-0 items-center gap-3">
+              <UserMenu />
+            </div>
+          )}
+        </div>
+
         {/* Clerk Core 3 has no <SignedIn>/<SignedOut>; the session comes from the
             hook instead, and nothing is drawn until it has loaded — otherwise the
             prerendered page would flash the front door at someone already signed in. */}
         {!isLoaded && (
-          <p className="text-muted py-16 text-[14px] leading-[1.43]">Loading…</p>
+          <p className="text-muted py-16 text-[14px] leading-[1.43]">
+            Loading…
+          </p>
         )}
 
         {isLoaded && !isSignedIn && (
-          <>
-          <h1 className="text-[32px] font-[650] leading-[1.2]">Agents.</h1>
-          <p className="text-muted mt-1 max-w-md text-[14px] font-light leading-[1.43]">
-            Build an agent with its own bot, its own tools and its own memory.
-            Sign in to make one, or to open an agent someone shared with you.
-          </p>
-          <div className="mt-8 flex gap-2">
-            <SignUpButton mode="modal">
-              <button className="bg-ink text-on-primary h-11 rounded-full px-5 text-[14px] font-semibold transition hover:opacity-85">
-                Create an account
-              </button>
-            </SignUpButton>
-            <SignInButton mode="modal">
-              <button className="border-hairline text-ink hover:bg-canvas-soft h-11 rounded-full border px-5 text-[14px] font-semibold transition">
-                Sign in
-              </button>
-            </SignInButton>
+          <div className="mt-8 space-y-2 w-full">
+            <button
+              onClick={() => setAuthing(true)}
+              className="w-full min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-[16px] px-5 py-4 transition"
+            >
+              <Plus size={18} strokeWidth={2} />
+              Connect your Account
+            </button>
+            <p className="text-faint mt-6 text-[12px] leading-[1.33]">
+              You can find safety guidelines and best practices for running a
+              public facing agent in the{" "}
+              <a href="/docs" className="text-primary font-semibold underline">
+                docs
+              </a>
+              .
+              <br />
+              By signing up you agree to our{" "}
+              <a href="/tos" className="text-primary hover:underline">
+                terms of service
+              </a>{" "}
+              and{" "}
+              <a href="/privacy" className="text-primary hover:underline">
+                privacy policy
+              </a>
+              .
+              <br />
+            </p>
           </div>
-          <p className="text-faint mt-6 max-w-md text-[12px] leading-[1.33]">
-            An agent is only visible to the addresses it was shared with. Sign in
-            with the address you were given and it appears in this list.
-          </p>
-          </>
         )}
 
         {isLoaded && isSignedIn && (
-        <>
-        <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-[32px] font-[650] leading-[1.2]">Agents.</h1>
-          <div className="flex shrink-0 items-center gap-3">
-            {agents !== null && agents.length > 0 && (
-              <button
-                onClick={() => setCreating(true)}
-                disabled={busy}
-                className="bg-ink text-on-primary flex h-9 shrink-0 items-center gap-2 rounded-full px-4 text-[14px] font-semibold transition hover:opacity-85 disabled:opacity-40"
-              >
-                <Plus size={16} strokeWidth={2} />
-                New agent
-              </button>
-            )}
-            <UserButton />
-          </div>
-        </div>
-        <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
-          Each one has its own bot, its own tools and its own memory. They share
-          nothing.
-        </p>
-
-        {error && (
-          <div className="bg-canvas-soft border-hairline-soft mt-8 rounded-[16px] border px-5 py-4 text-[14px] leading-[1.43]">
-            {error}
-          </div>
-        )}
-
-        {agents === null && (
-          <p className="text-muted py-16 text-[14px] leading-[1.43]">
-            Loading your agents…
-          </p>
-        )}
-
-        {agents?.length === 0 && !error && (
-          <div className="mt-12 max-w-md">
-            <h2 className="text-[28px] font-[650] leading-[1.2]">
-              Nothing here yet.
-            </h2>
-            <p className="text-muted mt-2 text-[16px] font-light leading-[1.5]">
-              Make an agent, give it an OpenRouter key, and it can start
-              answering — here, or on Telegram.
-            </p>
-
-            <button
-              onClick={() => setCreating(true)}
-              disabled={busy}
-              className="bg-ink text-on-primary mt-7 flex h-12 w-full items-center justify-center gap-2 rounded-full text-[16px] font-semibold transition hover:opacity-85 disabled:opacity-40"
-            >
-              <Plus size={18} strokeWidth={2} />
-              New agent
-            </button>
-
-            <div className="border-hairline-soft mt-8 border-t pt-6">
-              <p className="text-[14px] font-semibold leading-[1.43]">
-                Shared with you?
-              </p>
-              <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
-                An agent only appears here for the addresses it was shared with.
-                Sign in with that address and it shows up in this list.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {agents && agents.length > 0 && (
-          <div className="mt-8 space-y-2">
-            {agents.map((agent) => (
-              <div
-                key={agent.id}
-                className="hover:bg-canvas-soft group flex items-center gap-3 rounded-[16px] px-5 py-4 transition"
-              >
-                <Link
-                  href={`/a/${encodeURIComponent(agent.id)}`}
-                  className="min-w-0 flex-1"
-                >
-                  <span className="block truncate text-[16px] font-semibold leading-[1.38]">
-                    {agent.name}
-                  </span>
-                  <span className="text-faint block truncate text-[12px] leading-[1.33]">
-                    Last used {formatDate(agent.updated_at)}
-                  </span>
-                </Link>
-                <Link
-                  href={`/a/${encodeURIComponent(agent.id)}/settings`}
-                  className="text-muted hover:text-ink shrink-0 text-[14px] transition"
-                >
-                  Settings
-                </Link>
-                <button
-                  onClick={() => setConfirming(agent)}
-                  aria-label={`Delete ${agent.name}`}
-                  className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[16px] leading-none opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
-                >
-                  ×
-                </button>
+          <>
+            {error && (
+              <div className="bg-canvas-soft border-hairline-soft mt-8 rounded-[16px] border px-5 py-4 text-[14px] leading-[1.43]">
+                {error}
               </div>
-            ))}
-          </div>
-        )}
-        </>
+            )}
+
+            {agents === null && (
+              <p className="text-muted py-16 text-[14px] leading-[1.43]">
+                Loading your agents…
+              </p>
+            )}
+
+            {agents && agents.length > 0 && (
+              <div className="mt-8 space-y-2">
+                {agents.map((agent) => (
+                  <div
+                    key={agent.id}
+                    className="hover:bg-canvas-soft group flex items-center gap-3 rounded-[16px] px-5 py-4 transition"
+                  >
+                    <Link
+                      href={`/a/${encodeURIComponent(agent.id)}`}
+                      className="min-w-0 flex-1"
+                    >
+                      <span className="block truncate text-[16px] font-semibold leading-[1.38]">
+                        {agent.name}
+                      </span>
+                      <span className="text-faint block truncate text-[12px] leading-[1.33]">
+                        Last used {formatDate(agent.updated_at)}
+                      </span>
+                    </Link>
+                    <Link
+                      href={`/a/${encodeURIComponent(agent.id)}/settings`}
+                      className="text-muted hover:text-ink shrink-0 text-[14px] transition"
+                    >
+                      Settings
+                    </Link>
+                    <button
+                      onClick={() => setConfirming(agent)}
+                      aria-label={`Delete ${agent.name}`}
+                      className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[16px] leading-none opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+
+                <div
+                  onClick={() => setCreating(true)}
+                  className="min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-[16px] px-5 py-4 transition"
+                >
+                  <Plus size={18} strokeWidth={2} />
+                  Create a new Agent
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
+
+      {authing && (
+        <AuthModal mode="sign-in" onClose={() => setAuthing(false)} />
+      )}
 
       {creating && (
         <NewAgent
@@ -291,7 +280,11 @@ function NewAgent({
   busy: boolean;
   onCancel: () => void;
   /** Resolves to an error to show in the dialog, or null once the agent opens. */
-  onCreate: (name: string, key: string, emails: string) => Promise<string | null>;
+  onCreate: (
+    name: string,
+    key: string,
+    emails: string,
+  ) => Promise<string | null>;
 }) {
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
@@ -319,11 +312,9 @@ function NewAgent({
         className="bg-canvas w-full max-w-sm rounded-[20px] px-6 py-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <p className="text-[16px] font-semibold leading-[1.38]">New agent</p>
-        <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
-          Its own bot, its own tools, its own memory.
+        <p className="text-[18px] font-semibold leading-[1.38]">
+          Create a new agent
         </p>
-
         <label className="mt-5 block">
           <span className="block text-[14px] font-semibold leading-[1.43]">
             Name
@@ -347,8 +338,8 @@ function NewAgent({
             OpenRouter API key
           </span>
           <span className="text-muted block text-[12px] font-light leading-[1.33]">
-            Every model call this agent makes is billed here. You can add it later
-            in Settings.
+            Optional, gets your agent running from the get-go. You can always
+            add it later in Settings.
           </span>
           <input
             type="password"
@@ -365,12 +356,12 @@ function NewAgent({
 
         <label className="mt-4 block">
           <span className="block text-[14px] font-semibold leading-[1.43]">
-            Who else can open it
+            Who can access this agent
           </span>
           <span className="text-muted block text-[12px] font-light leading-[1.33]">
-            Email addresses, one per line or comma-separated. Everyone listed gets
-            the whole agent — its chats, its settings and its keys. You are always
-            on the list, and you can change it later in Settings.
+            Comma-separated emails. These people can message your agent, manage
+            it, and read its chats on your behalf. Leave empty if unsure, after
+            creation you can connect Telegram to let others message it.
           </span>
           <textarea
             value={emails}
@@ -384,9 +375,7 @@ function NewAgent({
           />
         </label>
 
-        {error && (
-          <p className="mt-3 text-[12px] leading-[1.33]">{error}</p>
-        )}
+        {error && <p className="mt-3 text-[12px] leading-[1.33]">{error}</p>}
 
         <div className="mt-6 flex justify-end gap-2">
           <button

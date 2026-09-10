@@ -111,7 +111,10 @@ function uploadFailure(name: string, error?: string): string {
   const platform = describeSessionFailure(raw);
   if (platform) return platform;
   // Anything long, or shaped like an internal error, is not a sentence for a user.
-  if (raw.length > 160 || /^[A-Za-z]*Error\b|SQL |stack|at \w+\.|<[a-z!]/i.test(raw)) {
+  if (
+    raw.length > 160 ||
+    /^[A-Za-z]*Error\b|SQL |stack|at \w+\.|<[a-z!]/i.test(raw)
+  ) {
     return `Could not upload ${name}.`;
   }
   return raw;
@@ -1047,7 +1050,9 @@ export function Chat({
     void (async () => {
       const agentId = agentIdOf(sessionId);
       if (!agentId) return;
-      const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/config`);
+      const res = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/config`,
+      );
       const payload = (await res.json().catch(() => null)) as {
         config: Config;
         capabilities: Capability[];
@@ -1220,11 +1225,14 @@ export function Chat({
       let res: Response;
       let payload: UploadPayload = null;
       try {
-        res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files`, {
-          method: "POST",
-          body: form,
-          signal: controller.signal,
-        });
+        res = await fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/files`,
+          {
+            method: "POST",
+            body: form,
+            signal: controller.signal,
+          },
+        );
         payload = (await res.json().catch(() => null)) as UploadPayload;
       } catch (err) {
         drop(key, preview);
@@ -1288,15 +1296,20 @@ export function Chat({
    */
   const reconcilePending = async (accepted: string[] = []) => {
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files`);
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/files`,
+      );
       const payload = (await res.json()) as { attachments?: Attachment[] };
       const keep = new Set([...kept.current, ...accepted]);
       const stray = (payload.attachments ?? []).filter((a) => !keep.has(a.id));
       await Promise.all(
         stray.map((a) =>
-          fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files/${a.id}`, {
-            method: "DELETE",
-          }),
+          fetch(
+            `/api/sessions/${encodeURIComponent(sessionId)}/files/${a.id}`,
+            {
+              method: "DELETE",
+            },
+          ),
         ),
       );
     } catch {
@@ -1397,7 +1410,9 @@ export function Chat({
       sendMessage({
         role: "user",
         parts: [
-          ...(files.length ? [{ type: "data-files" as const, data: { attachments: files } }] : []),
+          ...(files.length
+            ? [{ type: "data-files" as const, data: { attachments: files } }]
+            : []),
           { type: "text" as const, text },
         ],
       });
@@ -1410,7 +1425,7 @@ export function Chat({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex-1 space-y-6 overflow-y-auto px-4 py-6 md:px-8 md:py-10">
         {messages.length === 0 && (
-          <p className="text-muted mx-auto max-w-md pt-20 text-center text-[20px] font-light leading-[1.38]">
+          <p className="text-muted mx-auto max-w-md text-center text-[20px] font-light leading-[1.38]">
             Session Connected. Send a message.
           </p>
         )}
@@ -1450,9 +1465,7 @@ export function Chat({
             </div>
           </div>
         )}
-        {error && (
-          <SystemNotice text={error.message} />
-        )}
+        {error && <SystemNotice text={error.message} />}
         <div ref={bottom} />
       </div>
 
@@ -1538,7 +1551,10 @@ export function Chat({
             </div>
           )}
 
-          <form onSubmit={(e) => void submit(e)} className="flex gap-2 md:gap-3">
+          <form
+            onSubmit={(e) => void submit(e)}
+            className="flex gap-2 md:gap-3"
+          >
             {canAttach && (
               <>
                 <input

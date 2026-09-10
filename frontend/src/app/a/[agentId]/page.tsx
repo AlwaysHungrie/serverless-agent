@@ -219,7 +219,7 @@ export default function AgentPage({
               onOpenSidebar={() => setSidebarOpen(true)}
             />
             {loaded?.sessionId !== selected ? (
-              <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light">
+              <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light mb-16">
                 Connecting Session…
               </div>
             ) : (

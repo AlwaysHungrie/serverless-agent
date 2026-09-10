@@ -2,7 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Search, Settings, SlidersHorizontal, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Search,
+  Settings,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
 import type { SessionRow } from "@/lib/agent";
 import { formatDate } from "@/lib/format";
 
@@ -82,14 +88,6 @@ export function Sidebar({
       >
         <div className="flex items-center justify-between gap-3 px-6 pt-6 pb-4">
           <div className="flex min-w-0 items-center gap-2">
-            <Link
-              href="/"
-              title="All agents"
-              aria-label="All agents"
-              className="text-muted hover:bg-canvas-soft hover:text-ink flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition"
-            >
-              <ArrowLeft size={18} strokeWidth={1.75} />
-            </Link>
             <button
               onClick={() => {
                 onHome();
@@ -98,7 +96,7 @@ export function Sidebar({
               title="Home"
               className="min-w-0 text-left"
             >
-              <div className="truncate text-2xl font-[650] leading-[1.25]">
+              <div className="truncate text-2xl font-[650] leading-tight">
                 {agentName || "Agent"}
               </div>
               <div className="text-muted text-[14px] font-light leading-[1.43]">
@@ -200,6 +198,15 @@ export function Sidebar({
 
         <div className="absolute right-4 bottom-4 flex items-center gap-2">
           <Link
+            href="/"
+            title="All agents"
+            aria-label="All agents"
+            className="border-hairline bg-canvas text-ink hover:bg-canvas-soft flex h-11 w-11 items-center justify-center rounded-full border shadow-sm transition mr-26"
+          >
+            <ArrowLeft size={18} strokeWidth={1.75} />
+          </Link>
+
+          <Link
             href={`/a/${encodeURIComponent(agentId)}/capabilities`}
             title="Capabilities"
             aria-label="Capabilities"
@@ -270,12 +277,12 @@ function ConfirmDelete({
         >
           Delete “{session.title}”?
         </h2>
-        <p className="text-muted mt-2 text-[14px] leading-[1.5]">
+        <p className="text-muted mt-2 text-[14px] leading-normal">
           Its messages, files, and stored data will be deleted permanently. This
           can’t be undone.
         </p>
         {telegram && (
-          <p className="text-muted mt-2 text-[14px] leading-[1.5]">
+          <p className="text-muted mt-2 text-[14px] leading-normal">
             Messages in the Telegram chat aren’t deleted. The bot starts a new
             session the next time someone writes there.
           </p>

@@ -10,15 +10,17 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Serverless Agent",
-  description: "A Cloudflare Durable Object agent, with its bill shown as it runs.",
+  title: "Cloud Agents",
+  description: "Personal, Always Accessible AI Agents",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <ClerkProvider>
       <html lang="en" className={`${inter.variable} h-full antialiased`}>
-        <body className="bg-canvas text-ink min-h-full flex flex-col">{children}</body>
+        <body className="bg-canvas text-ink min-h-full flex flex-col">
+          {children}
+        </body>
       </html>
     </ClerkProvider>
   );
