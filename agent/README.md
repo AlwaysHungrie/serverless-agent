@@ -16,7 +16,9 @@ pnpm install
 pnpm dev                          # wrangler dev on http://localhost:8787
 ```
 
-`.dev.vars` is gitignored and holds `OPENROUTER_API_KEY`.
+`.dev.vars` is gitignored and holds `OPENROUTER_API_KEY`. That key is only a fallback:
+an agent with a key of its own — pasted under **Settings** — bills its own model calls
+there, so one agent's spend and rate limits never land on another's.
 
 Attachment bytes (images, voice-note clips) live in R2, not in the session's SQLite.
 Create the bucket once before deploying — `wrangler dev` simulates it locally:
@@ -56,13 +58,65 @@ curl -X POST http://localhost:8787/agents/session-agent/my-session/chat \
 | `GET\|DELETE /agents/session-agent/:id/files/:fileId` | Image bytes / drop a pending attachment |
 | `GET /agents/session-agent/:id/tasks` | Tasks this session scheduled |
 | `DELETE /agents/session-agent/:id/tasks/:taskId` | Cancel one |
-| `GET\|POST /api/sessions` | List / create sessions |
-| `PATCH\|DELETE /api/sessions/:id` | Rename / delete a session |
-| `GET\|PATCH /api/config` | Settings, capabilities and their metadata |
+| `GET\|POST /api/agents` | List / create agents — `{ name, openrouter_api_key?, allowed_emails? }`, and a key that OpenRouter rejects is a 400 that creates nothing. `GET` lists only what the caller may open |
+| `GET\|PATCH\|DELETE /api/agents/:agentId` | Read / rename / delete an agent and everything it owns. `PATCH` takes `{ name?, allowed_emails? }` |
+| `GET\|PATCH /api/agents/:agentId/config` | That agent's settings, capabilities and their metadata |
+| `GET\|POST /api/agents/:agentId/mcp` | That agent's MCP servers |
+| `GET\|POST /api/agents/:agentId/sessions` | List / create that agent's sessions |
+| `PATCH\|DELETE /api/sessions/:sessionId` | Rename / delete a session |
+| `POST /telegram/webhook/:agentId` | One route per agent, because one bot per agent |
 
-Durable Object namespaces cannot be enumerated — you can address an instance by name but
-not ask which instances exist — so the session list lives in one well-known
-`SessionRegistry` object while each session's transcript lives in its own `SessionAgent`.
+## Agents
+
+An agent is a bot, its settings, its tools and its conversations. Agents share nothing:
+each has its own OpenRouter key, its own Telegram bot, its own MCP servers, its own
+memories and its own sessions. Traffic to one never queues behind another.
+
+That falls out of the object layout. Durable Object namespaces cannot be enumerated —
+you can address an instance by name but not ask which instances exist — so there are
+three layers of index:
+
+- **`AgentDirectory`**, one well-known object, holding the list of agents. Names only.
+- **`SessionRegistry`**, one per agent, holding everything that agent *is*: settings,
+  credentials, MCP servers, memories, and the index of its sessions.
+- **`SessionAgent`**, one per conversation, holding a transcript and its files.
+
+`SessionAgent` is a single namespace for the whole Worker, so a session id carries the
+agent that owns it: `<agentId>~<local>`. Two agents in the same Telegram chat would
+otherwise both want `tg-123` and land on the same object. The prefix is also how a
+session finds its agent — a Durable Object knows nothing about itself but its own name.
+
+Every `/agents/session-agent/:sessionId/...` route therefore takes that whole prefixed
+id, and needs no agent of its own in the path.
+
+## Who can open an agent
+
+Each agent carries a list of email addresses in `AgentDirectory`. Everyone on it gets
+the whole agent — its chats, its settings and its keys — so it is a list of owners, not
+of guests. The creator is always on it, and an edit that would remove the editor or
+empty the list is refused: an agent nobody is on is one nobody can get back into.
+
+Two headers carry the caller's authority, and the frontend adds both to every call it
+forwards:
+
+- `x-api-secret` — must equal the Worker's `API_SECRET`. It is what says the call came
+  from the app at all; the Worker is on the public internet, so without it anyone could
+  read an agent's settings, keys included, straight out of the API.
+- `x-user-email` — the signed-in address, taken from Clerk on the server. The Worker
+  trusts it *because* the secret vouched for the caller.
+
+Set `API_SECRET` (`wrangler secret put API_SECRET`) and everything under `/api` and
+`/agents` needs the pair; an address not on an agent's list is told the agent does not
+exist rather than that it may not have it. Session routes are covered by the same list —
+a session id names its agent. Leave `API_SECRET` unset and the Worker is open, which is
+what local development wants and is wrong anywhere else.
+
+Two routes are deliberately outside all of this:
+
+- `POST /telegram/webhook/:agentId` — Telegram proves itself with the per-bot secret
+  token it echoes back, and per-chat access is the bot's own whitelists.
+- `GET /api/mcp/oauth/callback` — arrives from the provider's browser, carrying a state
+  token instead of a header.
 
 ## Capabilities
 

@@ -367,11 +367,14 @@ export function CapabilitySection({
 }
 
 /** Kept next to the sections that render it, so both pages agree on the wording. */
-export function visionBlockedNote(modelLabel: string) {
+export function visionBlockedNote(modelLabel: string, agentId: string) {
   return (
     <>
       {modelLabel} can&rsquo;t see images. Pick a model that can in{" "}
-      <Link href="/settings" className="text-ink underline">
+      <Link
+        href={`/a/${encodeURIComponent(agentId)}/settings`}
+        className="text-ink underline"
+      >
         Settings
       </Link>
       .

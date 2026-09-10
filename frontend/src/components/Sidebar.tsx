@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Search, Settings, SlidersHorizontal, X } from "lucide-react";
+import { ArrowLeft, Search, Settings, SlidersHorizontal, X } from "lucide-react";
 import type { SessionRow } from "@/lib/agent";
 import { formatDate } from "@/lib/format";
 
@@ -10,6 +10,8 @@ import { formatDate } from "@/lib/format";
 const SEARCH_DEBOUNCE_MS = 200;
 
 export function Sidebar({
+  agentId,
+  agentName,
   sessions,
   selected,
   onSelect,
@@ -19,6 +21,9 @@ export function Sidebar({
   onClose,
   onHome,
 }: {
+  /** The agent these sessions belong to. Every link out of here is scoped to it. */
+  agentId: string;
+  agentName: string;
   sessions: SessionRow[];
   selected: string | null;
   onSelect: (id: string) => void;
@@ -75,20 +80,32 @@ export function Sidebar({
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="flex items-center justify-between gap-4 px-6 pt-6 pb-4">
-          <button
-            onClick={() => {
-              onHome();
-              onClose();
-            }}
-            title="Home"
-            className="min-w-0 text-left"
-          >
-            <div className="text-2xl font-[650] leading-[1.25]">Baby.</div>
-            <div className="text-muted text-[14px] font-light leading-[1.43]">
-              Cloud Agent
-            </div>
-          </button>
+        <div className="flex items-center justify-between gap-3 px-6 pt-6 pb-4">
+          <div className="flex min-w-0 items-center gap-2">
+            <Link
+              href="/"
+              title="All agents"
+              aria-label="All agents"
+              className="text-muted hover:bg-canvas-soft hover:text-ink flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition"
+            >
+              <ArrowLeft size={18} strokeWidth={1.75} />
+            </Link>
+            <button
+              onClick={() => {
+                onHome();
+                onClose();
+              }}
+              title="Home"
+              className="min-w-0 text-left"
+            >
+              <div className="truncate text-2xl font-[650] leading-[1.25]">
+                {agentName || "Agent"}
+              </div>
+              <div className="text-muted text-[14px] font-light leading-[1.43]">
+                Cloud agent
+              </div>
+            </button>
+          </div>
           <div className="flex shrink-0 items-center gap-2">
             <button
               onClick={async () => {
@@ -183,7 +200,7 @@ export function Sidebar({
 
         <div className="absolute right-4 bottom-4 flex items-center gap-2">
           <Link
-            href="/capabilities"
+            href={`/a/${encodeURIComponent(agentId)}/capabilities`}
             title="Capabilities"
             aria-label="Capabilities"
             className="border-hairline bg-canvas text-ink hover:bg-canvas-soft flex h-11 w-11 items-center justify-center rounded-full border shadow-sm transition"
@@ -191,7 +208,7 @@ export function Sidebar({
             <SlidersHorizontal size={18} strokeWidth={1.75} />
           </Link>
           <Link
-            href="/settings"
+            href={`/a/${encodeURIComponent(agentId)}/settings`}
             title="Settings"
             aria-label="Settings"
             className="bg-ink text-on-primary flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition hover:opacity-85"

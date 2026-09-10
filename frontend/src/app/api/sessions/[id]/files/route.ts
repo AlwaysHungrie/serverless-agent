@@ -1,5 +1,6 @@
 import { proxy } from "@/lib/proxy";
 import { AGENT_URL } from "@/lib/agent";
+import { agentHeaders } from "@/lib/upstream";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +20,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const res = await fetch(`${AGENT_URL}/agents/session-agent/${encodeURIComponent(id)}/files`, {
       method: "POST",
       body: await request.arrayBuffer(),
-      headers: { "content-type": request.headers.get("content-type") ?? "" },
+      headers: {
+        "content-type": request.headers.get("content-type") ?? "",
+        ...(await agentHeaders()),
+      },
     });
     return new Response(await res.text(), {
       status: res.status,

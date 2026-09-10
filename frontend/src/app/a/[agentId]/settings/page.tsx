@@ -124,6 +124,8 @@ export default function Settings({
   const { agentId } = use(params);
   const [agent, setAgent] = useState<AgentRow | null>(null);
   const [name, setName] = useState("");
+  /** The access list as the box shows it: one address per line. */
+  const [emails, setEmails] = useState("");
   const [models, setModels] = useState<ModelOption[]>([]);
   const [config, setConfig] = useState<Config | null>(null);
   /** Connecting the bot is setup rather than a tool, so it is shown here, first. */
@@ -157,6 +159,7 @@ export default function Settings({
       setConfig(payload.config);
       setAgent(payload.agent ?? null);
       setName(payload.agent?.name ?? "");
+      setEmails(payload.agent?.allowed_emails ?? "");
       setTelegram(
         payload.capabilities.find((c) => c.id === "telegram") ?? null,
       );
@@ -183,6 +186,35 @@ export default function Settings({
       return;
     }
     setAgent((a) => (a ? { ...a, name: cleaned } : a));
+    setError(null);
+  };
+
+  /**
+   * Who may open this agent. Your own address is added back by the Worker whatever
+   * this box says: an agent you edited yourself out of would be one you could not
+   * edit back, and an empty list would strand it for everyone.
+   */
+  const saveEmails = async (next: string) => {
+    if (next.trim() === (agent?.allowed_emails ?? "").trim()) return;
+    setSaving(true);
+    const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ allowed_emails: next }),
+    });
+    setSaving(false);
+    const payload = (await res.json().catch(() => null)) as
+      | (AgentRow & { error?: string })
+      | null;
+    if (!res.ok || !payload?.id) {
+      setError(payload?.error ?? "Couldn't save who can open this agent.");
+      setEmails(agent?.allowed_emails ?? "");
+      return;
+    }
+    setAgent(payload);
+    // Take the stored list back: it is lowercased, de-duplicated and shorn of
+    // anything that was not an address, so the box shows what is actually saved.
+    setEmails(payload.allowed_emails);
     setError(null);
   };
 
@@ -282,6 +314,29 @@ export default function Settings({
                 placeholder="New agent"
                 className="bg-field placeholder:text-faint w-full rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
               />
+            </Row>
+
+            <Row
+              title="Who can open this agent"
+              hint="Email addresses, one per line. Everyone listed gets the whole agent — its chats, its settings and its keys. Your own address stays on the list."
+            >
+              <textarea
+                value={emails}
+                onChange={(e) => setEmails(e.target.value)}
+                onBlur={() => void saveEmails(emails)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setEmails(agent?.allowed_emails ?? "");
+                    e.currentTarget.blur();
+                  }
+                }}
+                rows={3}
+                placeholder="teammate@example.com"
+                className="bg-field placeholder:text-faint w-full resize-y rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
+              />
+              <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+                Anyone not on this list is told the agent does not exist.
+              </p>
             </Row>
 
             <Row

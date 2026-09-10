@@ -1,4 +1,5 @@
 import { AGENT_URL } from "./agent";
+import { agentHeaders } from "./upstream";
 
 /**
  * Forward a request to the agent Worker and hand its response back unchanged.
@@ -8,7 +9,11 @@ import { AGENT_URL } from "./agent";
  */
 export async function proxy(path: string, init?: RequestInit): Promise<Response> {
   try {
-    const res = await fetch(`${AGENT_URL}${path}`, { cache: "no-store", ...init });
+    const res = await fetch(`${AGENT_URL}${path}`, {
+      cache: "no-store",
+      ...init,
+      headers: { ...(init?.headers as Record<string, string>), ...(await agentHeaders()) },
+    });
     return new Response(await res.text(), {
       status: res.status,
       headers: { "content-type": "application/json" },

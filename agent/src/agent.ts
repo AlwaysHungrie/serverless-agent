@@ -17,6 +17,8 @@ import { parseCommand, type Command } from "./commands";
 import type { McpServerRow } from "./mcp";
 import {
   DEFAULT_CONFIG,
+  agentIdOf,
+  type AgentDirectory,
   type Config,
   type Memory,
   type SessionRegistry,
@@ -35,10 +37,23 @@ import {
 export type Env = {
   SessionAgent: DurableObjectNamespace<SessionAgent>;
   SessionRegistry: DurableObjectNamespace<SessionRegistry>;
+  /** The index of which agents exist; a DO namespace cannot be enumerated. */
+  AgentDirectory: DurableObjectNamespace<AgentDirectory>;
   /** Object storage the workspace spills large files into: images, PDFs, clips. */
   FILES: R2Bucket;
+  /**
+   * Fallback OpenRouter key. An agent that has one of its own in its settings spends
+   * that instead, so its rate limits and its bill are its own.
+   */
   OPENROUTER_API_KEY: string;
   MODEL: string;
+  /**
+   * Shared secret the frontend sends on every API call. Set it and the Worker's API
+   * answers nothing but the Telegram webhook without it — which is also what turns
+   * on per-agent access checks, since the same header pair carries the signed-in
+   * address. Unset, the Worker is open: fine locally, wrong in production.
+   */
+  API_SECRET?: string;
   /** Telegram's API host. Only set to stand a local Bot API server in its place. */
   TELEGRAM_API_BASE?: string;
 };
@@ -426,8 +441,17 @@ export class SessionAgent extends Think<Env> {
 
   /* ----------------------------------------------------------------- config -- */
 
+  /**
+   * The agent this session belongs to, read out of the session's own name. A Durable
+   * Object knows nothing about itself but that name, and the owner is encoded in it
+   * precisely so this lookup needs nothing else — see `sessionName` in registry.ts.
+   */
+  private agentId(): string {
+    return agentIdOf(this.name);
+  }
+
   private registry() {
-    return this.env.SessionRegistry.get(this.env.SessionRegistry.idFromName("global"));
+    return this.env.SessionRegistry.get(this.env.SessionRegistry.idFromName(this.agentId()));
   }
 
   /**
@@ -446,6 +470,15 @@ export class SessionAgent extends Think<Env> {
     return this.currentConfig ?? { model: this.env.MODEL, ...DEFAULT_CONFIG };
   }
 
+  /**
+   * The key every model call is billed to: the agent's own when it has one, and the
+   * Worker's otherwise. Read per call rather than cached, because settings are
+   * reloaded each turn and a key pasted mid-conversation should take effect at once.
+   */
+  private openrouterKey(): string {
+    return this.config().openrouter_api_key || this.env.OPENROUTER_API_KEY;
+  }
+
   private model(): string {
     return this.config().model;
   }
@@ -462,7 +495,7 @@ export class SessionAgent extends Think<Env> {
     const session = this.name;
     const self = this;
     return createOpenAI({
-      apiKey: this.env.OPENROUTER_API_KEY,
+      apiKey: this.openrouterKey(),
       baseURL: "https://openrouter.ai/api/v1",
       async fetch(input, init) {
         const request = withCostReporting(init as RequestInit);
@@ -665,7 +698,7 @@ export class SessionAgent extends Think<Env> {
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
-          authorization: `Bearer ${this.env.OPENROUTER_API_KEY}`,
+          authorization: `Bearer ${this.openrouterKey()}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({
@@ -828,7 +861,7 @@ export class SessionAgent extends Think<Env> {
     return {
       config,
       sessionId: this.name,
-      openrouterKey: this.env.OPENROUTER_API_KEY,
+      openrouterKey: this.openrouterKey(),
       registry: this.registry(),
       saveImage: async (dataUrl, prompt) => {
         const id = crypto.randomUUID().slice(0, 12);
@@ -967,7 +1000,7 @@ export class SessionAgent extends Think<Env> {
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${this.env.OPENROUTER_API_KEY}`,
+          Authorization: `Bearer ${this.openrouterKey()}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -1298,15 +1331,15 @@ export class SessionAgent extends Think<Env> {
 
   /**
    * Turn audio into text. OpenRouter has no /audio/transcriptions route, but many of
-   * its models take audio as a chat input part, so this spends the key the Worker
-   * already holds rather than asking the user for a second provider.
+   * its models take audio as a chat input part, so this spends the agent's existing
+   * OpenRouter key rather than asking the user for a second provider.
    */
   private async transcribe(bytes: ArrayBuffer, mime: string, name: string): Promise<string> {
     const format = audioFormat(mime, name);
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${this.env.OPENROUTER_API_KEY}`,
+        Authorization: `Bearer ${this.openrouterKey()}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -1925,7 +1958,11 @@ export class SessionAgent extends Think<Env> {
    */
   private async startOver(row: SessionRow): Promise<string> {
     const tasks = this.taskHandover();
-    const next = await this.registry().freeChatSessionId(row.chat_id, row.chat_thread_id);
+    const next = await this.registry().freeChatSessionId(
+      this.agentId(),
+      row.chat_id,
+      row.chat_thread_id
+    );
     await this.registry().detachChat(this.name);
     await this.registry().create(
       next,

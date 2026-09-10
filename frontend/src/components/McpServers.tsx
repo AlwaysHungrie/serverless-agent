@@ -436,7 +436,10 @@ function oauthResult(): { connected: string | null; failed: string | null } {
  * An OAuth connection leaves the app — the provider's consent screen is the point —
  * and comes back to this page with the result in the query string.
  */
-export function McpServers() {
+export function McpServers({ agentId }: { agentId: string }) {
+  // Servers belong to one agent. Every call below hangs off this, so there is no
+  // path in here that could reach another agent's.
+  const base = `/api/agents/${encodeURIComponent(agentId)}/mcp`;
   const [servers, setServers] = useState<McpServer[]>([]);
   const [redirectUri, setRedirectUri] = useState("");
   // A picked provider, and a counter that remounts the form so it takes the values.
@@ -453,7 +456,7 @@ export function McpServers() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/mcp", { cache: "no-store" });
+    const res = await fetch(base, { cache: "no-store" });
     const payload = (await res.json().catch(() => null)) as {
       servers: McpServer[];
       redirect_uri: string;
@@ -466,7 +469,7 @@ export function McpServers() {
     setServers(payload.servers);
     setRedirectUri(payload.redirect_uri);
     setError(null);
-  }, []);
+  }, [base]);
 
   useEffect(() => {
     void (async () => {
@@ -539,7 +542,7 @@ export function McpServers() {
   ) => {
     const previous = servers.find((s) => s.id === id);
     setServers((all) => all.map((s) => (s.id === id ? { ...s, ...patch } : s)));
-    const res = await fetch(`/api/mcp/${id}`, {
+    const res = await fetch(`${base}/${id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -559,12 +562,11 @@ export function McpServers() {
   };
 
   const add = async (body: Record<string, unknown>) =>
-    (await call("/api/mcp", { method: "POST", body: JSON.stringify(body) })) !==
-    null;
+    (await call(base, { method: "POST", body: JSON.stringify(body) })) !== null;
 
   const remove = async (id: string) => {
     setBusy(true);
-    await fetch(`/api/mcp/${id}`, { method: "DELETE" });
+    await fetch(`${base}/${id}`, { method: "DELETE" });
     setBusy(false);
     setServers((all) => all.filter((s) => s.id !== id));
   };
@@ -590,7 +592,7 @@ export function McpServers() {
           server={server}
           busy={busy}
           onPatch={(patch) =>
-            void call(`/api/mcp/${server.id}`, {
+            void call(`${base}/${server.id}`, {
               method: "PATCH",
               body: JSON.stringify(patch),
             })
@@ -605,7 +607,7 @@ export function McpServers() {
             )
           }
           onAction={(action) =>
-            void call(`/api/mcp/${server.id}/${action}`, {
+            void call(`${base}/${server.id}/${action}`, {
               method: "POST",
               body: JSON.stringify({ return_to: window.location.href }),
             })

@@ -3,6 +3,35 @@ export const AGENT_URL =
   (process.env.USE_LOCAL_AGENT === "true" ? process.env.LOCALHOST_AGENT_URL : process.env.AGENT_URL) ??
   "http://localhost:8787";
 
+/**
+ * An agent: its own bot, its own settings, its own MCP servers, its own sessions.
+ * Agents share nothing — each one is a separate Durable Object in the Worker.
+ */
+export type AgentRow = {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  /**
+   * Who may open this agent: one email address per line, lowercased. Everyone on it
+   * gets the whole agent — its chats, its settings, its keys — so it is a list of
+   * owners rather than of guests.
+   */
+  allowed_emails: string;
+};
+
+/**
+ * A session id is `<agentId>~<local>`, so a session says which agent owns it. That is
+ * what lets every session-scoped route stay agent-free: the id is enough.
+ */
+export const AGENT_SEPARATOR = "~";
+
+/** The agent a session belongs to. Empty when the id is not one of ours. */
+export function agentIdOf(sessionId: string): string {
+  const cut = sessionId.indexOf(AGENT_SEPARATOR);
+  return cut === -1 ? "" : sessionId.slice(0, cut);
+}
+
 export type SessionRow = {
   id: string;
   title: string;
@@ -88,8 +117,9 @@ export type ModelOption = { id: string; label: string; vision: boolean };
 export type ReasoningEffort = "off" | "low" | "medium" | "high";
 
 /**
- * App-wide settings, held in the registry Durable Object's `config` table: tuning
- * (settings page) plus capability switches and their credentials (capabilities page).
+ * One agent's settings, held in that agent's registry Durable Object `config` table:
+ * tuning (settings page) plus capability switches and their credentials
+ * (capabilities page). Nothing here is shared between agents.
  * The 0/1 fields are booleans; SQLite has no boolean type.
  *
  * Secrets read back as `SECRET_MASK`, never as the key itself. Sending the mask back
@@ -114,6 +144,11 @@ export type Config = {
   cap_telegram: number;
   cap_mcp: number;
 
+  /**
+   * The agent's own OpenRouter key. Every model call it makes is billed here, so one
+   * agent's spend and rate limits are its own. Blank falls back to the Worker's key.
+   */
+  openrouter_api_key: string;
   brave_api_key: string;
   searxng_url: string;
   searxng_token: string;

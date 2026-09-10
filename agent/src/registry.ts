@@ -2,11 +2,14 @@ import { DurableObject } from "cloudflare:workers";
 import { McpTokenError, refreshToken, type McpServerRow } from "./mcp";
 
 /**
- * App-wide settings, split in two:
+ * One agent's settings, split in two:
  *
  * - Tuning (model, prompt, temperature…): how the agent talks.
  * - Capabilities (`cap_*` plus the credentials they need): what the agent can *do* —
  *   search, read files, see images, draw, hear, schedule work, remember.
+ *
+ * Every agent has its own `SessionRegistry`, so this row — bot token, MCP servers,
+ * OpenRouter key and all — belongs to that agent alone. Nothing here is shared.
  *
  * One typed column per setting, in a single-row table: settings keep growing, and
  * columns keep them queryable and migratable instead of turning into one opaque blob.
@@ -37,6 +40,12 @@ export type Config = {
   cap_telegram: number;
   cap_mcp: number;
 
+  /**
+   * The agent's own OpenRouter key. Every model call this agent makes is billed to
+   * it, so one agent's spend and rate limits are its own. Blank falls back to the
+   * Worker's `OPENROUTER_API_KEY`, which is what a single-agent deploy uses.
+   */
+  openrouter_api_key: string;
   /** Brave Search API key. The default web search provider when set. */
   brave_api_key: string;
   /** Base URL of a self-hosted SearXNG instance. Only used when `brave_api_key` is empty. */
@@ -83,6 +92,7 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   // connected, so the switch guards nothing the servers do not already guard.
   cap_mcp: 1,
 
+  openrouter_api_key: "",
   brave_api_key: "",
   searxng_url: "",
   searxng_token: "",
@@ -123,6 +133,7 @@ const CONFIG_MIGRATIONS = [
   `cap_mcp INTEGER NOT NULL DEFAULT 1`,
   `searxng_url TEXT NOT NULL DEFAULT ''`,
   `searxng_token TEXT NOT NULL DEFAULT ''`,
+  `openrouter_api_key TEXT NOT NULL DEFAULT ''`,
 ];
 
 /** The `mcp_servers` columns, in write order, excluding the primary key. */
@@ -176,7 +187,7 @@ export const EMPTY_MCP_SERVER: Omit<McpServerRow, "id" | "name" | "url" | "creat
   last_error: "",
 };
 
-/** A fact the agent chose to keep. Memories are app-wide, not per session. */
+/** A fact the agent chose to keep. Memories span an agent, not one session. */
 export type Memory = {
   id: number;
   text: string;
@@ -218,13 +229,36 @@ export type SessionRow = {
  * one well-known object, while each session's data lives in its own SessionAgent.
  */
 /**
+ * Session ids carry the agent that owns them, as `<agentId>~<local>`.
+ *
+ * `SessionAgent` is one Durable Object namespace for the whole Worker, so a session
+ * id has to be unique across every agent — and the ids that are not random are the
+ * ones that would collide: two agents in the same Telegram chat both want `tg-123`,
+ * which would be the same object. The prefix is also how a session finds its agent:
+ * a `SessionAgent` knows nothing but its own name, and reads the owner back out of it.
+ */
+export const AGENT_SEPARATOR = "~";
+
+/** The full session id for a session local to `agentId`. */
+export function sessionName(agentId: string, local: string): string {
+  return `${agentId}${AGENT_SEPARATOR}${local}`;
+}
+
+/** The agent a session id belongs to. Empty when the id is not one of ours. */
+export function agentIdOf(sessionId: string): string {
+  const cut = sessionId.indexOf(AGENT_SEPARATOR);
+  return cut === -1 ? "" : sessionId.slice(0, cut);
+}
+
+/**
  * The session a Telegram conversation maps to. A DM is one chat, a group is another,
  * and a forum topic is its own conversation inside a group — so this is what gives
- * each of them its own session, and keeps giving it the same one.
+ * each of them its own session, and keeps giving it the same one. Two agents are two
+ * different bots, so the same chat under each of them is two separate sessions.
  */
-export function sessionIdForChat(chatId: string, threadId = ""): string {
+export function sessionIdForChat(agentId: string, chatId: string, threadId = ""): string {
   const base = `tg-${chatId.replace("-", "n")}`;
-  return threadId ? `${base}-t${threadId}` : base;
+  return sessionName(agentId, threadId ? `${base}-t${threadId}` : base);
 }
 
 export class SessionRegistry extends DurableObject {
@@ -555,9 +589,9 @@ export class SessionRegistry extends DurableObject {
    * the session it hands its scheduled tasks to has to be the one the next message
    * lands in.
    */
-  freeChatSessionId(chatId: string, threadId = ""): string {
+  freeChatSessionId(agentId: string, chatId: string, threadId = ""): string {
     this.ensureSchema();
-    const base = sessionIdForChat(chatId, threadId);
+    const base = sessionIdForChat(agentId, chatId, threadId);
     if (!this.get(base)) return base;
     for (let n = 2; n < 1000; n++) {
       const candidate = `${base}-g${n}`;
@@ -609,8 +643,9 @@ export class SessionRegistry extends DurableObject {
   }
 
   /**
-   * Memory is app-wide on purpose: a fact worth keeping ("I use pnpm") is worth
-   * keeping in the next session too, which is the whole point of remembering it.
+   * Memory spans the agent on purpose: a fact worth keeping ("I use pnpm") is worth
+   * keeping in the agent's next session too, which is the whole point of remembering
+   * it. It stops there — one agent never reads another's memories.
    */
   remember(text: string, sessionId: string): Memory {
     this.ensureSchema();
@@ -643,5 +678,183 @@ export class SessionRegistry extends DurableObject {
   forget(id: number) {
     this.ensureSchema();
     this.ctx.storage.sql.exec(`DELETE FROM memories WHERE id = ?`, id);
+  }
+
+  /**
+   * Drop everything this agent owns. Called when the agent itself is deleted, after
+   * its sessions have been destroyed: a Durable Object is billed for the bytes it
+   * holds, so an emptied-but-living registry still costs.
+   */
+  async wipe(): Promise<void> {
+    await this.ctx.storage.deleteAll();
+    this.ready = false;
+  }
+}
+
+/* ------------------------------------------------------------- directory -- */
+
+/** An agent: a bot, its settings, its MCP servers, its memories, its sessions. */
+export type AgentRow = {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  /**
+   * Who may open this agent: newline-separated email addresses, lowercased.
+   *
+   * Access is by email rather than by account id because an agent is usually shared
+   * before the people it is shared with have signed in — the address is what the
+   * owner knows, and Clerk hands the same address back once they do. Empty means
+   * nobody but nothing else: an agent with no addresses is unreachable, which is why
+   * creation always seeds it with the creator's own.
+   */
+  allowed_emails: string;
+};
+
+/** The stored form of an access list: lowercased, de-duplicated, one per line. */
+export function normalizeEmails(input: string | string[]): string {
+  const raw = Array.isArray(input) ? input : input.split(/[\n,;]/);
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    const email = entry.trim().toLowerCase();
+    // Enough of a shape check to keep typos and pasted prose out of the list.
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) seen.add(email);
+  }
+  return [...seen].slice(0, 50).join("\n");
+}
+
+/** Whether `email` appears in a stored access list. */
+export function emailAllowed(allowed: string, email: string): boolean {
+  const wanted = email.trim().toLowerCase();
+  if (!wanted) return false;
+  return allowed
+    .split("\n")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(wanted);
+}
+
+/**
+ * The list of agents, in one well-known Durable Object.
+ *
+ * Same reason the session index exists: a Durable Object namespace can be addressed
+ * by name but not enumerated, so "which agents exist" has to be written down
+ * somewhere. This holds names only — everything an agent *is* lives in its own
+ * `SessionRegistry`, which is why deleting an agent is two steps, not one.
+ */
+export class AgentDirectory extends DurableObject {
+  private ready = false;
+
+  private ensureSchema() {
+    if (this.ready) return;
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS agents (
+         id TEXT PRIMARY KEY,
+         name TEXT NOT NULL,
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL,
+         allowed_emails TEXT NOT NULL DEFAULT ''
+       )`
+    );
+    // Bring forward rows created before an agent had an access list.
+    for (const col of [`allowed_emails TEXT NOT NULL DEFAULT ''`]) {
+      try {
+        this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN ${col}`);
+      } catch {
+        // Column already present.
+      }
+    }
+    this.ready = true;
+  }
+
+  /**
+   * Every agent, or — given an email — only the ones that address may open.
+   *
+   * The filter is a substring match on the stored list, then an exact re-check in
+   * TypeScript: SQLite has no split, and `LIKE` alone would let `bob@x.com` match
+   * `rob@x.com`. The narrowing still happens in SQL, so the exact pass only ever
+   * walks rows that could plausibly match.
+   */
+  list(email?: string): AgentRow[] {
+    this.ensureSchema();
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT id, name, created_at, updated_at, allowed_emails FROM agents
+         ORDER BY created_at`
+      )
+      .toArray() as unknown as AgentRow[];
+    if (email === undefined) return rows;
+    return rows.filter((row) => emailAllowed(row.allowed_emails, email));
+  }
+
+  get(id: string): AgentRow | undefined {
+    this.ensureSchema();
+    return this.ctx.storage.sql
+      .exec(
+        `SELECT id, name, created_at, updated_at, allowed_emails FROM agents
+         WHERE id = ? LIMIT 1`,
+        id
+      )
+      .toArray()[0] as unknown as AgentRow | undefined;
+  }
+
+  /**
+   * Whether an address may open this agent. Used on every agent-scoped request, so a
+   * link to an agent someone was never given is indistinguishable from a link to one
+   * that does not exist.
+   */
+  allows(id: string, email: string): boolean {
+    const row = this.get(id);
+    return row ? emailAllowed(row.allowed_emails, email) : false;
+  }
+
+  create(id: string, name: string, allowedEmails: string): AgentRow {
+    this.ensureSchema();
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO agents (id, name, created_at, updated_at, allowed_emails)
+       VALUES (?, ?, ?, ?, ?)`,
+      id,
+      name,
+      now,
+      now,
+      allowedEmails
+    );
+    return { id, name, created_at: now, updated_at: now, allowed_emails: allowedEmails };
+  }
+
+  /**
+   * Replace the access list. The caller keeps their own address on it: an owner who
+   * could edit themselves out would lock everyone, themselves included, out of an
+   * agent that only they could have unlocked.
+   */
+  setAllowedEmails(id: string, allowedEmails: string) {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      `UPDATE agents SET allowed_emails = ?, updated_at = ? WHERE id = ?`,
+      allowedEmails,
+      Date.now(),
+      id
+    );
+  }
+
+  rename(id: string, name: string) {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      `UPDATE agents SET name = ?, updated_at = ? WHERE id = ?`,
+      name,
+      Date.now(),
+      id
+    );
+  }
+
+  touch(id: string) {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(`UPDATE agents SET updated_at = ? WHERE id = ?`, Date.now(), id);
+  }
+
+  remove(id: string) {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(`DELETE FROM agents WHERE id = ?`, id);
   }
 }

@@ -7,15 +7,18 @@ const ACTIONS = ["connect", "disconnect", "refresh"];
 
 export async function POST(
   request: Request,
-  { params }: { params: Promise<{ id: string; action: string }> },
+  { params }: { params: Promise<{ agentId: string; id: string; action: string }> },
 ) {
-  const { id, action } = await params;
+  const { agentId, id, action } = await params;
   if (!ACTIONS.includes(action)) {
     return Response.json({ error: "not found" }, { status: 404 });
   }
-  return proxy(`/api/mcp/${encodeURIComponent(id)}/${action}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: await request.text(),
-  });
+  return proxy(
+    `/api/agents/${encodeURIComponent(agentId)}/mcp/${encodeURIComponent(id)}/${action}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: await request.text(),
+    },
+  );
 }

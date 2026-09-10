@@ -29,6 +29,7 @@ import type {
   ToolData,
 } from "@/app/api/sessions/[id]/chat/route";
 import {
+  agentIdOf,
   capabilityReady,
   describeSessionFailure,
   type Attachment,
@@ -1039,10 +1040,14 @@ export function Chat({
   const bottom = useRef<HTMLDivElement>(null);
   const picker = useRef<HTMLInputElement>(null);
 
-  // Which input capabilities are usable decides what may be attached at all.
+  // Which input capabilities are usable decides what may be attached at all. They
+  // belong to the agent, and the session id says which agent that is — so there is
+  // nothing extra to thread down here.
   useEffect(() => {
     void (async () => {
-      const res = await fetch("/api/config");
+      const agentId = agentIdOf(sessionId);
+      if (!agentId) return;
+      const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/config`);
       const payload = (await res.json().catch(() => null)) as {
         config: Config;
         capabilities: Capability[];
@@ -1056,7 +1061,7 @@ export function Chat({
         ),
       );
     })();
-  }, []);
+  }, [sessionId]);
 
   // An upload that was never sent stays pending in the Durable Object, so the chips
   // are restored when the session is reopened.

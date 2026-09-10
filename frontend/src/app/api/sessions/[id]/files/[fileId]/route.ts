@@ -1,5 +1,6 @@
 import { proxy } from "@/lib/proxy";
 import { AGENT_URL } from "@/lib/agent";
+import { agentHeaders } from "@/lib/upstream";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,8 @@ export async function GET(
 ) {
   const { id, fileId } = await params;
   const res = await fetch(
-    `${AGENT_URL}/agents/session-agent/${encodeURIComponent(id)}/files/${encodeURIComponent(fileId)}`
+    `${AGENT_URL}/agents/session-agent/${encodeURIComponent(id)}/files/${encodeURIComponent(fileId)}`,
+    { headers: await agentHeaders() }
   );
   return new Response(res.body, {
     status: res.status,

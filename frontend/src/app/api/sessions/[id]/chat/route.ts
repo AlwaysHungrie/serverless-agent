@@ -12,6 +12,7 @@ import {
   type Attachment,
   type UsageData,
 } from "@/lib/agent";
+import { agentHeaders } from "@/lib/upstream";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -226,7 +227,7 @@ export async function GET(
   const has = new URL(request.url).searchParams.get("has") ?? "";
   const upstream = await fetch(
     `${agentUrl(id, "live")}?has=${encodeURIComponent(has)}`,
-    { signal: request.signal },
+    { signal: request.signal, headers: await agentHeaders() },
   );
 
   if (upstream.status === 204 || !upstream.body) {
@@ -271,7 +272,7 @@ export async function POST(
     execute: async ({ writer }) => {
       const upstream = await fetch(agentUrl(id, "stream"), {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...(await agentHeaders()) },
         body: JSON.stringify({ message: text, retry }),
         signal: request.signal,
       });

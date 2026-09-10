@@ -4,15 +4,19 @@ import Link from "next/link";
 import { MessageCircle, Send } from "lucide-react";
 
 /**
- * The zero state: no session open. It is the first thing a new user sees and the
- * thing the sidebar logo comes back to, so it says what the agent is and gives the
- * two ways to reach it — here, or from Telegram once the bot is connected.
+ * The zero state: no session open for this agent. It is the first thing a new user
+ * sees and the thing the sidebar logo comes back to, so it says what the agent is and
+ * gives the two ways to reach it — here, or from Telegram once its bot is connected.
  */
 export function Welcome({
+  agentId,
+  agentName,
   onCreate,
   /** The bot's handle, once Telegram is on and set up. Empty until then. */
   botUsername,
 }: {
+  agentId: string;
+  agentName: string;
   onCreate: () => void;
   botUsername: string;
 }) {
@@ -20,7 +24,7 @@ export function Welcome({
     <div className="flex flex-1 items-center justify-center px-6 py-10">
       <div className="w-full max-w-md">
         <h1 className="text-[28px] font-[650] leading-[1.2] md:text-[32px]">
-          Hi. I&rsquo;m Baby.
+          Hi. I&rsquo;m {agentName || "your agent"}.
         </h1>
         <p className="text-muted mt-2 text-[16px] font-light leading-[1.5]">
           Your agent in the cloud. Ask a question, hand me a file, or set
@@ -65,7 +69,7 @@ export function Welcome({
                 any group you add me to.
               </p>
               <Link
-                href="/settings"
+                href={`/a/${encodeURIComponent(agentId)}/settings`}
                 className="border-hairline text-ink hover:bg-canvas-soft mt-4 inline-flex h-11 items-center gap-2 rounded-full border px-5 text-[14px] font-semibold transition"
               >
                 <Send size={16} strokeWidth={1.75} />
