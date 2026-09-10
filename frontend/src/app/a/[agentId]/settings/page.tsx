@@ -21,8 +21,6 @@ import type {
  */
 const OPENROUTER_KEY: CapabilityField = {
   key: "openrouter_api_key",
-  label: "OpenRouter API key",
-  hint: "Every model call this agent makes is billed to this key.",
   secret: true,
   required: true,
   placeholder: "sk-or-v1-…",
@@ -133,14 +131,18 @@ export default function Settings({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   /** What OpenRouter said about the key that was last pasted. Cleared on the next save. */
-  const [keyCheck, setKeyCheck] = useState<{ ok: boolean; error?: string; label?: string } | null>(
-    null,
-  );
+  const [keyCheck, setKeyCheck] = useState<{
+    ok: boolean;
+    error?: string;
+    label?: string;
+  } | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     void (async () => {
-      const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/config`);
+      const res = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/config`,
+      );
       const payload = (await res.json().catch(() => null)) as {
         agent: AgentRow;
         config: Config;
@@ -220,11 +222,14 @@ export default function Settings({
 
   const save = async (patch: Partial<Config>) => {
     setSaving(true);
-    const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/config`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch),
-    });
+    const res = await fetch(
+      `/api/agents/${encodeURIComponent(agentId)}/config`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    );
     setSaving(false);
     const payload = (await res.json().catch(() => null)) as {
       config: Config;
@@ -273,8 +278,8 @@ export default function Settings({
           </span>
         </div>
         <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
-          Change how this agent writes in every one of its sessions. To give it
-          tools, go to{" "}
+          Configure how this agent replies to messages. To manage its
+          capabilities and give it additional tools, go to{" "}
           <Link
             href={`/a/${encodeURIComponent(agentId)}/capabilities`}
             className="text-ink underline"
@@ -298,78 +303,6 @@ export default function Settings({
 
         {config && (
           <div className="mt-8">
-            <Row title="Name" hint="What this agent is called, everywhere.">
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onBlur={() => void rename(name)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                  if (e.key === "Escape") {
-                    setName(agent?.name ?? "");
-                    e.currentTarget.blur();
-                  }
-                }}
-                maxLength={60}
-                placeholder="New agent"
-                className="bg-field placeholder:text-faint w-full rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
-              />
-            </Row>
-
-            <Row
-              title="Who can open this agent"
-              hint="Email addresses, one per line. Everyone listed gets the whole agent — its chats, its settings and its keys. Your own address stays on the list."
-            >
-              <textarea
-                value={emails}
-                onChange={(e) => setEmails(e.target.value)}
-                onBlur={() => void saveEmails(emails)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    setEmails(agent?.allowed_emails ?? "");
-                    e.currentTarget.blur();
-                  }
-                }}
-                rows={3}
-                placeholder="teammate@example.com"
-                className="bg-field placeholder:text-faint w-full resize-y rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
-              />
-              <p className="text-faint mt-2 text-[12px] leading-[1.33]">
-                Anyone not on this list is told the agent does not exist.
-              </p>
-            </Row>
-
-            <Row
-              title="OpenRouter"
-              hint="This agent's own key. Its models, its rate limits, its bill."
-            >
-              <Field
-                field={OPENROUTER_KEY}
-                value={config.openrouter_api_key}
-                onChange={(v) => {
-                  setKeyCheck(null);
-                  set({ openrouter_api_key: v });
-                }}
-              />
-              {keyCheck && (
-                <p
-                  className={`mt-2 text-[12px] leading-[1.33] ${
-                    keyCheck.ok ? "text-muted" : "text-ink"
-                  }`}
-                >
-                  {keyCheck.ok
-                    ? `OpenRouter accepted this key${keyCheck.label ? ` (${keyCheck.label})` : ""}.`
-                    : keyCheck.error}
-                </p>
-              )}
-              {!config.openrouter_api_key && !keyCheck && (
-                <p className="text-faint mt-2 text-[12px] leading-[1.33]">
-                  Without a key this agent falls back to the deployment&rsquo;s
-                  shared one, and shares its rate limits with every other agent.
-                </p>
-              )}
-            </Row>
-
             {telegram && (
               <CapabilitySection
                 capability={telegram}
@@ -479,6 +412,77 @@ export default function Settings({
                 format={(v) => (v === 0 ? "Full history" : `Last ${v}`)}
                 onChange={(v) => set({ context_messages: v })}
               />
+            </Row>
+
+            <Row
+              title="OpenRouter"
+              hint="Your agent cannot function without this."
+            >
+              <Field
+                field={OPENROUTER_KEY}
+                value={config.openrouter_api_key}
+                onChange={(v) => {
+                  setKeyCheck(null);
+                  set({ openrouter_api_key: v });
+                }}
+              />
+              {keyCheck && (
+                <p
+                  className={`mt-2 text-[12px] leading-[1.33] ${
+                    keyCheck.ok ? "text-muted" : "text-ink"
+                  }`}
+                >
+                  {keyCheck.ok
+                    ? `This key${keyCheck.label ? ` (${keyCheck.label})` : ""} is valid.`
+                    : "Invalid key"}
+                </p>
+              )}
+              {!config.openrouter_api_key && !keyCheck && (
+                <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+                  A valid Openrouter API key is required.
+                </p>
+              )}
+            </Row>
+
+            <Row title="Name" hint="What this agent is called, everywhere">
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onBlur={() => void rename(name)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  if (e.key === "Escape") {
+                    setName(agent?.name ?? "");
+                    e.currentTarget.blur();
+                  }
+                }}
+                maxLength={60}
+                placeholder="New agent"
+                className="bg-field placeholder:text-faint w-full rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
+              />
+            </Row>
+
+            <Row
+              title="Manage access"
+              hint="Comma separated, emails of user who have complete access to manage, chat and read all messages of this agent."
+            >
+              <textarea
+                value={emails}
+                onChange={(e) => setEmails(e.target.value)}
+                onBlur={() => void saveEmails(emails)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setEmails(agent?.allowed_emails ?? "");
+                    e.currentTarget.blur();
+                  }
+                }}
+                rows={3}
+                placeholder="teammate@example.com"
+                className="bg-field placeholder:text-faint w-full resize-y rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
+              />
+              <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+                Best to keep this list empty.
+              </p>
             </Row>
           </div>
         )}

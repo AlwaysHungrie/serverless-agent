@@ -165,8 +165,8 @@ export const SECRET_MASK = "••••••••";
 /** Capability metadata, defined once in the Worker and shipped to the browser. */
 export type CapabilityField = {
   key: keyof Config;
-  label: string;
-  hint: string;
+  label?: string;
+  hint?: string;
   secret: boolean;
   /** The field holds a list, one entry per line, edited as chips. */
   list?: boolean;
