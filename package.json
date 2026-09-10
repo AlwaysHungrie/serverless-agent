@@ -1,0 +1,5 @@
+{
+  "name": "serverless-agent",
+  "private": true,
+  "packageManager": "pnpm@10.29.2"
+}
