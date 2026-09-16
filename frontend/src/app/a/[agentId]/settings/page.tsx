@@ -360,7 +360,7 @@ export default function Settings({
                         </span>
                         <span className="text-faint block truncate text-[12px] leading-[1.33]">
                           {m.id}
-                          {!m.vision ? " · (no vision)" : ""}
+                          {!m.vision ? " · (no image)" : ""}
                         </span>
                       </span>
                       {config.model === m.id && (

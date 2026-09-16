@@ -139,6 +139,7 @@ function ServerCard({
   onAction,
   onRemove,
   busy,
+  manage,
 }: {
   server: McpServer;
   onPatch: (patch: Record<string, unknown>) => void;
@@ -147,6 +148,13 @@ function ServerCard({
   onAction: (action: "connect" | "disconnect" | "refresh") => void;
   onRemove: () => void;
   busy: boolean;
+  /**
+   * Whether what the server *is* may be changed here — its name, where it points,
+   * how it authenticates, and whether it stays at all. False leaves what it is *for*:
+   * the switch, its tools, and its OAuth. The Worker refuses the difference, so an
+   * editor shown here would be one that cannot save.
+   */
+  manage: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(server.name);
@@ -226,29 +234,33 @@ function ServerCard({
         >
           <span className="inline-flex items-center gap-2">Refresh tools</span>
         </button>
-        <button onClick={onRemove} disabled={busy} className={actionButton}>
-          <span className="inline-flex items-center gap-2">
-            <Trash2 size={14} strokeWidth={2} />
-            Remove
-          </span>
-        </button>
+        {manage && (
+          <button onClick={onRemove} disabled={busy} className={actionButton}>
+            <span className="inline-flex items-center gap-2">
+              <Trash2 size={14} strokeWidth={2} />
+              Remove
+            </span>
+          </button>
+        )}
       </div>
 
       {open && (
         <div className="mt-5 space-y-4">
-          <div className="flex gap-2">
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onBlur={() =>
-                name.trim() && name !== server.name && onPatch({ name })
-              }
-              aria-label="Server name"
-              className={`${input} flex-1`}
-            />
-          </div>
+          {manage && (
+            <div className="flex gap-2">
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onBlur={() =>
+                  name.trim() && name !== server.name && onPatch({ name })
+                }
+                aria-label="Server name"
+                className={`${input} flex-1`}
+              />
+            </div>
+          )}
 
-          {!server.connected && (
+          {manage && !server.connected && (
             <>
               <input
                 value={url}
@@ -436,10 +448,23 @@ function oauthResult(): { connected: string | null; failed: string | null } {
  * An OAuth connection leaves the app — the provider's consent screen is the point —
  * and comes back to this page with the result in the query string.
  */
-export function McpServers({ agentId }: { agentId: string }) {
+export function McpServers({
+  agentId,
+  meta = false,
+}: {
+  agentId: string;
+  /**
+   * True for the copy inside the meta settings dialog, which owns the server list
+   * however the setting below is left. Anywhere else the list may be the agent's to
+   * build out or not, and `user_servers` is what says which.
+   */
+  meta?: boolean;
+}) {
   // Servers belong to one agent. Every call below hangs off this, so there is no
   // path in here that could reach another agent's.
   const base = `/api/agents/${encodeURIComponent(agentId)}/mcp`;
+  /** The flag that tells the Worker this is the dialog that owns the list. */
+  const asOwner = meta ? "?meta=1" : "";
   const [servers, setServers] = useState<McpServer[]>([]);
   const [redirectUri, setRedirectUri] = useState("");
   // A picked provider, and a counter that remounts the form so it takes the values.
@@ -456,6 +481,8 @@ export function McpServers({ agentId }: { agentId: string }) {
   const [busy, setBusy] = useState(false);
   /** Preset ids this agent's meta settings offer. Empty means every preset. */
   const [templates, setTemplates] = useState<string[]>([]);
+  /** Whether the list itself may be changed from here. */
+  const [manage, setManage] = useState(meta);
 
   const load = useCallback(async () => {
     const res = await fetch(base, { cache: "no-store" });
@@ -488,11 +515,14 @@ export function McpServers({ agentId }: { agentId: string }) {
         { cache: "no-store" },
       );
       const payload = (await res.json().catch(() => null)) as {
-        meta?: { mcp?: { templates?: string[] } };
+        meta?: { mcp?: { templates?: string[]; user_servers?: boolean } };
       } | null;
       setTemplates(payload?.meta?.mcp?.templates ?? []);
+      // The dialog manages the list whatever the setting says; everywhere else the
+      // setting decides. An agent with no meta document has never been narrowed.
+      if (!meta) setManage(payload?.meta?.mcp?.user_servers ?? true);
     })();
-  }, [agentId]);
+  }, [agentId, meta]);
 
   // Tidy the URL once the result has been shown, so a refresh does not replay it.
   useEffect(() => {
@@ -579,11 +609,14 @@ export function McpServers({ agentId }: { agentId: string }) {
   };
 
   const add = async (body: Record<string, unknown>) =>
-    (await call(base, { method: "POST", body: JSON.stringify(body) })) !== null;
+    (await call(`${base}${asOwner}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    })) !== null;
 
   const remove = async (id: string) => {
     setBusy(true);
-    await fetch(`${base}/${id}`, { method: "DELETE" });
+    await fetch(`${base}/${id}${asOwner}`, { method: "DELETE" });
     setBusy(false);
     setServers((all) => all.filter((s) => s.id !== id));
   };
@@ -596,22 +629,25 @@ export function McpServers({ agentId }: { agentId: string }) {
         </p>
       )}
 
-      <McpPresetStrip
-        // Meta settings decide which templates this agent is offered.
-        only={templates}
-        onPick={(picked) => {
-          setPreset(picked);
-          setPicks((n) => n + 1);
-        }}
-      />
+      {manage && (
+        <McpPresetStrip
+          // Meta settings decide which templates this agent is offered.
+          only={templates}
+          onPick={(picked) => {
+            setPreset(picked);
+            setPicks((n) => n + 1);
+          }}
+        />
+      )}
 
       {servers.map((server) => (
         <ServerCard
           key={`${server.id}:${server.name}:${server.url}:${server.header_names.join(",")}`}
           server={server}
           busy={busy}
+          manage={manage}
           onPatch={(patch) =>
-            void call(`${base}/${server.id}`, {
+            void call(`${base}/${server.id}${asOwner}`, {
               method: "PATCH",
               body: JSON.stringify(patch),
             })
@@ -635,7 +671,15 @@ export function McpServers({ agentId }: { agentId: string }) {
         />
       ))}
 
-      <AddServer key={picks} onAdd={add} busy={busy} preset={preset} />
+      {manage ? (
+        <AddServer key={picks} onAdd={add} busy={busy} preset={preset} />
+      ) : (
+        servers.length === 0 && (
+          <p className="text-faint text-[12px] leading-[1.33]">
+            This agent&rsquo;s MCP servers are managed for you.
+          </p>
+        )
+      )}
 
       {redirectUri && (
         <p className="text-faint text-[12px] leading-[1.33]">

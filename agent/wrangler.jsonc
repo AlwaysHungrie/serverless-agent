@@ -22,6 +22,15 @@
     { "binding": "FILES", "bucket_name": "serverless-agent-files" }
   ],
   "vars": {
-    "MODEL": "deepseek/deepseek-v4-flash"
+    "MODEL": "deepseek/deepseek-v4-flash",
+    // What the settings page offers. `vision` is false for a model that cannot be
+    // sent an image; leaving it out means it can. Override per environment — nothing
+    // about this list lives in the code.
+    "MODELS": [
+      { "id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash", "vision": false },
+      { "id": "anthropic/claude-haiku-4.5", "label": "Claude Haiku 4.5", "vision": true },
+      { "id": "openai/gpt-5-mini", "label": "GPT-5 Mini", "vision": true },
+      { "id": "google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "vision": true }
+    ]
   }
 }

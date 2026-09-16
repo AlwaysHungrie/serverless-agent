@@ -281,11 +281,11 @@ export type McpServer = {
  */
 export type MetaSettings = {
   /**
-   * OpenRouter model ids the settings page may offer, typed in rather than picked:
-   * OpenRouter's catalogue is far bigger than the handful the Worker ships. Empty
-   * means the Worker's own list.
+   * The models the settings page may offer, typed in rather than picked: OpenRouter's
+   * catalogue is far bigger than the handful a deployment names. Empty means the
+   * deployment's own list.
    */
-  models: string[];
+  models: ModelChoice[];
   /** Default tuning values. An absent key keeps the factory default. */
   defaults: Partial<Pick<Config, MetaTunableKey>>;
   /**
@@ -305,8 +305,21 @@ export type MetaSettings = {
     templates: string[];
     /** Servers added to the agent when defaults are applied, matched by name. */
     servers: MetaMcpServer[];
+    /**
+     * Whether the agent's own pages may add servers of their own — and rename,
+     * repoint or remove the ones it has. Off leaves the list to the meta dialog; the
+     * owner can still switch a server off, pick its tools and approve its OAuth.
+     */
+    user_servers: boolean;
   };
 };
+
+/**
+ * One model an agent may be switched to: an OpenRouter id, and whether it sees
+ * images. There is no label — a model in the deployment's catalogue is shown under
+ * the name that gives it, and one that is not is shown as the id it is.
+ */
+export type ModelChoice = { id: string; vision: boolean };
 
 export type MetaTunableKey =
   | "model"
@@ -337,7 +350,7 @@ export const EMPTY_META: MetaSettings = {
   locked: [],
   capabilities: {},
   field_options: {},
-  mcp: { templates: [], servers: [] },
+  mcp: { templates: [], servers: [], user_servers: true },
 };
 
 /** A file the user attached, or an image the agent drew, minus the bytes. */

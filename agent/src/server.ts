@@ -1,5 +1,5 @@
 import { routeAgentRequest } from "agents";
-import { MODELS, type Env, type ModelOption } from "./agent";
+import { modelCatalog, type Env, type ModelOption } from "./agent";
 import { Telegram, allowedBy, chatTitle, topicId, type TelegramUpdate } from "./telegram";
 import {
   CAPABILITIES,
@@ -24,6 +24,7 @@ import {
   type MetaCapability,
   type MetaMcpServer,
   type MetaSettings,
+  type ModelChoice,
   type MetaTunableKey,
   type SessionRegistry,
 } from "./registry";
@@ -577,6 +578,31 @@ async function handleMcp(
   const id = rest[0];
   const action = rest[1];
 
+  /**
+   * Whether this call may change *which* servers the agent has.
+   *
+   * Adding one, repointing one, or removing one is the list itself, and whether the
+   * agent's own pages may touch that is a meta setting. `?meta=1` is the dialog that
+   * owns the setting saying so — the same bypass a locked config column gets on the
+   * meta route, and for the same reason: everyone who reaches either is already on
+   * the agent's access list, so this is about which page is asking, not about who.
+   *
+   * Using a server it already has is never refused: switching one off, choosing which
+   * of its tools it may call, approving or dropping its OAuth.
+   */
+  const manages = async () =>
+    url.searchParams.get("meta") === "1" || (await reg.meta()).mcp.user_servers;
+
+  /** The fields of an MCP server that are the list rather than the use of it. */
+  const LIST_FIELDS = ["name", "url", "auth", "headers"] as const;
+
+  const refused = withCors(
+    Response.json(
+      { error: "This agent's MCP servers are managed for you." },
+      { status: 403 }
+    )
+  );
+
   if (request.method === "GET" && !id) {
     const servers = await reg.mcpServers();
     return withCors(
@@ -589,6 +615,7 @@ async function handleMcp(
   }
 
   if (request.method === "POST" && !id) {
+    if (!(await manages())) return refused;
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     let patch: Partial<McpServerRow>;
     try {
@@ -666,6 +693,9 @@ async function handleMcp(
     } catch (err) {
       return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
     }
+    if (LIST_FIELDS.some((key) => patch[key] !== undefined) && !(await manages())) {
+      return refused;
+    }
     if (patch.name && patch.name !== existing.name) {
       try {
         await assertNameFree(reg, patch.name, id);
@@ -696,6 +726,7 @@ async function handleMcp(
   }
 
   if (id && request.method === "DELETE") {
+    if (!(await manages())) return refused;
     await reg.removeMcpServer(id);
     return withCors(Response.json({ ok: true }));
   }
@@ -730,15 +761,18 @@ const LOCKABLE = new Set<string>([
 /**
  * What the settings page may offer as models.
  *
- * A meta list is ids and nothing else, so anything the Worker already knows about
- * keeps its label and its vision flag, and anything else is shown as the id it is.
- * Vision is assumed for a custom id — see `modelSeesImages`.
+ * The agent's own list wins where it has one, and the deployment's catalogue is what
+ * an empty list means. A chosen model keeps its catalogue label when it has one, and
+ * is shown as the id it is otherwise — but the vision flag is always the one chosen
+ * beside it, because that is the answer somebody actually gave for this agent.
  */
-function modelOptions(ids: string[]): ModelOption[] {
-  if (!ids.length) return [...MODELS];
-  return ids.map(
-    (id) => MODELS.find((m) => m.id === id) ?? { id, label: id, vision: true }
-  );
+function modelOptions(chosen: ModelChoice[], catalog: ModelOption[]): ModelOption[] {
+  if (!chosen.length) return catalog;
+  return chosen.map(({ id, vision }) => ({
+    id,
+    label: catalog.find((m) => m.id === id)?.label ?? id,
+    vision,
+  }));
 }
 
 /**
@@ -804,19 +838,23 @@ function validateMeta(
     locked: [],
     capabilities: {},
     field_options: {},
-    mcp: { templates: [], servers: [] },
+    mcp: { templates: [], servers: [], user_servers: DEFAULT_META.mcp.user_servers },
   };
 
   if (body.models !== undefined) {
     if (!Array.isArray(body.models)) throw new Error("models must be an array");
-    const ids = body.models
-      .filter((id): id is string => typeof id === "string")
-      .map((id) => id.trim())
-      .filter((id) => id !== "");
-    for (const id of ids) {
+    const seen = new Set<string>();
+    for (const entry of body.models) {
+      // Bare ids are still accepted: that is what the list held before each model
+      // carried a vision flag, and a stale tab may still be sending them.
+      const id = (typeof entry === "string" ? entry : String(entry?.id ?? "")).trim();
+      if (id === "") continue;
       if (!MODEL_ID.test(id)) throw new Error(`not an OpenRouter model id: ${id}`);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const vision = typeof entry === "string" || entry.vision === undefined ? true : !!entry.vision;
+      meta.models.push({ id, vision });
     }
-    meta.models = [...new Set(ids)];
   }
 
   if (body.field_options !== undefined) {
@@ -907,6 +945,9 @@ function validateMeta(
         ...new Set(body.mcp.templates.filter((t): t is string => typeof t === "string")),
       ];
     }
+    if (body.mcp.user_servers !== undefined) {
+      meta.mcp.user_servers = !!body.mcp.user_servers;
+    }
     if (body.mcp.servers !== undefined) {
       if (!Array.isArray(body.mcp.servers)) throw new Error("mcp.servers must be an array");
       meta.mcp.servers = body.mcp.servers.map((server) => {
@@ -922,18 +963,14 @@ function validateMeta(
     }
   }
 
-  // Two defaults can only be chosen while the agent is being made. The model is one
-  // the agent may already have answered on, and a default server would collide by
-  // name with a server that may well be connected — so after creation the stored
-  // values stand, whatever the dialog sends.
+  // `defaults`, `capabilities` and `mcp.servers` are what the agent was *created*
+  // with: seed values, written into its config and its server list the moment it
+  // existed. Once it does exist there is nothing left for them to seed — the dialog
+  // edits the agent's own settings and its own servers directly from then on — so
+  // they are kept as the record of how it started rather than rewritten.
   if (!creation) {
-    if (previous.defaults.model !== undefined) meta.defaults.model = previous.defaults.model;
-    else delete meta.defaults.model;
+    meta.defaults = previous.defaults;
     meta.mcp.servers = previous.mcp.servers;
-    // Which capabilities an agent started with, and what they started holding, is
-    // likewise a creation-time answer: the agent has been running on them since, and
-    // re-applying a different set would switch things on and off underneath it. What
-    // stays open afterwards is the lock — who may change a capability, not what it is.
     meta.capabilities = previous.capabilities;
   }
 
@@ -1095,20 +1132,30 @@ async function handleAgents(
           return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
         }
       }
-      const key = (body.openrouter_api_key ?? "").trim().slice(0, 1000);
+      // The key comes from the second step with the rest of the agent's settings.
+      // Still read off the top-level field as well: it is the older shape of this
+      // call, and nothing else about it changed.
+      const key = (body.openrouter_api_key ?? meta?.defaults.openrouter_api_key ?? "")
+        .trim()
+        .slice(0, 1000);
 
-      // The creator is always on the list. Creating an agent you cannot open is
-      // never what anyone meant, and an agent whose list is empty is unreachable
-      // by anyone at all — there is no way back into it.
-      const caller = callerEmail(request);
-      const allowed = normalizeEmails([
-        ...(caller ? [caller] : []),
-        ...(Array.isArray(body.allowed_emails)
+      // The list is exactly what was asked for. The creator is not added to it: the
+      // list is the whole answer to who may open this agent, and an address silently
+      // appended to it is one the person who made the agent never agreed to. The
+      // dialog puts their own address in the box for them, so leaving it out is a
+      // deletion rather than an oversight.
+      //
+      // It may not be empty, though. An agent nobody is on is one nobody can reach,
+      // including to delete it.
+      const allowed = normalizeEmails(
+        Array.isArray(body.allowed_emails)
           ? body.allowed_emails
-          : (body.allowed_emails ?? "").split(/[\n,;]/)),
-      ]);
+          : (body.allowed_emails ?? "").split(/[\n,;]/)
+      );
       if (env.API_SECRET && !allowed) {
-        return withCors(Response.json({ error: "sign in to create an agent" }, { status: 401 }));
+        return withCors(
+          Response.json({ error: "at least one email is required" }, { status: 400 })
+        );
       }
 
       // The key is checked before the agent exists, not after. A typo would
@@ -1140,8 +1187,8 @@ async function handleAgents(
         await reg.setMeta(meta);
         await applyMeta(reg, meta, env, url.origin, row.id);
       }
-      // Last, so it wins: a key typed into the first step is about this one agent,
-      // and a default key is about every agent made this way.
+      // Already written by `applyMeta` when it came from the settings step; this is
+      // for the caller that still sends it at the top level.
       if (key) await reg.setConfig({ openrouter_api_key: key }, env.MODEL);
       return withCors(Response.json({ ...row, ...(openrouter ? { openrouter } : {}) }));
     }
@@ -1152,7 +1199,7 @@ async function handleAgents(
   // agent to hang them off. Nothing here belongs to anyone, so nothing is checked
   // beyond the gate every /api route is already behind.
   if (agentId === "catalog" && request.method === "GET") {
-    return withCors(Response.json({ models: MODELS, capabilities: CAPABILITIES }));
+    return withCors(Response.json({ models: modelCatalog(env), capabilities: CAPABILITIES }));
   }
 
   const agent: AgentRow | undefined = await dir.get(agentId);
@@ -1228,7 +1275,7 @@ async function handleAgents(
         Response.json({
           agent,
           config: redact(await reg.config(env.MODEL)),
-          models: modelOptions(meta.models),
+          models: modelOptions(meta.models, modelCatalog(env)),
           capabilities: capabilitiesFor(meta),
           // What the agent's own pages may not show or change. They are decided in
           // the meta dialog, so a page that drew them would be offering an edit that
@@ -1251,7 +1298,11 @@ async function handleAgents(
       const meta = await reg.meta();
       // Which ids this agent may be switched between is a meta setting, so it is
       // enforced here rather than in `validateConfig`, which cannot see the document.
-      if (patch.model !== undefined && meta.models.length && !meta.models.includes(patch.model)) {
+      if (
+        patch.model !== undefined &&
+        meta.models.length &&
+        !meta.models.some((m) => m.id === patch.model)
+      ) {
         return withCors(
           Response.json({ error: `model not offered: ${patch.model}` }, { status: 400 })
         );
@@ -1301,14 +1352,20 @@ async function handleAgents(
           meta: redactMeta(await reg.meta()),
           // The catalogues the dialog picks from: it never keeps its own copy of
           // what models exist or what a capability's fields are.
-          models: MODELS,
+          models: modelCatalog(env),
           capabilities: CAPABILITIES,
         })
       );
     }
     if (request.method === "PATCH") {
       const body = (await request.json().catch(() => ({}))) as Partial<MetaSettings> & {
-        apply?: boolean;
+        /**
+         * The agent's own settings, edited in the same dialog. Meta settings are the
+         * settings page plus the locks, so the two are saved together — and in this
+         * order, so a model id added to the list above is already offered by the time
+         * the setting that names it is written.
+         */
+        config?: Partial<Config>;
       };
       let meta: MetaSettings;
       try {
@@ -1317,15 +1374,34 @@ async function handleAgents(
         return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
       }
       const saved = await reg.setMeta(meta);
-      // Saving what the defaults are and pushing them onto the agent are separate
-      // acts; the dialog asks for both at once when that is what was meant.
-      const applied = body.apply
-        ? await applyMeta(reg, saved, env, url.origin, agentId)
-        : undefined;
+
+      let config: Config | undefined;
+      if (body.config) {
+        let patch: Partial<Config>;
+        try {
+          patch = validateConfig(body.config);
+        } catch (err) {
+          return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+        }
+        if (
+          patch.model !== undefined &&
+          saved.models.length &&
+          !saved.models.some((m) => m.id === patch.model)
+        ) {
+          return withCors(
+            Response.json({ error: `model not offered: ${patch.model}` }, { status: 400 })
+          );
+        }
+        // Deliberately not filtered by `lockedColumns`: a lock says the agent's own
+        // pages may not touch a setting, and this is the page that decides the lock.
+        config = await reg.setConfig(patch, env.MODEL);
+        await syncWebhook(config, url.origin, agentId, env.TELEGRAM_API_BASE);
+      }
+
       return withCors(
         Response.json({
           meta: redactMeta(saved),
-          ...(applied ? { config: redact(applied.config), added: applied.added } : {}),
+          ...(config ? { config: redact(config) } : {}),
         })
       );
     }

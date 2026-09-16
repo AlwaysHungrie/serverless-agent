@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Plus, SlidersHorizontal } from "lucide-react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth, useUser } from "@clerk/nextjs";
 import { AuthModal } from "@/components/auth/AuthModal";
+import { ChipList } from "@/components/CapabilitySection";
 import { UserMenu } from "@/components/auth/UserMenu";
 import {
   MetaSettingsDialog,
@@ -70,14 +71,13 @@ export default function Agents() {
   }, [load, isLoaded, isSignedIn]);
 
   /**
-   * Make the agent, then open it. The name and the key are asked for up front, so a
+   * Make the agent, then open it. The second step asks for the OpenRouter key, so a
    * new agent arrives able to answer — which is why this lands on its chats rather
    * than on its settings. A rejected key never gets this far: the Worker checks it
    * before it creates anything, and the dialog stays open with the reason.
    */
   const create = async (
     name: string,
-    key: string,
     emails: string,
     meta: MetaSettings,
   ): Promise<string | null> => {
@@ -87,10 +87,10 @@ export default function Agents() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name,
-        openrouter_api_key: key,
         allowed_emails: emails,
-        // The second step. Creation is the only time the default model and the
-        // default MCP servers can be chosen, so they travel with this call.
+        // The second step: everything the agent is created holding, the OpenRouter
+        // key included. Creation is the only time the default MCP servers can be
+        // chosen, so they travel with this call too.
         meta,
       }),
     });
@@ -298,14 +298,13 @@ export default function Agents() {
 }
 
 /**
- * Who the agent is, then what it is: name and key first, its defaults second.
+ * Who the agent is, then what it is: name and access first, its settings second.
  *
- * The key is asked for here rather than left to Settings because it is what makes an
- * agent able to answer at all. The second step is meta settings, and it is a step
- * rather than something to come back to: the default model and the default MCP
- * servers can only be chosen while the agent is being made — a model default applied
- * later would move an agent that has already answered on one, and a default server
- * added later would collide by name with one that may be connected.
+ * The second step is meta settings, which is the whole of the agent's configuration —
+ * the OpenRouter key that makes it able to answer at all included, so there is no
+ * reason to ask for it twice. It is a step rather than something to come back to
+ * because the MCP servers an agent is created with can only be chosen here: one added
+ * later would collide by name with a server that may already be connected.
  */
 function NewAgent({
   busy,
@@ -317,16 +316,24 @@ function NewAgent({
   /** Resolves to an error to show in the dialog, or null once the agent opens. */
   onCreate: (
     name: string,
-    key: string,
     emails: string,
     meta: MetaSettings,
   ) => Promise<string | null>;
 }) {
+  const { user } = useUser();
+  const ownEmail = (
+    user?.primaryEmailAddress?.emailAddress ?? ""
+  ).toLowerCase();
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState("");
-  const [key, setKey] = useState("");
-  /** Extra addresses, free text. Your own is added by the Worker regardless. */
+  /**
+   * Who may open the agent, one address per line. This is the whole answer: nothing
+   * is added to it on the way through, so an agent created without your own address
+   * on the list is one you cannot open.
+   */
   const [emails, setEmails] = useState("");
+  /** Whether the signed-in address has been put in the box, which happens once. */
+  const seeded = useRef(false);
   const [meta, setMeta] = useState<MetaSettings>(EMPTY_META);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
@@ -336,6 +343,20 @@ function NewAgent({
   useEffect(() => {
     field.current?.focus();
   }, []);
+
+  /**
+   * Your own address, waiting in the box.
+   *
+   * Only once, and only as a starting point: taking it out is a deliberate act — you
+   * are making an agent for somebody else — and putting it back every render would
+   * make that impossible. Clerk resolves the user after the first paint, so this
+   * cannot simply be the initial state.
+   */
+  useEffect(() => {
+    if (seeded.current || !ownEmail) return;
+    seeded.current = true;
+    setEmails(ownEmail);
+  }, [ownEmail]);
 
   // The catalogues the second step picks from. There is no agent to hang them off
   // yet, so they come from the deployment rather than from one agent's config.
@@ -354,7 +375,7 @@ function NewAgent({
   const submit = async () => {
     const cleaned = name.trim();
     if (!cleaned || busy) return;
-    setError(await onCreate(cleaned, key.trim(), emails.trim(), meta));
+    setError(await onCreate(cleaned, emails.trim(), meta));
   };
 
   if (step === 2) {
@@ -383,7 +404,6 @@ function NewAgent({
               onChange={setMeta}
               models={models}
               capabilities={capabilities}
-              creation
             />
           </div>
 
@@ -440,47 +460,26 @@ function NewAgent({
           />
         </label>
 
-        <label className="mt-4 block">
-          <span className="block text-[14px] font-semibold leading-[1.43]">
-            OpenRouter API key
-          </span>
-          <span className="text-muted block text-[12px] font-light leading-[1.33]">
-            Optional, gets your agent running from the get-go. You can always
-            add it later in Settings.
-          </span>
-          <input
-            type="password"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && name.trim()) setStep(2);
-              if (e.key === "Escape") onCancel();
-            }}
-            placeholder="sk-or-v1-…"
-            className="bg-field placeholder:text-faint mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none"
-          />
-        </label>
-
-        <label className="mt-4 block">
+        {/* Not a `label`: the chips are buttons, and a label wrapping several
+            controls has nothing to point at. */}
+        <div className="mt-4">
           <span className="block text-[14px] font-semibold leading-[1.43]">
             Who can access this agent
           </span>
           <span className="text-muted block text-[12px] font-light leading-[1.33]">
-            Comma-separated emails. These people can message your agent, manage
-            it, and read its chats on your behalf. Leave empty if unsure, after
-            creation you can connect Telegram to let others message it.
+            Users who will have complete access to this agent including all chat
+            sessions and settings. After creation you can connect Telegram to
+            let others message it.
           </span>
-          <textarea
-            value={emails}
-            onChange={(e) => setEmails(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onCancel();
-            }}
-            rows={2}
-            placeholder="teammate@example.com"
-            className="bg-field placeholder:text-faint mt-2 w-full resize-y rounded-[16px] px-4 py-3 text-[14px] outline-none"
-          />
-        </label>
+          <div className="mt-2">
+            <ChipList
+              value={emails}
+              onChange={setEmails}
+              placeholder="teammate@example.com"
+              emptyNote="At least one address required."
+            />
+          </div>
+        </div>
 
         {error && <p className="mt-3 text-[12px] leading-[1.33]">{error}</p>}
 
@@ -493,7 +492,7 @@ function NewAgent({
           </button>
           <button
             onClick={() => setStep(2)}
-            disabled={busy || name.trim() === ""}
+            disabled={busy || name.trim() === "" || emails.trim() === ""}
             className="bg-ink text-on-primary h-10 rounded-full px-5 text-[14px] font-semibold transition hover:opacity-85 disabled:opacity-40"
           >
             Next

@@ -126,12 +126,16 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
  */
 export type MetaSettings = {
   /**
-   * The OpenRouter model ids the settings page may offer, typed in rather than
-   * picked: OpenRouter's catalogue is far larger than the handful the Worker knows
-   * about, and a deployment that wants one of the others should not need a release.
-   * Empty means the Worker's own list.
+   * The models the settings page may offer, typed in rather than picked: OpenRouter's
+   * catalogue is far larger than the handful a deployment names in `MODELS`, and an
+   * agent that wants one of the others should not need a release. Empty means the
+   * deployment's own list.
+   *
+   * Each carries its own `vision`, because an id typed in is one nothing else knows
+   * anything about — whether it can be sent an image is a thing only the person
+   * adding it can say.
    */
-  models: string[];
+  models: ModelChoice[];
   /** Default tuning values. A key that is absent keeps the factory default. */
   defaults: Partial<Pick<Config, MetaTunableKey>>;
   /**
@@ -154,8 +158,26 @@ export type MetaSettings = {
     templates: string[];
     /** Servers added to the agent when the defaults are applied, matched by name. */
     servers: MetaMcpServer[];
+    /**
+     * Whether the agent's own pages may add servers of their own — and rename, repoint
+     * or remove the ones it has.
+     *
+     * On is the open arrangement: the servers above are a starting point and the agent
+     * builds out the rest. Off makes the list this dialog's alone, which is what an
+     * agent handed to somebody else wants — they can switch a server off, pick which
+     * of its tools it may call and approve its OAuth, because that is using what they
+     * were given, but the list itself is not theirs to change.
+     */
+    user_servers: boolean;
   };
 };
+
+/**
+ * One model an agent may be switched to: an OpenRouter id, and whether it sees images.
+ * No label — a model that is in the deployment's catalogue is shown under the name
+ * that gives it, and one that is not is shown as the id it is.
+ */
+export type ModelChoice = { id: string; vision: boolean };
 
 /** The tuning settings a default may be given for. */
 export type MetaTunableKey =
@@ -193,7 +215,7 @@ export const DEFAULT_META: MetaSettings = {
   locked: [],
   capabilities: {},
   field_options: {},
-  mcp: { templates: [], servers: [] },
+  mcp: { templates: [], servers: [], user_servers: true },
 };
 
 /** The config columns, in the order they are written, excluding the primary key. */
@@ -622,6 +644,12 @@ export class SessionRegistry extends DurableObject {
       return {
         ...DEFAULT_META,
         ...stored,
+        // The list was bare ids before each model carried its own vision flag. An
+        // agent stored back then said nothing about images either way, which is the
+        // same thing an unknown id says: assume it sees them.
+        models: (stored.models ?? []).map((m) =>
+          typeof m === "string" ? { id: m, vision: true } : m
+        ),
         mcp: { ...DEFAULT_META.mcp, ...(stored.mcp ?? {}) },
       };
     } catch {

@@ -8,6 +8,16 @@ isolated DOs with their own SQLite database and message history.
 The model is served through OpenRouter: `deepseek/deepseek-v4-flash`, overridable via the
 `MODEL` var in `wrangler.jsonc`.
 
+Which models an agent may be switched *between* is the `MODELS` var beside it — a JSON
+array of `{ "id", "label", "vision" }`. Nothing about that list lives in the code, so a
+deployment adds or drops a model without a release. `vision` is false for a model that
+cannot be sent an image, and leaving it out means it can; it is the one thing that
+cannot be looked up, and getting it wrong means a photo fails at the provider instead
+of at the upload. With `MODELS` unset the catalogue is just the `MODEL` above.
+
+Meta settings may go further and name any OpenRouter id at all, with its own answer to
+the same question — see the model list in that dialog.
+
 ## Run locally
 
 ```bash
@@ -93,8 +103,15 @@ id, and needs no agent of its own in the path.
 
 Each agent carries a list of email addresses in `AgentDirectory`. Everyone on it gets
 the whole agent — its chats, its settings and its keys — so it is a list of owners, not
-of guests. The creator is always on it, and an edit that would remove the editor or
-empty the list is refused: an agent nobody is on is one nobody can get back into.
+of guests.
+
+At creation the list is exactly what was asked for: nothing is added to it, so an agent
+created without your own address on it is one you cannot open. The create dialog puts
+your address in the box for you, which makes leaving it out a deliberate act rather
+than an oversight. Editing the list afterwards is different — the editor is kept on it,
+because removing yourself would hand the agent to the remaining addresses and lock you
+out of the page that could undo it. Either way the list may not end up empty: an agent
+nobody is on is one nobody can get back into.
 
 Two headers carry the caller's authority, and the frontend adds both to every call it
 forwards:
@@ -146,6 +163,15 @@ Memory is app-wide rather than per session: a fact worth keeping ("I use pnpm") 
 keeping in the next session too. Recent memories are injected into the system prompt, so
 the model can use what it knows without spending a round trip to discover that it knows
 it.
+
+MCP servers are the one capability the owner normally builds out themselves, and meta
+settings can take that back: `mcp.user_servers` decides whether the capabilities page
+may add a server, rename one, repoint one or remove one. Off leaves the list to the meta
+dialog — the owner can still switch a server off, choose which of its tools the agent
+may call and approve its OAuth, because that is using what they were given rather than
+changing what it is. The Worker refuses the difference on `/api/agents/:agentId/mcp`;
+the meta dialog passes `?meta=1` to say the call is coming from the page that owns the
+setting, the same bypass a locked config column gets on the meta route.
 
 Scheduled tasks use the Agents SDK's own scheduling (`schedule`/`getSchedules`), so they
 survive eviction. A scheduled turn writes into the transcript like any other, and bills

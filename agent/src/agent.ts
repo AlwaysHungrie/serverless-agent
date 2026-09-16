@@ -48,6 +48,20 @@ export type Env = {
   OPENROUTER_API_KEY: string;
   MODEL: string;
   /**
+   * The models this deployment offers, as JSON: `[{ "id", "label", "vision" }, …]`.
+   *
+   * A catalogue, not a constant. Which models are worth offering changes faster than
+   * this Worker does — a provider ships one, another deprecates one — and that is a
+   * question about the deployment, not about the code. Wrangler hands JSON `vars`
+   * back already parsed, so it may arrive as an array or as the string a secret or a
+   * `.dev.vars` line would give; both are read.
+   *
+   * `vision` is the part that cannot be guessed. A model that cannot be sent an
+   * image has to say so, or the first photo someone attaches fails at the provider
+   * with a message about a field they never filled in.
+   */
+  MODELS?: string | ModelOption[];
+  /**
    * Shared secret the frontend sends on every API call. Set it and the Worker's API
    * answers nothing but the Telegram webhook without it — which is also what turns
    * on per-agent access checks, since the same header pair carries the signed-in
@@ -140,26 +154,39 @@ export const MAX_MESSAGE_PAGE = 200;
 /** A model the settings page may offer: what it is called, and whether it sees images. */
 export type ModelOption = { id: string; label: string; vision: boolean };
 
-/** The models the app ships with. Meta settings may name any other OpenRouter id. */
-export const MODELS: ModelOption[] = [
-  { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", vision: false },
-  { id: "anthropic/claude-haiku-4.5", label: "Claude Haiku 4.5", vision: true },
-  { id: "openai/gpt-5-mini", label: "GPT-5 Mini", vision: true },
-  { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash", vision: true },
-];
-
 /**
- * Whether the chosen model can be sent an image at all.
+ * The models this deployment offers, read from `MODELS`.
  *
- * A model the Worker ships answers for itself. One typed into meta settings is an
- * OpenRouter id we know nothing about, so it is taken at its word: refusing images
- * to every custom model would make image input unusable for exactly the deployments
- * that went and picked their own. A model that cannot see them fails at the call,
- * with OpenRouter's own message.
+ * Nothing is hardcoded here. A deployment that has not said what it offers falls back
+ * to the one model it must have named anyway — the `MODEL` every agent is seeded
+ * with — rather than to a list baked in at some point in the past and quietly wrong
+ * ever since. That model is assumed to see images for the same reason a custom id is:
+ * see `modelSeesImages`.
  */
-function modelSeesImages(model: string): boolean {
-  const known = MODELS.find((m) => m.id === model);
-  return known ? known.vision : true;
+export function modelCatalog(env: Env): ModelOption[] {
+  const fallback = [{ id: env.MODEL, label: env.MODEL, vision: true }];
+  const raw = env.MODELS;
+  if (!raw) return fallback;
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // A catalogue nobody can read is not worth failing every request over.
+      return fallback;
+    }
+  }
+  if (!Array.isArray(parsed)) return fallback;
+  const models = parsed
+    .filter((m): m is Record<string, unknown> => !!m && typeof m === "object")
+    .map((m) => ({
+      id: String(m.id ?? "").trim(),
+      label: String(m.label ?? m.id ?? "").trim(),
+      // Absent means yes: only a model that cannot see images has to say so.
+      vision: m.vision === undefined ? true : !!m.vision,
+    }))
+    .filter((m) => m.id !== "");
+  return models.length ? models.map((m) => ({ ...m, label: m.label || m.id })) : fallback;
 }
 
 /** Fallback per-token pricing, used when OpenRouter does not return a cost. */
@@ -495,6 +522,26 @@ export class SessionAgent extends Think<Env> {
       ? await this.registry().recall("", 50)
       : [];
     this.mcpServers = enabled(this.currentConfig, "mcp") ? await this.registry().mcpServers() : [];
+  }
+
+  /**
+   * Whether the chosen model can be sent an image at all.
+   *
+   * The agent's own list answers first: a model named in meta settings was typed in
+   * beside a checkbox saying whether it sees images, and that answer is about this
+   * agent. Failing that, the deployment's catalogue. An id in neither is taken at its
+   * word — refusing images to every model nobody wrote down would make image input
+   * unusable for exactly the deployments that went and picked their own, and a model
+   * that cannot see them fails at the call with OpenRouter's own message.
+   *
+   * Read here rather than in `loadConfig` because it is only ever needed when an
+   * image actually turns up, and a turn of plain text should not pay for the lookup.
+   */
+  private async modelSeesImages(model: string): Promise<boolean> {
+    const chosen = (await this.registry().meta()).models.find((m) => m.id === model);
+    if (chosen) return chosen.vision;
+    const known = modelCatalog(this.env).find((m) => m.id === model);
+    return known ? known.vision : true;
   }
 
   private config(): Config {
@@ -1287,7 +1334,7 @@ export class SessionAgent extends Think<Env> {
       }
       // Refuse here rather than at turn time: by the time the model refuses, the
       // message and the attachment have already been stored.
-      if (!modelSeesImages(config.model)) {
+      if (!(await this.modelSeesImages(config.model))) {
         return {
           body: {
             error: `${config.model} cannot see images. Pick a multimodal model under Settings.`,
@@ -1704,7 +1751,7 @@ export class SessionAgent extends Think<Env> {
       const isImage = file.mime.startsWith("image/");
       const isAudio = file.mime.startsWith("audio/") || file.mime.startsWith("video/");
       const allowed = isImage
-        ? enabled(config, "vision") && modelSeesImages(config.model)
+        ? enabled(config, "vision") && (await this.modelSeesImages(config.model))
         : isAudio
           ? enabled(config, "audio_input")
           : enabled(config, "file_ingest");

@@ -62,7 +62,9 @@ Two pages sit behind the buttons at the bottom of the sidebar:
   and the ones needing a key say so. See [agent/README.md](agent/README.md#capabilities).
 
 The default model is `deepseek/deepseek-v4-flash` on OpenRouter, set by the `MODEL` var in
-`agent/wrangler.jsonc` and overridable in Settings. Image input needs a multimodal model.
+`agent/wrangler.jsonc` and overridable in Settings. What Settings offers is the `MODELS`
+var beside it, and meta settings can widen that per agent. Image input needs a multimodal
+model, which is what each entry's `vision` flag records.
 
 ## Costs
 
