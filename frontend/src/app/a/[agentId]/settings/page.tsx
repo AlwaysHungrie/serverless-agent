@@ -221,7 +221,8 @@ export default function Settings({
     });
     setSaving(false);
     const payload = (await res.json().catch(() => null)) as
-      (AgentRow & { error?: string }) | null;
+      | (AgentRow & { error?: string })
+      | null;
     if (!res.ok || !payload?.id) {
       setError(payload?.error ?? "Couldn't save who can open this agent.");
       setEmails(agent?.allowed_emails ?? "");
@@ -508,7 +509,7 @@ export default function Settings({
 
             <Row
               title="Manage access"
-              hint="Everyone here has complete access to manage, chat and read all messages of this agent."
+              hint="Users who have complete access to manage, chat and read all messages of this agent."
             >
               <ChipList
                 value={others}
