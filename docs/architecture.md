@@ -70,10 +70,14 @@ It is reached from a browser, not from this app's environment:
 [identity.ts](../frontend/src/lib/identity.ts) reads both at call time and attaches them
 to every `/api` call; [upstream.ts](../frontend/src/lib/upstream.ts) passes them through
 to the Worker untouched and skips the Clerk token entirely when it sees them, so the two
-identities never mix on one request. With a secret present the sign-in dialog is
-replaced by an address box, and whatever is typed is who you are from the next call
-onward. The secret therefore lives in one browser and in the Worker, and nowhere in
-between.
+identities never mix on one request. The secret therefore lives in one browser and in
+the Worker, and nowhere in between.
+
+Both keys are set by hand, in devtools, and reloaded. **Nothing in the app writes
+either one** — there is no screen that asks and no code path that sets them, so nothing
+here can be talked into opening the door for somebody. Logging out clears both: leaving
+the secret behind would strand the browser signed out of the back door with no screen
+anywhere that could put an address back.
 
 Three consequences worth stating plainly:
 
@@ -89,8 +93,11 @@ Three consequences worth stating plainly:
   visitor. The pages are shells; the gate was always on the other side of `AGENT_URL`.
   What replaces it, for the visitor rather than for the data, is `useIdentity()` — the
   home page draws the front door, and [the agent
-  layout](../frontend/src/app/a/[agentId]/layout.tsx) sends a signed-out visitor home,
-  which is what the middleware redirect did.
+  layout](../frontend/src/app/a/[agentId]/layout.tsx) says so and stops. Nothing
+  redirects: a page that navigates away on its own takes its own explanation with it,
+  so the way out is a button instead. An agent that does not exist, or is not yours,
+  is the same sentence — the Worker answers all three cases with a 404 so that an id
+  cannot be probed for existence.
 - **Images need help.** A browser attaches none of our headers to a subresource it
   fetches itself, so under the back door an `<img src>` pointed at a guarded route would
   401. `useAuthedUrl` reads the bytes with headers attached and hands back a blob URL.

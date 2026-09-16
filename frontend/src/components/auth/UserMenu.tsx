@@ -11,8 +11,8 @@ import { useIdentity } from "@/lib/identity";
  * branding; none of that has a place here. This is the picture and a way out.
  *
  * An impersonated address has no Clerk user behind it and so no picture; it gets its
- * first letter on a plain disc, and "Log out" puts the address box back rather than
- * ending a session there was never one of.
+ * first letter on a plain disc, and logging out clears the two localStorage keys
+ * rather than ending a session there was never one of.
  */
 export function UserMenu() {
   const { user } = useUser();
@@ -84,7 +84,7 @@ export function UserMenu() {
             }}
             className="hover:bg-canvas-soft w-full cursor-pointer rounded-[12px] px-3 py-2 text-left text-[14px] leading-[1.43] transition"
           >
-            {mode === "local" ? "Use another address" : "Log out"}
+            Log out
           </button>
         </div>
       )}

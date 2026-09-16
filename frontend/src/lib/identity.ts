@@ -13,17 +13,23 @@ import { useAuth, useClerk, useUser } from "@clerk/nextjs";
  * that identity passes through this file — the browser never holds the token and
  * never needs to.
  *
- * **Local** is the back door, and it exists for development. Put the deployment's
- * `API_SECRET` in localStorage and the Clerk dialog is replaced by a box that takes
- * any address at all: whatever you type is who the Worker treats you as, with no
- * sign-in and no proof. That is the whole point — it is the fastest way to be a
- * second user, or a user who has not signed up, or the address on an agent's access
- * list you want to test against.
+ * **Local** is the back door, and it exists for development. Set both keys in
+ * localStorage by hand and you are that address as far as the Worker is concerned,
+ * with no sign-in and no proof:
  *
- * The secret is read at call time rather than held in React state, because it is also
- * needed from places that are not components. Pasting it into localStorage in devtools
- * and reloading is the intended way to turn this on; there is no UI that sets it,
- * deliberately, so nothing in the app can be tricked into writing one.
+ * ```js
+ * localStorage.API_SECRET = "<the deployment secret>"
+ * localStorage.API_EMAIL  = "whoever@example.com"
+ * ```
+ *
+ * Then reload. It is the fastest way to be a second user, or a user who has not signed
+ * up, or the address on an agent's access list you want to test against.
+ *
+ * Nothing in the app writes either key. There is no screen that asks for them and no
+ * code path that sets them, deliberately: devtools is the only way in, so nothing here
+ * can be tricked into opening the door for somebody. Both are read at call time rather
+ * than held in React state, because they are needed from places that are not
+ * components.
  */
 
 /** Where the back door's two halves live. Names chosen to be typed by hand. */
@@ -168,9 +174,7 @@ export type Identity = {
   /** The address in play, lowercased, or "" when nobody is signed in. */
   email: string;
   signedIn: boolean;
-  /** Local mode only: become this address. Ignored under Clerk. */
-  signInAs: (email: string) => void;
-  /** Stop being whoever you are — clears the local address, or ends the session. */
+  /** Stop being whoever you are: clears both local keys, or ends the Clerk session. */
   signOut: () => void;
 };
 
@@ -194,16 +198,13 @@ export function useIdentity(): Identity {
       ? null
       : { secret: snap.slice(0, snap.indexOf("\n")), email: snap.slice(snap.indexOf("\n") + 1) };
 
-  const signInAs = useCallback((next: string) => {
-    write(EMAIL_KEY, next.trim().toLowerCase());
-    announce();
-  }, []);
-
   const signOut = useCallback(() => {
     if (localSecret()) {
-      // The secret stays. Signing out of an impersonated address means picking a
-      // different one, not giving up the back door.
+      // Both keys, not just the address. Leaving the secret behind would strand the
+      // browser between the two worlds: signed out of the back door, with no screen
+      // anywhere that could put an address back.
       write(EMAIL_KEY, "");
+      write(SECRET_KEY, "");
       announce();
       return;
     }
@@ -211,7 +212,7 @@ export function useIdentity(): Identity {
   }, [clerkSignOut]);
 
   if (local === null) {
-    return { ready: false, mode: "clerk", email: "", signedIn: false, signInAs, signOut };
+    return { ready: false, mode: "clerk", email: "", signedIn: false, signOut };
   }
 
   if (local.secret) {
@@ -220,7 +221,6 @@ export function useIdentity(): Identity {
       mode: "local",
       email: local.email,
       signedIn: !!local.email,
-      signInAs,
       signOut,
     };
   }
@@ -230,7 +230,6 @@ export function useIdentity(): Identity {
     mode: "clerk",
     email: (user?.primaryEmailAddress?.emailAddress ?? "").trim().toLowerCase(),
     signedIn: !!isSignedIn,
-    signInAs,
     signOut,
   };
 }

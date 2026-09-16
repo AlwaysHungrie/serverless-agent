@@ -52,10 +52,16 @@ address not on it is told the agent does not exist. `CLERK_ISSUER` in
 refuses to serve without it, and `npm run deploy` refuses to ship without it. It needs the
 Clerk instance to emit an `email` claim in its session token.
 
-The worker's `API_SECRET` is a back door, not a gate. Put it in a browser's
-localStorage under the key `API_SECRET` and that browser gets an address box instead of
-the sign-in dialog: type any address and you are that person, sign-up or no sign-up. The
-frontend never holds it — it lives in one browser and in the worker. See
+The worker's `API_SECRET` is a back door, not a gate. Set both keys in a browser's
+localStorage and that browser is that address, sign-up or no sign-up:
+
+```js
+localStorage.API_SECRET = "<the worker's API_SECRET>"
+localStorage.API_EMAIL  = "whoever@example.com"
+```
+
+Reload and you are them. Nothing in the app writes either key — devtools is the only way
+in. The frontend never holds the secret; it lives in one browser and in the worker. See
 `agent/README.md`.
 
 ## What the UI shows

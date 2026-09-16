@@ -1,7 +1,6 @@
 "use client";
 
 import { use, useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Menu } from "lucide-react";
 import { Chat } from "@/components/Chat";
 import { SessionHeader } from "@/components/SessionHeader";
@@ -19,6 +18,7 @@ import {
   type TranscriptPage,
 } from "@/lib/agent";
 import { apiFetch } from "@/lib/identity";
+import { PageNotice } from "@/components/PageNotice";
 
 /**
  * One agent: its sessions, its settings, its bot. Everything on this page is scoped
@@ -31,8 +31,9 @@ export default function AgentPage({
   params: Promise<{ agentId: string }>;
 }) {
   const { agentId } = use(params);
-  const router = useRouter();
   const [agent, setAgent] = useState<AgentRow | null>(null);
+  /** No agent behind this id, for any of the three reasons a 404 covers. */
+  const [missing, setMissing] = useState(false);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   /**
    * Where the session list has been read up to: the cursor for the next page, and
@@ -93,9 +94,11 @@ export default function AgentPage({
             config?: { cap_telegram?: number; telegram_bot_username?: string };
           } | null,
         ) => {
-          // No agent behind this id: it was deleted, or the link is stale.
+          // No agent behind this id: it was deleted, the link is stale, or it belongs
+          // to somebody else — the Worker answers all three with a 404, on purpose, so
+          // that an id cannot be probed for existence. The page says so and stays put.
           if (!payload) {
-            router.replace("/");
+            setMissing(true);
             return;
           }
           setAgent(payload.agent ?? null);
@@ -107,7 +110,7 @@ export default function AgentPage({
         },
       )
       .catch(() => setBotUsername(""));
-  }, [agentId, router]);
+  }, [agentId]);
 
   /**
    * The newest page of sessions, replacing whatever was held.
@@ -160,10 +163,13 @@ export default function AgentPage({
     [readJson],
   );
 
+  // The list, and only the list. Opening the page used to open the newest session with
+  // it, which wakes that session's Durable Object and reconnects its stream for
+  // somebody who may only have come to read the sidebar. Choosing a session is now
+  // something you do.
   useEffect(() => {
     void (async () => {
-      const list = await loadSessions();
-      if (list.length > 0) setSelected((current) => current ?? list[0].id);
+      await loadSessions();
     })();
   }, [loadSessions]);
 
@@ -259,6 +265,10 @@ export default function AgentPage({
   }, [selected, loadSummary, loadSessions]);
 
   const current = sessions.find((s) => s.id === selected) ?? null;
+
+  if (missing) {
+    return <PageNotice message="This agent doesn't exist, or isn't yours to open." />;
+  }
 
   return (
     <div className="bg-canvas text-ink flex h-[100dvh]">

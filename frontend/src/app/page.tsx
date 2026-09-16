@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Plus, SlidersHorizontal } from "lucide-react";
 import { AuthModal } from "@/components/auth/AuthModal";
 import { apiFetch, useIdentity } from "@/lib/identity";
@@ -30,7 +29,6 @@ import {
  * shared to switch between. Opening one goes to its own page and stays there.
  */
 export default function Agents() {
-  const router = useRouter();
   /**
    * Whoever this browser is acting as — a Clerk session, or an address typed into the
    * back door. The rest of this page does not care which: an address is an address,
@@ -76,10 +74,15 @@ export default function Agents() {
   }, [load, isLoaded, isSignedIn]);
 
   /**
-   * Make the agent, then open it. The second step asks for the OpenRouter key, so a
-   * new agent arrives able to answer — which is why this lands on its chats rather
-   * than on its settings. A rejected key never gets this far: the Worker checks it
-   * before it creates anything, and the dialog stays open with the reason.
+   * Make the agent and stay here.
+   *
+   * It used to open the new agent's chats on the way out. That is one agent's page
+   * chosen for you off the back of an unrelated action, and it is wrong whenever the
+   * next thing you meant to do was make another one or look at the list you were
+   * already on. The row appears where the others are; opening it is a click.
+   *
+   * A rejected key never gets this far: the Worker checks it before it creates
+   * anything, and the dialog stays open with the reason.
    */
   const create = async (
     name: string,
@@ -106,7 +109,8 @@ export default function Agents() {
     if (!res.ok || !row?.id) {
       return row?.error ?? "Couldn't create that agent. Try again.";
     }
-    router.push(`/a/${encodeURIComponent(row.id)}`);
+    setCreating(false);
+    await load();
     return null;
   };
 
