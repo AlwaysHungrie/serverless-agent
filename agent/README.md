@@ -22,8 +22,8 @@ the same question — see the model list in that dialog.
 
 ```bash
 cp .dev.vars.example .dev.vars   # then put your OpenRouter key in it
-pnpm install
-pnpm dev                          # wrangler dev on http://localhost:8787
+npm install
+npm run dev                       # wrangler dev on http://localhost:8787
 ```
 
 Every agent needs an OpenRouter key of its own, pasted under **Settings**, and there is

@@ -22,8 +22,12 @@ Two terminals.
 
 ```bash
 # 1. the agent
-cd agent && pnpm install && pnpm dev          # http://localhost:8787
+cd agent && npm install && npm run dev        # http://localhost:8787
 ```
+
+The agent is npm, not pnpm — `package-lock.json` is its lockfile, and installing it
+with pnpm resolves an `@modelcontextprotocol/sdk` the Agents SDK cannot build against.
+The frontend is pnpm.
 
 `agent/.dev.vars` is gitignored. It can hold `API_SECRET`, the impersonation back door —
 optional, and a deployment without one simply has one fewer way in. There is no
