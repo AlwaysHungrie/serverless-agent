@@ -928,6 +928,20 @@ export type AgentRow = {
    * creation always seeds it with the creator's own.
    */
   allowed_emails: string;
+  /**
+   * The one address that administers this agent: whoever created it, lowercased.
+   *
+   * Separate from `allowed_emails` on purpose. The access list says who may *use* the
+   * agent — open its pages, chat with it, change its settings. This says who may
+   * change the decisions *behind* those settings: the meta document, and whether the
+   * agent goes on existing at all. It is set once, at creation, and never moves.
+   *
+   * Being the admin is not membership. An admin who is not on the access list cannot
+   * open the agent any more than a stranger can; they see it on their list of agents
+   * and they can administer it, and that is all. Putting themselves on the list is a
+   * deliberate act, the same as adding anybody else.
+   */
+  admin_email: string;
 };
 
 /** The stored form of an access list: lowercased, de-duplicated, one per line. */
@@ -940,6 +954,16 @@ export function normalizeEmails(input: string | string[]): string {
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) seen.add(email);
   }
   return [...seen].slice(0, 50).join("\n");
+}
+
+/** The first address on a stored access list, or "" when it is empty. */
+function firstEmail(allowed: string): string {
+  return (
+    allowed
+      .split("\n")
+      .map((e) => e.trim().toLowerCase())
+      .find(Boolean) ?? ""
+  );
 }
 
 /** Whether `email` appears in a stored access list. */
@@ -972,17 +996,34 @@ export class AgentDirectory extends DurableObject {
          name TEXT NOT NULL,
          created_at INTEGER NOT NULL,
          updated_at INTEGER NOT NULL,
-         allowed_emails TEXT NOT NULL DEFAULT ''
+         allowed_emails TEXT NOT NULL DEFAULT '',
+         admin_email TEXT NOT NULL DEFAULT ''
        )`
     );
-    // Bring forward rows created before an agent had an access list.
-    for (const col of [`allowed_emails TEXT NOT NULL DEFAULT ''`]) {
+    // Bring forward rows created before an agent had an access list, and before the
+    // admin was a person rather than everyone on that list.
+    for (const col of [
+      `allowed_emails TEXT NOT NULL DEFAULT ''`,
+      `admin_email TEXT NOT NULL DEFAULT ''`,
+    ]) {
       try {
         this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN ${col}`);
       } catch {
         // Column already present.
       }
     }
+    // Agents made before the split have no admin, and no record of who created them:
+    // everyone on the list was both user and administrator. The first address on the
+    // list is the closest thing to the creator that was ever written down — the
+    // create dialog seeds the box with their own address — so it inherits the role.
+    this.ctx.storage.sql.exec(
+      `UPDATE agents
+          SET admin_email = lower(trim(
+                CASE WHEN instr(allowed_emails, char(10)) > 0
+                     THEN substr(allowed_emails, 1, instr(allowed_emails, char(10)) - 1)
+                     ELSE allowed_emails END))
+        WHERE admin_email = ''`
+    );
     this.ready = true;
   }
 
@@ -998,19 +1039,25 @@ export class AgentDirectory extends DurableObject {
     this.ensureSchema();
     const rows = this.ctx.storage.sql
       .exec(
-        `SELECT id, name, created_at, updated_at, allowed_emails FROM agents
+        `SELECT id, name, created_at, updated_at, allowed_emails, admin_email FROM agents
          ORDER BY created_at`
       )
       .toArray() as unknown as AgentRow[];
     if (email === undefined) return rows;
-    return rows.filter((row) => emailAllowed(row.allowed_emails, email));
+    const wanted = email.trim().toLowerCase();
+    // An admin sees the agent they made whether or not they are on its access list:
+    // the list is about opening the agent, and administering one you cannot open is
+    // the ordinary case now that the two are separate.
+    return rows.filter(
+      (row) => emailAllowed(row.allowed_emails, wanted) || row.admin_email === wanted
+    );
   }
 
   get(id: string): AgentRow | undefined {
     this.ensureSchema();
     return this.ctx.storage.sql
       .exec(
-        `SELECT id, name, created_at, updated_at, allowed_emails FROM agents
+        `SELECT id, name, created_at, updated_at, allowed_emails, admin_email FROM agents
          WHERE id = ? LIMIT 1`,
         id
       )
@@ -1027,25 +1074,43 @@ export class AgentDirectory extends DurableObject {
     return row ? emailAllowed(row.allowed_emails, email) : false;
   }
 
-  create(id: string, name: string, allowedEmails: string): AgentRow {
+  /**
+   * `adminEmail` is the address that made the agent. It is the only time it is ever
+   * written: there is no route that changes it, because an agent whose administrator
+   * can be handed over is one that can be taken.
+   *
+   * It falls back to the first address on the access list, which is what an unguarded
+   * deployment — where there is no signed-in caller to name — has to go on.
+   */
+  create(id: string, name: string, allowedEmails: string, adminEmail: string): AgentRow {
     this.ensureSchema();
     const now = Date.now();
+    const admin = adminEmail.trim().toLowerCase() || firstEmail(allowedEmails);
     this.ctx.storage.sql.exec(
-      `INSERT INTO agents (id, name, created_at, updated_at, allowed_emails)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (id, name, created_at, updated_at, allowed_emails, admin_email)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       id,
       name,
       now,
       now,
-      allowedEmails
+      allowedEmails,
+      admin
     );
-    return { id, name, created_at: now, updated_at: now, allowed_emails: allowedEmails };
+    return {
+      id,
+      name,
+      created_at: now,
+      updated_at: now,
+      allowed_emails: allowedEmails,
+      admin_email: admin,
+    };
   }
 
   /**
-   * Replace the access list. The caller keeps their own address on it: an owner who
+   * Replace the access list. The caller keeps their own address on it: a user who
    * could edit themselves out would lock everyone, themselves included, out of an
-   * agent that only they could have unlocked.
+   * agent that only they could have unlocked. The admin is untouched either way —
+   * it is not part of this list and is never rewritten.
    */
   setAllowedEmails(id: string, allowedEmails: string) {
     this.ensureSchema();

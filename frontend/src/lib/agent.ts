@@ -18,6 +18,14 @@ export type AgentRow = {
    * owners rather than of guests.
    */
   allowed_emails: string;
+  /**
+   * The address that created the agent, lowercased. It administers the agent — admin
+   * settings, and deleting it — and it never changes.
+   *
+   * Being the admin is not access: unless this address is also on `allowed_emails`,
+   * the admin cannot open the agent's pages at all.
+   */
+  admin_email: string;
 };
 
 /**

@@ -32,6 +32,11 @@ import {
 export default function Agents() {
   const router = useRouter();
   const { isLoaded, isSignedIn } = useAuth();
+  const { user } = useUser();
+  /** The signed-in address, which is what decides admin from user on every row. */
+  const email = (
+    user?.primaryEmailAddress?.emailAddress ?? ""
+  ).trim().toLowerCase();
   const [agents, setAgents] = useState<AgentRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -189,48 +194,77 @@ export default function Agents() {
                 list: an account with no agents is exactly the one that needs it. */}
             {agents && (
               <div className="mt-8 space-y-2">
-                {agents.map((agent) => (
-                  <div
-                    key={agent.id}
-                    className="hover:bg-canvas-soft group flex items-center gap-3 rounded-[16px] px-5 py-4 transition"
-                  >
-                    <Link
-                      href={`/a/${encodeURIComponent(agent.id)}`}
-                      className="min-w-0 flex-1"
-                    >
+                {agents.map((agent) => {
+                  // Two different things put a row on this list, and they decide what
+                  // the row offers. A user opens the agent; an admin administers it.
+                  // An admin who is not also on the access list gets no door: the
+                  // name is text, not a link, because the page behind it answers them
+                  // the same way it answers a stranger.
+                  const isAdmin = agent.admin_email === email;
+                  const isUser = agent.allowed_emails
+                    .split("\n")
+                    .map((e) => e.trim().toLowerCase())
+                    .includes(email);
+                  const title = (
+                    <>
                       <span className="block truncate text-[16px] font-semibold leading-[1.38]">
                         {agent.name}
                       </span>
                       <span className="text-faint block truncate text-[12px] leading-[1.33]">
-                        Last used {formatDate(agent.updated_at)}
+                        {isUser
+                          ? `Last used ${formatDate(agent.updated_at)}`
+                          : "You administer this agent"}
                       </span>
-                    </Link>
-                    {/* Admin settings are the defaults behind the agent's own
-                        settings, so they are reachable only from here — never from
-                        the agent's pages, where they would read as one more setting. */}
-                    <button
-                      onClick={() => setMetaFor(agent)}
-                      className="text-muted hover:text-ink shrink-0 text-[14px] transition"
+                    </>
+                  );
+                  return (
+                    <div
+                      key={agent.id}
+                      className="hover:bg-canvas-soft group flex items-center gap-3 rounded-[16px] px-5 py-4 transition"
                     >
-                      Admin Settings
-                    </button>
-                    <Link
-                      href={`/a/${encodeURIComponent(agent.id)}/settings`}
-                      title={`Settings for ${agent.name}`}
-                      aria-label={`Settings for ${agent.name}`}
-                      className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition"
-                    >
-                      <SlidersHorizontal size={15} strokeWidth={1.75} />
-                    </Link>
-                    <button
-                      onClick={() => setConfirming(agent)}
-                      aria-label={`Delete ${agent.name}`}
-                      className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[16px] leading-none opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
+                      {isUser ? (
+                        <Link
+                          href={`/a/${encodeURIComponent(agent.id)}`}
+                          className="min-w-0 flex-1"
+                        >
+                          {title}
+                        </Link>
+                      ) : (
+                        <div className="min-w-0 flex-1">{title}</div>
+                      )}
+                      {/* Admin settings are the defaults behind the agent's own
+                          settings, so they are reachable only from here — never from
+                          the agent's pages, where they would read as one more setting. */}
+                      {isAdmin && (
+                        <button
+                          onClick={() => setMetaFor(agent)}
+                          className="text-muted hover:text-ink shrink-0 text-[14px] transition"
+                        >
+                          Admin Settings
+                        </button>
+                      )}
+                      {isUser && (
+                        <Link
+                          href={`/a/${encodeURIComponent(agent.id)}/settings`}
+                          title={`Settings for ${agent.name}`}
+                          aria-label={`Settings for ${agent.name}`}
+                          className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition"
+                        >
+                          <SlidersHorizontal size={15} strokeWidth={1.75} />
+                        </Link>
+                      )}
+                      {isAdmin && (
+                        <button
+                          onClick={() => setConfirming(agent)}
+                          aria-label={`Delete ${agent.name}`}
+                          className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[16px] leading-none opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
 
                 <div
                   onClick={() => setCreating(true)}
@@ -468,8 +502,9 @@ function NewAgent({
           </span>
           <span className="text-muted block text-[12px] font-light leading-[1.33]">
             Users who will have complete access to this agent including all chat
-            sessions and settings. After creation you can connect Telegram to
-            let others message it.
+            sessions and settings. You administer this agent either way, but you
+            only get to open it if your own address is on this list. After
+            creation you can connect Telegram to let others message it.
           </span>
           <div className="mt-2">
             <ChipList

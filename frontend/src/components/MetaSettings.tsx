@@ -808,32 +808,27 @@ export function MetaSettingsDialog({
 
   useEffect(() => {
     void (async () => {
-      const [metaRes, configRes] = await Promise.all([
-        fetch(base, { cache: "no-store" }),
-        fetch(`/api/agents/${id}/config`, { cache: "no-store" }),
-      ]);
+      // One request, not two. The settings the dialog edits ride along with the meta
+      // document: `/config` is the agent's own page, and an admin who was never
+      // added to the access list is answered there the same way a stranger is.
+      const metaRes = await fetch(base, { cache: "no-store" });
       const payload = (await metaRes.json().catch(() => null)) as {
         meta: MetaSettings;
+        config: Config;
         models: ModelOption[];
         capabilities: Capability[];
         error?: string;
       } | null;
-      const live = (await configRes.json().catch(() => null)) as {
-        config: Config;
-        error?: string;
-      } | null;
-      if (!metaRes.ok || !payload || !configRes.ok || !live?.config) {
-        setError(
-          payload?.error ?? live?.error ?? "Couldn't load meta settings.",
-        );
+      if (!metaRes.ok || !payload?.config) {
+        setError(payload?.error ?? "Couldn't load meta settings.");
         return;
       }
       setMeta({ ...EMPTY_META, ...payload.meta });
-      setConfig(live.config);
+      setConfig(payload.config);
       setModels(payload.models);
       setCapabilities(payload.capabilities);
     })();
-  }, [base, id]);
+  }, [base]);
 
   /** Show the change straight away, and remember it for the save. */
   const editConfig = (patch: Partial<Config>) => {

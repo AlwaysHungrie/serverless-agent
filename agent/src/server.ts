@@ -605,11 +605,18 @@ async function handleMcp(
 
   if (request.method === "GET" && !id) {
     const servers = await reg.mcpServers();
+    const { mcp } = await reg.meta();
     return withCors(
       Response.json({
         servers: servers.map(mcpView),
         /** Shown on the page, because a provider may ask for it when registering by hand. */
         redirect_uri: redirectUri(url.origin),
+        // The two admin settings the list itself has to draw: which providers the
+        // strip offers, and whether the page may change the list at all. They come
+        // back here rather than being read off `/meta`, which is the admin's route
+        // and answers nobody else.
+        templates: mcp.templates,
+        user_servers: mcp.user_servers,
       })
     );
   }
@@ -1166,10 +1173,14 @@ async function handleAgents(
         return withCors(Response.json({ error: openrouter.error }, { status: 400 }));
       }
 
+      // Whoever makes the agent administers it, for good. They are not put on the
+      // access list by that: administering an agent and using one are two different
+      // things now, and the box above is the whole answer to the second.
       const row = await dir.create(
         AGENT_ID(),
         (body.name ?? "").trim().slice(0, 60) || "New agent",
-        allowed
+        allowed,
+        callerEmail(request)
       );
       // Seed the settings row so the agent has a model — and its key — the moment
       // it exists, which is what lets it answer without a trip through Settings.
@@ -1204,18 +1215,38 @@ async function handleAgents(
 
   const agent: AgentRow | undefined = await dir.get(agentId);
   if (!agent) return notFound();
-  // Everything below belongs to one agent, so one check covers all of it: settings,
-  // capabilities, MCP servers, sessions. Someone not on the list is told the agent
-  // does not exist rather than that they may not have it.
-  if (env.API_SECRET && !emailAllowed(agent.allowed_emails, callerEmail(request))) {
-    return notFound();
-  }
+
+  /**
+   * The two ways to be allowed here, and they do not overlap.
+   *
+   * A *user* is on the access list: the agent's pages are theirs — its chats, its
+   * settings, its capabilities, its MCP servers. An *admin* made the agent: the meta
+   * document is theirs, and so is deleting it, and nothing else. Being admin does not
+   * open the agent, so an admin who is not also on the list is turned away from
+   * everything a user reaches, exactly like a stranger.
+   *
+   * Both are true at once when the admin put their own address on the list, which is
+   * the ordinary case for an agent someone made for themselves.
+   *
+   * An unguarded deployment has no identity to check against, so both are true.
+   */
+  const guarded = !!env.API_SECRET;
+  const email = callerEmail(request);
+  const isUser = !guarded || emailAllowed(agent.allowed_emails, email);
+  const isAdmin = !guarded || (!!email && agent.admin_email === email);
+  if (!isUser && !isAdmin) return notFound();
 
   const section = segments[3];
 
   if (!section) {
+    // The row itself — name, access list, who administers it — is readable by both:
+    // it is what the admin dialog puts in its header, and it says nothing an admin
+    // does not already know about the agent they made.
     if (request.method === "GET") return withCors(Response.json(agent));
     if (request.method === "PATCH") {
+      // Renaming the agent and editing its access list are settings-page edits, so
+      // they belong to its users. An admin who is not one does not get them.
+      if (!isUser) return notFound();
       const body = (await request.json().catch(() => ({}))) as {
         name?: string;
         allowed_emails?: string | string[];
@@ -1257,6 +1288,10 @@ async function handleAgents(
       return withCors(Response.json(next));
     }
     if (request.method === "DELETE") {
+      // Deleting is the admin's, not the users'. The agent exists because they made
+      // it, and somebody who was given access to use it should not be able to take
+      // it away from everyone else who was.
+      if (!isAdmin) return notFound();
       await deleteAgent(env, url.origin, agentId);
       return withCors(Response.json({ ok: true }));
     }
@@ -1264,6 +1299,12 @@ async function handleAgents(
   }
 
   const reg = registry(env, agentId);
+
+  // From here down is the agent itself: its settings, its capabilities, its sessions,
+  // its bot. All of that is using the agent, so all of it is the users'. The two
+  // sections an admin can reach — the meta document above, and the MCP list behind
+  // `?meta=1` — say so for themselves.
+  if (!isUser && section !== "meta" && section !== "mcp") return notFound();
 
   if (section === "config") {
     if (request.method === "GET") {
@@ -1345,11 +1386,19 @@ async function handleAgents(
   }
 
   if (section === "meta") {
+    // The admin document, and the admin's alone. It is what decides the agent's
+    // defaults and which of them its users may touch, so a user who could edit it
+    // could simply unlock everything that was locked away from them.
+    if (!isAdmin) return notFound();
     if (request.method === "GET") {
       return withCors(
         Response.json({
           agent,
           meta: redactMeta(await reg.meta()),
+          // The agent's own settings, which the dialog edits beside the locks. They
+          // come from here rather than from `/config`, because that route belongs to
+          // the agent's users and an admin need not be one.
+          config: redact(await reg.config(env.MODEL)),
           // The catalogues the dialog picks from: it never keeps its own copy of
           // what models exist or what a capability's fields are.
           models: modelCatalog(env),
@@ -1413,6 +1462,11 @@ async function handleAgents(
   }
 
   if (section === "mcp") {
+    // `?meta=1` is the server list inside the admin dialog, which is why an admin who
+    // is not a user reaches it at all. Everything else about MCP — connecting a
+    // server, approving its OAuth, choosing its tools — is using the agent.
+    const fromMeta = url.searchParams.get("meta") === "1";
+    if (!isUser && !(isAdmin && fromMeta)) return notFound();
     return await handleMcp(request, env, url, agentId, segments.slice(4));
   }
 

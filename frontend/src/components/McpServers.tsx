@@ -484,11 +484,16 @@ export function McpServers({
   /** Whether the list itself may be changed from here. */
   const [manage, setManage] = useState(meta);
 
+  // Which templates the strip offers, and whether the list may be changed here, are
+  // admin settings — but they arrive with the list itself rather than from `/meta`,
+  // which only the agent's admin may read.
   const load = useCallback(async () => {
     const res = await fetch(base, { cache: "no-store" });
     const payload = (await res.json().catch(() => null)) as {
       servers: McpServer[];
       redirect_uri: string;
+      templates?: string[];
+      user_servers?: boolean;
       error?: string;
     } | null;
     if (!res.ok || !payload) {
@@ -497,32 +502,18 @@ export function McpServers({
     }
     setServers(payload.servers);
     setRedirectUri(payload.redirect_uri);
+    setTemplates(payload.templates ?? []);
+    // The dialog manages the list whatever the setting says; everywhere else the
+    // setting decides. An agent with no meta document has never been narrowed.
+    if (!meta) setManage(payload.user_servers ?? true);
     setError(null);
-  }, [base]);
+  }, [base, meta]);
 
   useEffect(() => {
     void (async () => {
       await load();
     })();
   }, [load]);
-
-  // Which templates the strip offers is a meta setting, so it is read from there.
-  // A failure here is not worth reporting: the strip falls back to every preset.
-  useEffect(() => {
-    void (async () => {
-      const res = await fetch(
-        `/api/agents/${encodeURIComponent(agentId)}/meta`,
-        { cache: "no-store" },
-      );
-      const payload = (await res.json().catch(() => null)) as {
-        meta?: { mcp?: { templates?: string[]; user_servers?: boolean } };
-      } | null;
-      setTemplates(payload?.meta?.mcp?.templates ?? []);
-      // The dialog manages the list whatever the setting says; everywhere else the
-      // setting decides. An agent with no meta document has never been narrowed.
-      if (!meta) setManage(payload?.meta?.mcp?.user_servers ?? true);
-    })();
-  }, [agentId, meta]);
 
   // Tidy the URL once the result has been shown, so a refresh does not replay it.
   useEffect(() => {
