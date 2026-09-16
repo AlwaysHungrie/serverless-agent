@@ -400,6 +400,19 @@ function parseCursor(cursor: string): { updated_at: number; id: string } | undef
   return { updated_at, id };
 }
 
+/**
+ * One agent's access row, as the registry holds it.
+ *
+ * `seeded` is 0 only for an agent created before access lived here at all. It is not
+ * part of the wire format: the Worker uses it to decide whether to fall back to the
+ * directory, and strips it before anything is returned.
+ */
+export type AccessRow = {
+  allowed_emails: string;
+  admin_email: string;
+  seeded: number;
+};
+
 export class SessionRegistry extends DurableObject {
   private ready = false;
   /** Token refreshes in flight, by server id, so concurrent callers share one. */
@@ -453,6 +466,20 @@ export class SessionRegistry extends DurableObject {
       `CREATE TABLE IF NOT EXISTS meta (
          id INTEGER PRIMARY KEY CHECK (id = 1),
          json TEXT NOT NULL DEFAULT ''
+       )`
+    );
+    // Who may open this agent, and who administers it. Deliberately its own table
+    // and not a pair of columns on `config`: that row is walked by `redact` and
+    // `validateConfig` in the Worker, returned whole by `GET /config` and patched by
+    // `PATCH /config` — so an access column living there would be both readable by
+    // the browser and editable by anyone the list already lets in. The gate may not
+    // be reachable from the thing it guards.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS access (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         allowed_emails TEXT NOT NULL DEFAULT '',
+         admin_email TEXT NOT NULL DEFAULT '',
+         seeded INTEGER NOT NULL DEFAULT 0
        )`
     );
     this.ctx.storage.sql.exec(
@@ -628,6 +655,86 @@ export class SessionRegistry extends DurableObject {
   removeMcpServer(id: string) {
     this.ensureSchema();
     this.ctx.storage.sql.exec(`DELETE FROM mcp_servers WHERE id = ?`, id);
+  }
+
+  /* --------------------------------------------------------------- access -- */
+
+  /**
+   * Who may open this agent, and who administers it. **This is the authority.**
+   *
+   * Every access decision in the Worker is taken from here rather than from the
+   * directory, because this object is one per agent and the directory is one for the
+   * whole deployment: an access check that reads the directory puts every message
+   * every user sends through a single thread in a single datacenter.
+   *
+   * `seeded` is what separates "this agent has no members" from "this agent has not
+   * been asked yet". Agents created before access moved here have their list only in
+   * the directory, and reading a missing row as an empty list would lock every one of
+   * their users out the moment this deploys. So the unseeded state is explicit, and
+   * the Worker answers it by seeding from the directory once — see `seedAccess`.
+   */
+  access(): AccessRow {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql
+      .exec(`SELECT allowed_emails, admin_email, seeded FROM access WHERE id = 1`)
+      .toArray()[0] as AccessRow | undefined;
+    return row ?? { allowed_emails: "", admin_email: "", seeded: 0 };
+  }
+
+  /**
+   * Write the access list, and — only if it has never been written — the admin.
+   *
+   * `admin_email` is set once, at creation, and no route moves it: an agent whose
+   * administrator can be handed over is one that can be taken. That rule is enforced
+   * here rather than trusted to callers, so a `setAccess` carrying an admin for an
+   * agent that already has one silently keeps the one it has.
+   *
+   * Writing anything at all marks the row seeded, so the directory is never consulted
+   * for this agent again.
+   */
+  setAccess(patch: { allowed_emails?: string; admin_email?: string }): AccessRow {
+    const current = this.access();
+    const allowed = patch.allowed_emails ?? current.allowed_emails;
+    const admin = current.admin_email || (patch.admin_email ?? "").trim().toLowerCase();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO access (id, allowed_emails, admin_email, seeded) VALUES (1, ?, ?, 1)
+       ON CONFLICT(id) DO UPDATE SET
+         allowed_emails = excluded.allowed_emails,
+         admin_email = excluded.admin_email,
+         seeded = 1`,
+      allowed,
+      admin
+    );
+    return { allowed_emails: allowed, admin_email: admin, seeded: 1 };
+  }
+
+  /**
+   * Adopt the directory's copy, once, for an agent that predates this table.
+   *
+   * Does nothing to an agent that has already been seeded, which is what makes it
+   * safe for two requests to arrive at the same unseeded agent at once: the method
+   * body has no `await` in it, so a Durable Object runs it to completion before the
+   * second caller starts, and the second caller then finds `seeded = 1` and reads
+   * what the first one wrote. They would be writing identical rows in any case — both
+   * read the same directory row — so the race is benign even where it is visible.
+   *
+   * It is deliberately not `setAccess`: this may only ever *fill in* an agent nobody
+   * has written access for, never overwrite a decision already recorded here.
+   */
+  seedAccess(allowedEmails: string, adminEmail: string): AccessRow {
+    const current = this.access();
+    if (current.seeded) return current;
+    const admin = adminEmail.trim().toLowerCase();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO access (id, allowed_emails, admin_email, seeded) VALUES (1, ?, ?, 1)
+       ON CONFLICT(id) DO UPDATE SET
+         allowed_emails = excluded.allowed_emails,
+         admin_email = excluded.admin_email,
+         seeded = 1`,
+      allowedEmails,
+      admin
+    );
+    return { allowed_emails: allowedEmails, admin_email: admin, seeded: 1 };
   }
 
   /* ------------------------------------------------------- meta settings -- */
@@ -955,6 +1062,9 @@ export type AgentRow = {
  */
 export const MAX_MEMBERS = 200;
 
+/** How stale an agent's "last used" date may get before `touch` writes again. */
+const TOUCH_INTERVAL = 5 * 60 * 1000;
+
 /** The addresses in a stored access list: lowercased, trimmed, blanks dropped. */
 export function splitEmails(stored: string): string[] {
   return stored
@@ -1261,9 +1371,29 @@ export class AgentDirectory extends DurableObject {
     );
   }
 
+  /**
+   * Note that an agent was used, at most once every `TOUCH_INTERVAL`.
+   *
+   * This runs on every message, and it is the only *write* the hot path makes to the
+   * directory — one object, one thread, for the whole deployment. A row write is also
+   * about a thousand times the cost of a row read, so skipping the ones that would
+   * change nothing anybody can see is the cheapest win available here.
+   *
+   * Nothing is lost by coarsening it. `list()` orders agents by `created_at`, so this
+   * column decides no ordering at all; it is the "last used" date the home page
+   * shows, and a few minutes of lag in a date is invisible. Session ordering is a
+   * different column in a different object — `SessionRegistry.touch` — and is left
+   * exact, because the sidebar really does reorder on it after every turn.
+   */
   touch(id: string) {
     this.ensureSchema();
-    this.ctx.storage.sql.exec(`UPDATE agents SET updated_at = ? WHERE id = ?`, Date.now(), id);
+    const now = Date.now();
+    const row = this.ctx.storage.sql
+      .exec(`SELECT updated_at FROM agents WHERE id = ? LIMIT 1`, id)
+      .toArray()[0] as { updated_at: number } | undefined;
+    if (!row) return;
+    if (now - row.updated_at < TOUCH_INTERVAL) return;
+    this.ctx.storage.sql.exec(`UPDATE agents SET updated_at = ? WHERE id = ?`, now, id);
   }
 
   remove(id: string) {

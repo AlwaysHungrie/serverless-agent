@@ -15,7 +15,9 @@ import {
   agentIdOf,
   emailAllowed,
   normalizeEmails,
+  splitEmails,
   sessionName,
+  type AccessRow,
   MAX_PAGE,
   SESSION_PAGE,
   type AgentRow,
@@ -104,18 +106,59 @@ function callerEmail(request: Request): string {
 }
 
 /**
- * Whether the caller may touch `agentId`.
+ * The agent's access list and admin, from the agent's own object.
+ *
+ * **The registry is authoritative for every access decision, always.** The directory
+ * keeps a copy of the same list, but only as an index — it is what makes "the agents
+ * this address may open" one query on the home page — and it never decides whether a
+ * request is allowed. The two cannot be written in one transaction, because no
+ * transaction spans two Durable Objects, so one of them has to be the truth and the
+ * other has to be allowed to lag.
+ *
+ * Reading it here rather than from the directory is the entire point of the split:
+ * this check runs on every message, every stream, every file, and `SessionRegistry`
+ * is one object per agent, while the directory is one object for the deployment.
+ *
+ * Returns undefined when there is no such agent.
+ *
+ * The directory is still touched in one case: an agent created before access lived
+ * in the registry has nothing there yet, and its list has to come from somewhere the
+ * first time. That is a one-off per agent — `seedAccess` writes it down — so it costs
+ * the directory one read per agent ever, not one per message.
+ */
+async function agentAccess(
+  env: Env,
+  agentId: string,
+  known?: AgentRow
+): Promise<AccessRow | undefined> {
+  const reg = registry(env, agentId);
+  const access = await reg.access();
+  if (access.seeded) return access;
+  // Unseeded is not "nobody is allowed" — it is "nobody has asked yet". Reading it as
+  // an empty list would turn this deployment into a lockout for every agent that
+  // already exists, so the answer comes from the directory once and is then adopted.
+  const row = known ?? (await directory(env).get(agentId));
+  if (!row) return undefined;
+  return await reg.seedAccess(row.allowed_emails, row.admin_email);
+}
+
+/**
+ * Whether the caller may *use* `agentId`: its chats, its files, its settings.
  *
  * An unguarded deployment lets everything through — there is no identity to check
  * against, and pretending otherwise would only lock local development out of its own
  * agents. A guarded one requires the address to be on the agent's list.
+ *
+ * Membership, and only membership. The admin is deliberately not consulted: an admin
+ * who never put their own address on the list administers an agent they cannot open,
+ * which is the ordinary case now that the two are separate.
  */
 async function mayUseAgent(request: Request, env: Env, agentId: string): Promise<boolean> {
   if (!env.API_SECRET) return true;
   const email = callerEmail(request);
   if (!email) return false;
-  const agent = await directory(env).get(agentId);
-  return !!agent && emailAllowed(agent.allowed_emails, email);
+  const access = await agentAccess(env, agentId);
+  return !!access && emailAllowed(access.allowed_emails, email);
 }
 
 type Registry = DurableObjectStub<SessionRegistry>;
@@ -1062,8 +1105,9 @@ async function applyMeta(
 /* ----------------------------------------------------------------- agents -- */
 
 /**
- * Delete an agent and everything it owns: its sessions and their files first, then
- * the settings, MCP servers and memories in its registry, then the name itself.
+ * Delete an agent and everything it owns: the name first, so nothing can be admitted
+ * to it while the rest is going away, then its sessions and their files, then the
+ * settings, MCP servers, memories and access list in its registry.
  *
  * The bot is unhooked before any of that. Its webhook points at a route that is
  * about to stop resolving, and a webhook Telegram keeps retrying against a 404 is
@@ -1080,6 +1124,15 @@ async function deleteAgent(env: Env, origin: string, agentId: string): Promise<v
       // A dead token cannot be unhooked, and it cannot receive anything either.
     }
   }
+
+  // The index goes before the storage, which is the one place the order is the other
+  // way round from a membership edit — and for the same reason. `wipe()` leaves the
+  // registry unseeded, and an unseeded registry asks the directory; so wiping first
+  // would let a request arriving mid-teardown read the directory row that is still
+  // there and seed the access list straight back into the object being torn down.
+  // Removing the name first closes both doors at once: the gate finds no agent to
+  // seed from, and every control-plane route 404s from here on.
+  await directory(env).remove(agentId);
 
   // Deleting an agent has to reach every session it owns, not just the newest page,
   // so this walks the cursor to the end of the list.
@@ -1100,7 +1153,6 @@ async function deleteAgent(env: Env, origin: string, agentId: string): Promise<v
   }
 
   await reg.wipe();
-  await directory(env).remove(agentId);
 }
 
 /** Everything under `/api/agents`. Undefined when the path is not one of these. */
@@ -1182,11 +1234,24 @@ async function handleAgents(
       // Whoever makes the agent administers it, for good. They are not put on the
       // access list by that: administering an agent and using one are two different
       // things now, and the box above is the whole answer to the second.
+      //
+      // Resolved here rather than inside the directory so that both objects are told
+      // the same thing. An unguarded deployment has no caller to name, and falls back
+      // to the first address on the list.
+      const newId = AGENT_ID();
+      const admin = callerEmail(request) || (splitEmails(allowed)[0] ?? "");
+
+      // The agent's own object first, the index second. The access list is only ever
+      // decided by the registry, so writing it there is what brings the agent into
+      // existence as far as every gate is concerned; the directory row is what makes
+      // it findable. Fail between the two and there is an agent nobody can see and
+      // nobody can open — an orphan, but not a leak.
+      await registry(env, newId).setAccess({ allowed_emails: allowed, admin_email: admin });
       const row = await dir.create(
-        AGENT_ID(),
+        newId,
         (body.name ?? "").trim().slice(0, 60) || "New agent",
         allowed,
-        callerEmail(request)
+        admin
       );
       // Seed the settings row so the agent has a model — and its key — the moment
       // it exists, which is what lets it answer without a trip through Settings.
@@ -1219,8 +1284,31 @@ async function handleAgents(
     return withCors(Response.json({ models: modelCatalog(env), capabilities: CAPABILITIES }));
   }
 
-  const agent: AgentRow | undefined = await dir.get(agentId);
-  if (!agent) return notFound();
+  // The directory row is what the response bodies below are built from: the name and
+  // the timestamps live only there. This is the control plane — opening a settings
+  // page, not sending a message — so one directory read here is not the traffic this
+  // split was made to remove.
+  const row: AgentRow | undefined = await dir.get(agentId);
+  if (!row) return notFound();
+
+  // The decision, though, comes from the agent's own object. Passing the row in
+  // spares a second directory read when this agent has still to be seeded.
+  const access = await agentAccess(env, agentId, row);
+  if (!access) return notFound();
+
+  // What the caller is told about who may open this agent is the authority's answer,
+  // not the index's. They agree except in the window after a membership change where
+  // the directory write has yet to land, and showing the stale one there would have
+  // the settings page contradict the gate.
+  const agent: AgentRow = {
+    ...row,
+    allowed_emails: access.allowed_emails,
+    admin_email: access.admin_email,
+  };
+
+  // The agent's own object. Declared up here because it is now the authority on
+  // access as well as the store for everything the sections below read.
+  const reg = registry(env, agentId);
 
   /**
    * The two ways to be allowed here, and they do not overlap.
@@ -1238,8 +1326,8 @@ async function handleAgents(
    */
   const guarded = !!env.API_SECRET;
   const email = callerEmail(request);
-  const isUser = !guarded || emailAllowed(agent.allowed_emails, email);
-  const isAdmin = !guarded || (!!email && agent.admin_email === email);
+  const isUser = !guarded || emailAllowed(access.allowed_emails, email);
+  const isAdmin = !guarded || (!!email && access.admin_email === email);
   if (!isUser && !isAdmin) return notFound();
 
   const section = segments[3];
@@ -1292,6 +1380,17 @@ async function handleAgents(
             Response.json({ error: "at least one email is required" }, { status: 400 })
           );
         }
+        // The gate first, the index second, and never the other way round.
+        //
+        // These two writes cannot be made one transaction — they are two Durable
+        // Objects — so one of them can land without the other, and the order decides
+        // which way that failure falls. Registry first means a removed address loses
+        // access immediately and, if the second write never lands, goes on seeing the
+        // agent listed on the home page until the list is saved again: an agent that
+        // 404s when opened, which is cosmetic. Directory first would mean the
+        // opposite — struck off the index but still admitted by the gate — which is
+        // somebody keeping access they were meant to lose.
+        await reg.setAccess({ allowed_emails: allowed });
         await dir.setAllowedEmails(agentId, allowed);
         next = { ...next, allowed_emails: allowed };
       }
@@ -1308,8 +1407,6 @@ async function handleAgents(
     }
     return undefined;
   }
-
-  const reg = registry(env, agentId);
 
   // From here down is the agent itself: its settings, its capabilities, its sessions,
   // its bot. All of that is using the agent, so all of it is the users'. The two

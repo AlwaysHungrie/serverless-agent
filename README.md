@@ -12,6 +12,10 @@ agent/      Cloudflare Worker + Durable Objects (the agent itself)
 frontend/   Next.js app (AI SDK useChat, streaming, cost display)
 ```
 
+New here? [docs/architecture.md](docs/architecture.md) explains the Cloudflare primitives
+from scratch, what each Durable Object owns, how a message travels end to end, and the one
+object in the design that cannot be scaled horizontally.
+
 ## Run it
 
 Two terminals.
