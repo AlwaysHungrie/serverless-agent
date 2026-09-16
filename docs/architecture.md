@@ -88,8 +88,9 @@ Three consequences worth stating plainly:
   navigation carries no headers, so protecting there would bounce every impersonated
   visitor. The pages are shells; the gate was always on the other side of `AGENT_URL`.
   What replaces it, for the visitor rather than for the data, is `useIdentity()` — the
-  home page and [the agent layout](../frontend/src/app/a/[agentId]/layout.tsx) draw the
-  front door when nobody is signed in.
+  home page draws the front door, and [the agent
+  layout](../frontend/src/app/a/[agentId]/layout.tsx) sends a signed-out visitor home,
+  which is what the middleware redirect did.
 - **Images need help.** A browser attaches none of our headers to a subresource it
   fetches itself, so under the back door an `<img src>` pointed at a guarded route would
   401. `useAuthedUrl` reads the bytes with headers attached and hands back a blob URL.
