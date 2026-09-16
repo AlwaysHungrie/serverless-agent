@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft,
+  Home,
+  Plus,
   Search,
   Settings,
   SlidersHorizontal,
@@ -113,13 +114,23 @@ export function Sidebar({
         }`}
       >
         <div className="flex items-center justify-between gap-3 px-6 pt-6 pb-4">
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 items-center gap-3">
+            {/* The way out of this agent entirely. First thing in the corner,
+                because leaving is the one move that is not about this agent. */}
+            <Link
+              href="/"
+              title="All agents"
+              aria-label="All agents"
+              className="border-hairline bg-canvas text-ink hover:bg-canvas-soft flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition"
+            >
+              <Home size={16} strokeWidth={1.75} />
+            </Link>
             <button
               onClick={() => {
                 onHome();
                 onClose();
               }}
-              title="Home"
+              title={`${agentName || "Agent"} home`}
               className="min-w-0 text-left"
             >
               <div className="truncate text-2xl font-[650] leading-tight">
@@ -130,26 +141,13 @@ export function Sidebar({
               </div>
             </button>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              onClick={async () => {
-                setBusy(true);
-                await onCreate();
-                setBusy(false);
-              }}
-              disabled={busy}
-              className="bg-ink text-on-primary h-9 shrink-0 rounded-full px-4 text-[14px] font-semibold transition hover:opacity-85 disabled:opacity-40"
-            >
-              New
-            </button>
-            <button
-              onClick={onClose}
-              aria-label="Close sessions"
-              className="text-muted hover:bg-canvas-soft hover:text-ink flex h-9 w-9 items-center justify-center rounded-full transition md:hidden"
-            >
-              <X size={18} strokeWidth={1.75} />
-            </button>
-          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close sessions"
+            className="text-muted hover:bg-canvas-soft hover:text-ink flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition md:hidden"
+          >
+            <X size={18} strokeWidth={1.75} />
+          </button>
         </div>
 
         <div className="px-4 pb-3">
@@ -230,16 +228,10 @@ export function Sidebar({
           )}
         </div>
 
-        <div className="absolute right-4 bottom-4 flex items-center gap-2">
-          <Link
-            href="/"
-            title="All agents"
-            aria-label="All agents"
-            className="border-hairline bg-canvas text-ink hover:bg-canvas-soft flex h-11 w-11 items-center justify-center rounded-full border shadow-sm transition mr-26"
-          >
-            <ArrowLeft size={18} strokeWidth={1.75} />
-          </Link>
-
+        {/* Configuring the agent on one side, adding to it on the other. Only the
+            plus is filled: starting a session is what this sidebar is for, and two
+            solid circles competing for that would say neither. */}
+        <div className="absolute bottom-4 left-4 flex items-center gap-2">
           <Link
             href={`/a/${encodeURIComponent(agentId)}/capabilities`}
             title="Capabilities"
@@ -252,11 +244,25 @@ export function Sidebar({
             href={`/a/${encodeURIComponent(agentId)}/settings`}
             title="Settings"
             aria-label="Settings"
-            className="bg-ink text-on-primary flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition hover:opacity-85"
+            className="border-hairline bg-canvas text-ink hover:bg-canvas-soft flex h-11 w-11 items-center justify-center rounded-full border shadow-sm transition"
           >
             <Settings size={18} strokeWidth={1.75} />
           </Link>
         </div>
+
+        <button
+          onClick={async () => {
+            setBusy(true);
+            await onCreate();
+            setBusy(false);
+          }}
+          disabled={busy}
+          title="New session"
+          aria-label="New session"
+          className="bg-ink text-on-primary absolute right-4 bottom-4 flex h-12 w-12 items-center justify-center rounded-full shadow-lg transition hover:opacity-85 disabled:opacity-40"
+        >
+          <Plus size={20} strokeWidth={2} />
+        </button>
       </aside>
 
       {confirming && (
