@@ -9,6 +9,7 @@ import {
 } from "@/components/CapabilitySection";
 import { McpServers } from "@/components/McpServers";
 import type { Capability, Config, ModelOption } from "@/lib/agent";
+import { apiFetch } from "@/lib/identity";
 
 /** The MCP section's wash. */
 const EMBER = "#FF6A1A";
@@ -29,7 +30,7 @@ export default function Capabilities({
 
   useEffect(() => {
     void (async () => {
-      const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/config`);
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/config`);
       const payload = (await res.json().catch(() => null)) as {
         config: Config;
         capabilities: Capability[];
@@ -60,7 +61,7 @@ export default function Capabilities({
 
   const save = async (patch: Partial<Config>) => {
     setSaving(true);
-    const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/config`, {
+    const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/config`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(patch),

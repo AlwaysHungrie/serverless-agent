@@ -41,11 +41,6 @@ export type Env = {
   AgentDirectory: DurableObjectNamespace<AgentDirectory>;
   /** Object storage the workspace spills large files into: images, PDFs, clips. */
   FILES: R2Bucket;
-  /**
-   * Fallback OpenRouter key. An agent that has one of its own in its settings spends
-   * that instead, so its rate limits and its bill are its own.
-   */
-  OPENROUTER_API_KEY: string;
   MODEL: string;
   /**
    * The models this deployment offers, as JSON: `[{ "id", "label", "vision" }, …]`.
@@ -62,12 +57,30 @@ export type Env = {
    */
   MODELS?: string | ModelOption[];
   /**
-   * Shared secret the frontend sends on every API call. Set it and the Worker's API
-   * answers nothing but the Telegram webhook without it — which is also what turns
-   * on per-agent access checks, since the same header pair carries the signed-in
-   * address. Unset, the Worker is open: fine locally, wrong in production.
+   * The impersonation back door, and nothing else.
+   *
+   * Present it as `x-api-secret` and the Worker takes the `x-user-email` beside it at
+   * face value: any address, no sign-in, no proof, treated as that person for the
+   * whole request. It is not an origin check and not a gate — the gate is a verified
+   * Clerk token — so this is best understood as a master key to every identity in the
+   * deployment rather than as a password for the API.
+   *
+   * Optional. Unset means the back door does not exist, which is the safe direction:
+   * a deployment that forgets it loses impersonation, not its access control.
    */
   API_SECRET?: string;
+  /**
+   * The Clerk instance whose session tokens this Worker will verify, as the exact
+   * `iss` those tokens carry: `https://<subdomain>.clerk.accounts.dev` on a
+   * development instance, `https://clerk.<your-domain>` on a production one.
+   *
+   * Set it and a call arriving with a valid `Authorization: Bearer <session token>`
+   * is identified by that token's own claims — a signature this Worker checks against
+   * Clerk's published keys, which is the only identity here that cannot be asserted
+   * by whoever holds `API_SECRET`. Unset, there is nothing to verify against and
+   * every call falls back to the `x-user-email` header.
+   */
+  CLERK_ISSUER?: string;
   /** Telegram's API host. Only set to stand a local Bot API server in its place. */
   TELEGRAM_API_BASE?: string;
 };
@@ -549,12 +562,18 @@ export class SessionAgent extends Think<Env> {
   }
 
   /**
-   * The key every model call is billed to: the agent's own when it has one, and the
-   * Worker's otherwise. Read per call rather than cached, because settings are
-   * reloaded each turn and a key pasted mid-conversation should take effect at once.
+   * The key every model call is billed to: the agent's own, and only ever its own.
+   *
+   * There is no deployment-wide fallback. One used to exist, and it meant an agent
+   * created by anyone at all could spend the deployment's own credit — which is the
+   * whole bill, not a share of it — without its maker ever pasting a key. An agent
+   * with no key of its own now simply cannot answer, and says so.
+   *
+   * Read per call rather than cached, because settings are reloaded each turn and a
+   * key pasted mid-conversation should take effect at once.
    */
   private openrouterKey(): string {
-    return this.config().openrouter_api_key || this.env.OPENROUTER_API_KEY;
+    return this.config().openrouter_api_key;
   }
 
   private model(): string {
@@ -572,8 +591,17 @@ export class SessionAgent extends Think<Env> {
   private openrouter() {
     const session = this.name;
     const self = this;
+    const key = this.openrouterKey();
+    // Said here rather than left to OpenRouter, which answers a blank key with a bare
+    // 401 that reaches the chat as "Provider returned error" and names nothing the
+    // person reading it could act on.
+    if (!key) {
+      throw new Error(
+        "This agent has no OpenRouter key. Paste one in Settings and it can answer."
+      );
+    }
     return createOpenAI({
-      apiKey: this.openrouterKey(),
+      apiKey: key,
       baseURL: "https://openrouter.ai/api/v1",
       async fetch(input, init) {
         const request = withCostReporting(init as RequestInit);

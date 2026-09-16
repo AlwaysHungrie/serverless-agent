@@ -19,6 +19,7 @@ import {
   type ModelOption,
   type ReasoningEffort,
 } from "@/lib/agent";
+import { apiFetch } from "@/lib/identity";
 
 /**
  * Meta settings: the settings page, plus the decisions the agent's owner does not get
@@ -811,7 +812,7 @@ export function MetaSettingsDialog({
       // One request, not two. The settings the dialog edits ride along with the meta
       // document: `/config` is the agent's own page, and an admin who was never
       // added to the access list is answered there the same way a stranger is.
-      const metaRes = await fetch(base, { cache: "no-store" });
+      const metaRes = await apiFetch(base, { cache: "no-store" });
       const payload = (await metaRes.json().catch(() => null)) as {
         meta: MetaSettings;
         config: Config;
@@ -846,7 +847,7 @@ export function MetaSettingsDialog({
   const save = async () => {
     if (!meta) return;
     setBusy(true);
-    const res = await fetch(base, {
+    const res = await apiFetch(base, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...meta, config: changed }),

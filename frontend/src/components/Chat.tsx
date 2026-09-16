@@ -44,6 +44,7 @@ import { formatMs, formatUsd } from "@/lib/format";
 import { fitImage } from "@/lib/image";
 import { pdfThumbnail } from "@/lib/pdf";
 import { startRecording, type Recorder } from "@/lib/recorder";
+import { apiFetch, identityHeaders, useAuthedUrl } from "@/lib/identity";
 
 /** Kept in step with the Worker's own ceiling, which is what actually enforces it. */
 const MAX_FILES_PER_MESSAGE = 4;
@@ -129,6 +130,21 @@ function fileUrl(sessionId: string, id: string) {
 /** The render of a PDF's first page, drawn at the head of its card. */
 function thumbUrl(sessionId: string, id: string) {
   return `${fileUrl(sessionId, id)}/thumb`;
+}
+
+/**
+ * A thumbnail from a route that wants to know who is asking.
+ *
+ * A browser attaches none of our identity headers to an image it fetches itself, so
+ * under the localStorage back door a plain `<img src>` would come back 401. `useAuthedUrl`
+ * reads the bytes with the headers attached and hands back a blob URL instead; with an
+ * ordinary Clerk session it passes the URL straight through and this is just an `img`.
+ */
+function Thumb({ src }: { src: string }) {
+  const href = useAuthedUrl(src);
+  if (!href) return null;
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={href} alt="" className="w-full object-cover object-top" />;
 }
 
 /**
@@ -488,12 +504,7 @@ function MessageDocs({
                 className="block h-[124px] overflow-hidden"
                 style={{ maskImage: FADE, WebkitMaskImage: FADE }}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={thumbUrl(sessionId, a.id)}
-                  alt=""
-                  className="w-full object-cover object-top"
-                />
+                <Thumb src={thumbUrl(sessionId, a.id)} />
               </span>
             ) : (
               a.preview && (
@@ -1081,7 +1092,7 @@ export function Chat({
     void (async () => {
       const agentId = agentIdOf(sessionId);
       if (!agentId) return;
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/agents/${encodeURIComponent(agentId)}/config`,
       );
       const payload = (await res.json().catch(() => null)) as {
@@ -1103,7 +1114,7 @@ export function Chat({
   // are restored when the session is reopened.
   useEffect(() => {
     void (async () => {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/sessions/${encodeURIComponent(sessionId)}/files`,
       );
       const payload = (await res.json().catch(() => null)) as {
@@ -1126,9 +1137,14 @@ export function Chat({
       messages: toUIMessages(initialMessages),
       transport: new DefaultChatTransport({
         api: `/api/sessions/${encodeURIComponent(sessionId)}/chat`,
+        // The transport does its own fetching, so it cannot go through `apiFetch`.
+        // A function rather than an object: it is read at send time, so becoming a
+        // different address mid-session takes effect on the next turn.
+        headers: identityHeaders,
         // Reconnecting is a GET to the same route, not to `<api>/<id>/stream`.
         prepareReconnectToStreamRequest: ({ api }) => ({
           api: `${api}?has=${encodeURIComponent(lastReply)}`,
+          headers: identityHeaders(),
         }),
       }),
       // A reload does not stop the turn: the agent keeps answering, so the reply is
@@ -1210,7 +1226,7 @@ export function Chat({
     // The strip is what the notice was about, so changing it retires the notice.
     setUploadError(null);
     setAttachments((a) => a.filter((x) => x.id !== id));
-    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files/${id}`, {
+    await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/files/${id}`, {
       method: "DELETE",
     });
   };
@@ -1310,7 +1326,7 @@ export function Chat({
       let res: Response;
       let payload: UploadPayload = null;
       try {
-        res = await fetch(
+        res = await apiFetch(
           `/api/sessions/${encodeURIComponent(sessionId)}/files`,
           {
             method: "POST",
@@ -1381,7 +1397,7 @@ export function Chat({
    */
   const reconcilePending = async (accepted: string[] = []) => {
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/sessions/${encodeURIComponent(sessionId)}/files`,
       );
       const payload = (await res.json()) as { attachments?: Attachment[] };
@@ -1389,7 +1405,7 @@ export function Chat({
       const stray = (payload.attachments ?? []).filter((a) => !keep.has(a.id));
       await Promise.all(
         stray.map((a) =>
-          fetch(
+          apiFetch(
             `/api/sessions/${encodeURIComponent(sessionId)}/files/${a.id}`,
             {
               method: "DELETE",

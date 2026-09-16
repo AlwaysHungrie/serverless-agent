@@ -5,6 +5,7 @@ import { Check, Link2, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { SECRET_MASK, type McpAuth, type McpServer } from "@/lib/agent";
 import { Toggle } from "@/components/CapabilitySection";
 import { McpPresetStrip, type McpPreset } from "@/components/McpPresets";
+import { apiFetch } from "@/lib/identity";
 
 const AUTH_MODES: { id: McpAuth; label: string; hint?: string }[] = [
   {
@@ -488,7 +489,7 @@ export function McpServers({
   // admin settings — but they arrive with the list itself rather than from `/meta`,
   // which only the agent's admin may read.
   const load = useCallback(async () => {
-    const res = await fetch(base, { cache: "no-store" });
+    const res = await apiFetch(base, { cache: "no-store" });
     const payload = (await res.json().catch(() => null)) as {
       servers: McpServer[];
       redirect_uri: string;
@@ -535,7 +536,7 @@ export function McpServers({
     init: RequestInit,
   ): Promise<McpServer | null> => {
     setBusy(true);
-    const res = await fetch(path, {
+    const res = await apiFetch(path, {
       headers: { "content-type": "application/json" },
       ...init,
     });
@@ -580,7 +581,7 @@ export function McpServers({
   ) => {
     const previous = servers.find((s) => s.id === id);
     setServers((all) => all.map((s) => (s.id === id ? { ...s, ...patch } : s)));
-    const res = await fetch(`${base}/${id}`, {
+    const res = await apiFetch(`${base}/${id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -607,7 +608,7 @@ export function McpServers({
 
   const remove = async (id: string) => {
     setBusy(true);
-    await fetch(`${base}/${id}${asOwner}`, { method: "DELETE" });
+    await apiFetch(`${base}/${id}${asOwner}`, { method: "DELETE" });
     setBusy(false);
     setServers((all) => all.filter((s) => s.id !== id));
   };

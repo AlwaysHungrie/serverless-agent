@@ -25,9 +25,10 @@ Two terminals.
 cd agent && pnpm install && pnpm dev          # http://localhost:8787
 ```
 
-`agent/.dev.vars` holds `OPENROUTER_API_KEY` and is gitignored. It is the fallback for
-an agent that has not been given a key of its own in Settings. It can also hold
-`API_SECRET`; leave it out locally and the worker answers without one.
+`agent/.dev.vars` is gitignored. It can hold `API_SECRET`, the impersonation back door —
+optional, and a deployment without one simply has one fewer way in. There is no
+deployment-wide OpenRouter key: every agent is given its own under Settings, and an
+agent without one cannot answer. See `.dev.vars.example`.
 
 ```bash
 # 2. the frontend
@@ -35,13 +36,23 @@ cd frontend && pnpm install && pnpm dev       # http://localhost:3000
 ```
 
 `frontend/.env.local` points at the worker via `AGENT_URL`, and holds the Clerk keys —
-see `.env.example`. The frontend never talks to the worker from the browser — every call
-goes through a Next route handler, so there is no CORS and no key exposure.
+see `.env.example`. It holds no shared secret: the worker identifies a caller by the
+Clerk session token this app forwards. The frontend never talks to the worker from the
+browser — every call goes through a Next route handler, so there is no CORS and no key
+exposure.
 
-Sign-in is Clerk. Every page and every route handler needs a session except the front
-door; each agent then carries its own list of email addresses, and an address not on it
-is told the agent does not exist. In production set `API_SECRET` on both sides so the
-worker only answers the frontend — see `agent/README.md`.
+Sign-in is Clerk, and a verified session token is the worker's gate: it answers nobody
+it cannot identify. Each agent then carries its own list of email addresses, and an
+address not on it is told the agent does not exist. `CLERK_ISSUER` in
+`agent/wrangler.jsonc` names the Clerk instance whose signatures count — the worker
+refuses to serve without it, and `npm run deploy` refuses to ship without it. It needs the
+Clerk instance to emit an `email` claim in its session token.
+
+The worker's `API_SECRET` is a back door, not a gate. Put it in a browser's
+localStorage under the key `API_SECRET` and that browser gets an address box instead of
+the sign-in dialog: type any address and you are that person, sign-up or no sign-up. The
+frontend never holds it — it lives in one browser and in the worker. See
+`agent/README.md`.
 
 ## What the UI shows
 

@@ -26,9 +26,10 @@ pnpm install
 pnpm dev                          # wrangler dev on http://localhost:8787
 ```
 
-`.dev.vars` is gitignored and holds `OPENROUTER_API_KEY`. That key is only a fallback:
-an agent with a key of its own — pasted under **Settings** — bills its own model calls
-there, so one agent's spend and rate limits never land on another's.
+Every agent needs an OpenRouter key of its own, pasted under **Settings**, and there is
+no deployment-wide fallback to stand in for it. One agent's spend and rate limits are
+its own, and an agent with no key says so instead of answering. That is deliberate: a
+fallback would mean any agent anyone creates here spends the deployment's own credit.
 
 Attachment bytes (images, voice-note clips) live in R2, not in the session's SQLite.
 Create the bucket once before deploying — `wrangler dev` simulates it locally:
@@ -113,20 +114,76 @@ because removing yourself would hand the agent to the remaining addresses and lo
 out of the page that could undo it. Either way the list may not end up empty: an agent
 nobody is on is one nobody can get back into.
 
-Two headers carry the caller's authority, and the frontend adds both to every call it
-forwards:
+There are two ways to be somebody here, and they do not overlap.
 
-- `x-api-secret` — must equal the Worker's `API_SECRET`. It is what says the call came
-  from the app at all; the Worker is on the public internet, so without it anyone could
-  read an agent's settings, keys included, straight out of the API.
-- `x-user-email` — the signed-in address, taken from Clerk on the server. The Worker
-  trusts it *because* the secret vouched for the caller.
+**A Clerk session token**, sent as `authorization: Bearer <token>`. The Worker verifies
+its signature against Clerk's published keys and takes the address out of the verified
+claims, so it is an address Clerk vouched for rather than one the caller typed. This is
+the only identity a normal user of the app ever has, and it is the gate: everything
+under `/api` and `/agents` refuses a caller it cannot identify.
 
-Set `API_SECRET` (`wrangler secret put API_SECRET`) and everything under `/api` and
-`/agents` needs the pair; an address not on an agent's list is told the agent does not
-exist rather than that it may not have it. Session routes are covered by the same list —
-a session id names its agent. Leave `API_SECRET` unset and the Worker is open, which is
-what local development wants and is wrong anywhere else.
+**`x-api-secret` + `x-user-email`**, which is a back door on purpose. Present the
+deployment's `API_SECRET` and the Worker takes the address beside it at face value —
+any address, no sign-in, no proof — and treats the caller as that person for the whole
+request, including addresses that have never signed up. It exists so a holder of the
+secret can act as anyone. It is not an origin check: `API_SECRET` is a master key to
+every identity in this deployment, and it should be read that way. Leave it unset and
+the door is not there at all, which is the safe direction to fail in.
+
+An address not on an agent's access list is told the agent does not exist rather than
+that it may not have it, however it was arrived at. Session routes are covered by the
+same list — a session id names its agent.
+
+`CLERK_ISSUER` is the exact `iss` your tokens carry —
+`https://<subdomain>.clerk.accounts.dev` on a development instance,
+`https://clerk.<your-domain>` on a production one. It is a public URL and the key set
+under it is public too, so it is a plain `var` in `wrangler.jsonc` rather than a secret,
+and the same value serves `wrangler dev` and a deploy because both sign in against the
+same Clerk instance. The key set is fetched from `/.well-known/jwks.json` under it and
+cached for the life of the isolate, with a 30s floor between refetches, and every
+verified token is cached by hash until its own `exp`, so a stream that reconnects a
+hundred times costs one signature check.
+
+**The token has to carry the user's address, and Clerk does not put it there by
+default.** This instance has a customised session token — Clerk dashboard → Sessions →
+Customize session token — adding:
+
+```json
+{ "email": "{{user.primary_email_address}}" }
+```
+
+Without that claim the signature still verifies but there is no address in it, so the
+caller is nobody and the call is refused. The claim is instance-wide configuration and
+lives in the Clerk dashboard, not in this repo, so a new Clerk instance needs it added
+by hand. The alternative is a JWT template that emits the same claim, named on the
+frontend in `CLERK_JWT_TEMPLATE`.
+
+## The Worker refuses to run unconfigured
+
+`CLERK_ISSUER` has no unset case. A Worker without it does not serve a weaker version of
+the API — it returns 503 to every request, naming what is missing, before it looks at
+the method or the path. See `unconfigured()` in [src/server.ts](src/server.ts).
+
+The reason is that it is what makes ordinary sign-in work at all. With no issuer no
+signature can be checked, so no Clerk user can be identified, and the only identity left
+standing is the `API_SECRET` back door — a deployment where impersonation is the only
+way in. Refusing to start is better than that.
+
+`API_SECRET` is deliberately **not** required. It is the back door, not the gate, and a
+deployment without one simply has one fewer way in.
+
+Two layers, because the one that matters is the version that is already live:
+
+- **`npm run deploy`** runs [scripts/preflight.mjs](scripts/preflight.mjs) first, which
+  refuses if `CLERK_ISSUER` is missing or if it could not check at all, and says out
+  loud whether `API_SECRET` is set — a live back door is not something to ship without
+  noticing. Secrets are listable but not readable, which is all this needs.
+- **The Worker itself** refuses to serve, so a deploy made by running `wrangler deploy`
+  directly still fails closed.
+
+Set the back door with `wrangler secret put API_SECRET`, or in `agent/.dev.vars` for
+`wrangler dev`. The frontend does not hold it: it is pasted into a single browser's
+localStorage, and that browser sends it.
 
 Two routes are deliberately outside all of this:
 

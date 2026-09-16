@@ -18,6 +18,7 @@ import {
   type Summary,
   type TranscriptPage,
 } from "@/lib/agent";
+import { apiFetch } from "@/lib/identity";
 
 /**
  * One agent: its sessions, its settings, its bot. Everything on this page is scoped
@@ -83,7 +84,7 @@ export default function AgentPage({
 
   // Read once: the agent's name for the sidebar, and the bot handle for the links.
   useEffect(() => {
-    void fetch(`/api/agents/${encodeURIComponent(agentId)}/config`)
+    void apiFetch(`/api/agents/${encodeURIComponent(agentId)}/config`)
       .then((res) => (res.ok ? res.json() : null))
       .then(
         (
@@ -118,7 +119,7 @@ export default function AgentPage({
    */
   const loadSessions = useCallback(async () => {
     const payload = await readJson<SessionPage>(
-      await fetch(
+      await apiFetch(
         `/api/agents/${encodeURIComponent(agentId)}/sessions?limit=${SESSION_PAGE}`,
       ),
     );
@@ -134,7 +135,7 @@ export default function AgentPage({
   const loadMoreSessions = useCallback(async () => {
     if (!sessionCursor.more || !sessionCursor.cursor) return;
     const payload = await readJson<SessionPage>(
-      await fetch(
+      await apiFetch(
         `/api/agents/${encodeURIComponent(agentId)}/sessions?limit=${SESSION_PAGE}` +
           `&cursor=${encodeURIComponent(sessionCursor.cursor)}`,
       ),
@@ -151,7 +152,7 @@ export default function AgentPage({
 
   const loadSummary = useCallback(
     async (id: string) => {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/sessions/${encodeURIComponent(id)}/summary`,
       );
       setSummary(await readJson<Summary>(res));
@@ -170,7 +171,7 @@ export default function AgentPage({
   useEffect(() => {
     if (!selected) return;
     void (async () => {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/sessions/${encodeURIComponent(selected)}/messages?limit=${MESSAGE_PAGE}`,
       );
       const payload = await readJson<TranscriptPage>(res);
@@ -193,7 +194,7 @@ export default function AgentPage({
   const loadOlderMessages = useCallback(
     async (beforeId: string): Promise<TranscriptPage | null> => {
       if (!selected) return null;
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/sessions/${encodeURIComponent(selected)}/messages` +
           `?limit=${MESSAGE_PAGE}&before=${encodeURIComponent(beforeId)}`,
       );
@@ -205,7 +206,7 @@ export default function AgentPage({
   const createSession = async () => {
     // No title: the session is called "New session" until the agent names it from
     // the first exchange.
-    const res = await fetch(
+    const res = await apiFetch(
       `/api/agents/${encodeURIComponent(agentId)}/sessions`,
       { method: "POST" },
     );
@@ -220,7 +221,7 @@ export default function AgentPage({
    * session, which then opens. The original is left exactly as it was.
    */
   const forkSession = async (id: string, count: number, draft: string) => {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/fork`, {
+    const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/fork`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ count }),
@@ -235,7 +236,7 @@ export default function AgentPage({
 
   /** Rename a session in place. The sidebar row follows from the reloaded list. */
   const renameSession = async (id: string, title: string) => {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title }),
@@ -245,7 +246,7 @@ export default function AgentPage({
   };
 
   const deleteSession = async (id: string) => {
-    await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+    await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
     const list = await loadSessions();

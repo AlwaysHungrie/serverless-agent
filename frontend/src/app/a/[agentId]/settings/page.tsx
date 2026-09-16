@@ -3,7 +3,6 @@
 import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Check } from "lucide-react";
-import { useUser } from "@clerk/nextjs";
 import {
   CapabilitySection,
   ChipList,
@@ -17,6 +16,7 @@ import type {
   ModelOption,
   ReasoningEffort,
 } from "@/lib/agent";
+import { apiFetch, useIdentity } from "@/lib/identity";
 
 /**
  * The OpenRouter key is not a capability's credential — it is what every model call
@@ -125,11 +125,8 @@ export default function Settings({
   params: Promise<{ agentId: string }>;
 }) {
   const { agentId } = use(params);
-  const { user } = useUser();
   /** The signed-in address. It is on the list whatever the box says, so it is shown apart from it. */
-  const ownEmail = (
-    user?.primaryEmailAddress?.emailAddress ?? ""
-  ).toLowerCase();
+  const { email: ownEmail } = useIdentity();
   const [agent, setAgent] = useState<AgentRow | null>(null);
   const [name, setName] = useState("");
   /** The stored access list, one address per line, the signed-in address included. */
@@ -157,7 +154,7 @@ export default function Settings({
 
   useEffect(() => {
     void (async () => {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/agents/${encodeURIComponent(agentId)}/config`,
       );
       const payload = (await res.json().catch(() => null)) as {
@@ -195,7 +192,7 @@ export default function Settings({
       return;
     }
     setSaving(true);
-    const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`, {
+    const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: cleaned }),
@@ -217,7 +214,7 @@ export default function Settings({
    */
   const saveEmails = async (next: string) => {
     setSaving(true);
-    const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`, {
+    const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ allowed_emails: next }),
@@ -239,7 +236,7 @@ export default function Settings({
 
   const save = async (patch: Partial<Config>) => {
     setSaving(true);
-    const res = await fetch(
+    const res = await apiFetch(
       `/api/agents/${encodeURIComponent(agentId)}/config`,
       {
         method: "PATCH",

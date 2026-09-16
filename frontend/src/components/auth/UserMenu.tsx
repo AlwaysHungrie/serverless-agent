@@ -1,17 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useClerk, useUser } from "@clerk/nextjs";
+import { useUser } from "@clerk/nextjs";
+import { useIdentity } from "@/lib/identity";
 
 /**
  * The signed-in avatar and its one menu item.
  *
  * Clerk's own <UserButton> carries a profile manager, an org switcher and its
  * branding; none of that has a place here. This is the picture and a way out.
+ *
+ * An impersonated address has no Clerk user behind it and so no picture; it gets its
+ * first letter on a plain disc, and "Log out" puts the address box back rather than
+ * ending a session there was never one of.
  */
 export function UserMenu() {
-  const { user, isLoaded } = useUser();
-  const { signOut } = useClerk();
+  const { user } = useUser();
+  const { ready, mode, email, signedIn, signOut } = useIdentity();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
@@ -32,11 +37,12 @@ export function UserMenu() {
     };
   }, [open]);
 
-  if (!isLoaded || !user) return null;
+  if (!ready || !signedIn) return null;
 
+  const label = email || "Account";
   // Google accounts arrive with a picture; email sign-ups get Clerk's generated
-  // initials image, so there is always something to show.
-  const label = user.primaryEmailAddress?.emailAddress ?? "Account";
+  // initials image. An impersonated address has neither, so it gets a letter.
+  const picture = mode === "clerk" ? user?.imageUrl : undefined;
 
   return (
     <div ref={root} className="relative">
@@ -48,14 +54,20 @@ export function UserMenu() {
         aria-label={label}
         className="ring-hairline hover:ring-ink block h-12 w-12 cursor-pointer overflow-hidden rounded-full ring-2 transition"
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={user.imageUrl}
-          alt=""
-          width={56}
-          height={5}
-          className="h-full w-full object-cover"
-        />
+        {picture ? (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img
+            src={picture}
+            alt=""
+            width={56}
+            height={5}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <span className="bg-field text-ink flex h-full w-full items-center justify-center text-[16px] font-semibold uppercase">
+            {label.slice(0, 1)}
+          </span>
+        )}
       </button>
 
       {open && (
@@ -68,11 +80,11 @@ export function UserMenu() {
             role="menuitem"
             onClick={() => {
               setOpen(false);
-              void signOut();
+              signOut();
             }}
             className="hover:bg-canvas-soft w-full cursor-pointer rounded-[12px] px-3 py-2 text-left text-[14px] leading-[1.43] transition"
           >
-            Log out
+            {mode === "local" ? "Use another address" : "Log out"}
           </button>
         </div>
       )}

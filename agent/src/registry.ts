@@ -47,8 +47,9 @@ export type Config = {
 
   /**
    * The agent's own OpenRouter key. Every model call this agent makes is billed to
-   * it, so one agent's spend and rate limits are its own. Blank falls back to the
-   * Worker's `OPENROUTER_API_KEY`, which is what a single-agent deploy uses.
+   * it, so one agent's spend and rate limits are its own. There is no fallback: blank
+   * means the agent cannot answer, which is the only way a deployment's own credit
+   * stays out of reach of every agent anyone creates on it.
    */
   openrouter_api_key: string;
   /** Brave Search API key. The default web search provider when set. */

@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Plus, SlidersHorizontal } from "lucide-react";
-import { useAuth, useUser } from "@clerk/nextjs";
 import { AuthModal } from "@/components/auth/AuthModal";
+import { apiFetch, useIdentity } from "@/lib/identity";
 import { ChipList } from "@/components/CapabilitySection";
 import { UserMenu } from "@/components/auth/UserMenu";
 import {
@@ -31,12 +31,12 @@ import {
  */
 export default function Agents() {
   const router = useRouter();
-  const { isLoaded, isSignedIn } = useAuth();
-  const { user } = useUser();
-  /** The signed-in address, which is what decides admin from user on every row. */
-  const email = (
-    user?.primaryEmailAddress?.emailAddress ?? ""
-  ).trim().toLowerCase();
+  /**
+   * Whoever this browser is acting as — a Clerk session, or an address typed into the
+   * back door. The rest of this page does not care which: an address is an address,
+   * and it is what decides admin from user on every row.
+   */
+  const { ready: isLoaded, signedIn: isSignedIn, email } = useIdentity();
   const [agents, setAgents] = useState<AgentRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -50,7 +50,7 @@ export default function Agents() {
   const [authing, setAuthing] = useState(false);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/agents", { cache: "no-store" });
+    const res = await apiFetch("/api/agents", { cache: "no-store" });
     const payload = (await res.json().catch(() => null)) as {
       agents?: AgentRow[];
       error?: string;
@@ -87,7 +87,7 @@ export default function Agents() {
     meta: MetaSettings,
   ): Promise<string | null> => {
     setBusy(true);
-    const res = await fetch("/api/agents", {
+    const res = await apiFetch("/api/agents", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -112,7 +112,7 @@ export default function Agents() {
 
   const remove = async (id: string) => {
     setBusy(true);
-    await fetch(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await apiFetch(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
     setBusy(false);
     await load();
   };
@@ -136,9 +136,9 @@ export default function Agents() {
           )}
         </div>
 
-        {/* Clerk Core 3 has no <SignedIn>/<SignedOut>; the session comes from the
-            hook instead, and nothing is drawn until it has loaded — otherwise the
-            prerendered page would flash the front door at someone already signed in. */}
+        {/* Nothing is drawn until the identity has resolved — otherwise the
+            prerendered page would flash the front door at someone already signed in,
+            and localStorage cannot be read on the server at all. */}
         {!isLoaded && (
           <p className="text-muted py-16 text-[14px] leading-[1.43]">
             Loading…
@@ -354,10 +354,7 @@ function NewAgent({
     meta: MetaSettings,
   ) => Promise<string | null>;
 }) {
-  const { user } = useUser();
-  const ownEmail = (
-    user?.primaryEmailAddress?.emailAddress ?? ""
-  ).toLowerCase();
+  const { email: ownEmail } = useIdentity();
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState("");
   /**
@@ -383,8 +380,8 @@ function NewAgent({
    *
    * Only once, and only as a starting point: taking it out is a deliberate act — you
    * are making an agent for somebody else — and putting it back every render would
-   * make that impossible. Clerk resolves the user after the first paint, so this
-   * cannot simply be the initial state.
+   * make that impossible. The address resolves after the first paint either way, so
+   * this cannot simply be the initial state.
    */
   useEffect(() => {
     if (seeded.current || !ownEmail) return;
@@ -396,7 +393,7 @@ function NewAgent({
   // yet, so they come from the deployment rather than from one agent's config.
   useEffect(() => {
     void (async () => {
-      const res = await fetch("/api/agents/catalog", { cache: "no-store" });
+      const res = await apiFetch("/api/agents/catalog", { cache: "no-store" });
       const payload = (await res.json().catch(() => null)) as {
         models?: ModelOption[];
         capabilities?: Capability[];

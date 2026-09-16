@@ -1,24 +1,27 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
-
-/**
- * The pages that render for a signed-out visitor.
- *
- * Only the front door, the auth screens and the OAuth landing pad. Everything else — every agent page,
- * every API route the browser calls — needs a session, because everything else is
- * either someone's agent or a call made on their behalf. The one API route that is
- * signed-in-but-not-agent-scoped is `POST /api/agents`: creating an agent needs an
- * account, but there is no access list to check against yet.
- */
-const isPublic = createRouteMatcher(["/", "/sign-in(.*)", "/sign-up(.*)", "/sso-callback(.*)"]);
+import { clerkMiddleware } from "@clerk/nextjs/server";
 
 /**
  * `proxy` is the Next 16 name for what used to be `middleware`; both the named and
  * the default export are kept so Clerk finds its handler either way.
+ *
+ * It establishes the Clerk session and stops there. It does **not** protect routes,
+ * and that is a deliberate change: this app has a second way to be somebody — the
+ * `API_SECRET` back door, chosen in the browser's localStorage — and middleware runs
+ * too early and in the wrong place to see it. A page navigation carries no headers of
+ * ours, so `auth.protect()` here would bounce every impersonated visitor to a sign-in
+ * screen they have no intention of using, for pages that would have worked.
+ *
+ * Nothing is given away by that. The pages are shells; every byte of agent data on
+ * them arrives from a route handler, each route handler forwards to the Worker, and
+ * the Worker answers nobody it cannot identify and shows no agent to an address that
+ * is not on its list. Reaching an agent page you were not given renders an empty
+ * frame and a 404 from the API, which is what it rendered before. The gate was never
+ * here; it was always on the other side of `AGENT_URL`.
+ *
+ * What replaces it for the user's sake, not the data's, is `useIdentity()`: each page
+ * draws the front door when nobody is signed in, so the experience is unchanged.
  */
-export const proxy = clerkMiddleware(async (auth, request) => {
-  if (isPublic(request)) return;
-  await auth.protect();
-});
+export const proxy = clerkMiddleware();
 
 export default proxy;
 

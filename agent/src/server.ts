@@ -44,6 +44,7 @@ import {
   type McpServerView,
 } from "./mcp";
 import { mcpServerReady, withMcpAuth } from "./capabilities";
+import { clerkEmail } from "./clerk";
 
 export { SessionAgent } from "./agent";
 export { AgentDirectory, SessionRegistry } from "./registry";
@@ -51,16 +52,24 @@ export { AgentDirectory, SessionRegistry } from "./registry";
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,DELETE,PATCH,OPTIONS",
-  "access-control-allow-headers": "content-type, x-api-secret, x-user-email",
+  "access-control-allow-headers": "content-type, authorization, x-api-secret, x-user-email",
 };
 
 /**
- * The two headers the frontend adds to every call it forwards.
+ * The headers a call can carry, and the two ways to be somebody here.
  *
- * `x-api-secret` is what says the call came from the frontend at all — the Worker is
- * on the public internet, so without it anyone could ask for an agent's settings and
- * read its keys back out. `x-user-email` is the signed-in address the frontend got
- * from Clerk; the Worker trusts it *because* the secret vouched for the caller.
+ * `authorization` is the ordinary one: a Clerk session token, whose signature the
+ * Worker verifies against Clerk's published keys. The address comes out of the
+ * verified claims, so it is one Clerk vouched for rather than one the caller typed.
+ * This is the only identity a normal user of the app ever has.
+ *
+ * `x-api-secret` + `x-user-email` is the other one, and it is a back door on purpose.
+ * Present the deployment's `API_SECRET` and the Worker takes the address beside it at
+ * face value — any address, with no sign-in and no proof — and treats the caller as
+ * that person for the whole request. It exists so a holder of the secret can act as
+ * anyone, which is a feature here rather than an accident. It is also why `API_SECRET`
+ * is not an origin check but a master key: whoever has it has every identity in the
+ * deployment. Leave it unset and the door is not there at all.
  */
 const API_SECRET_HEADER = "x-api-secret";
 const USER_EMAIL_HEADER = "x-user-email";
@@ -85,23 +94,61 @@ function directory(env: Env) {
 }
 
 /**
- * Whether a request carries the frontend's shared secret.
+ * Whether a request carries the deployment's shared secret.
  *
- * A deploy with no `API_SECRET` set is unguarded, which is what local development
- * wants: `wrangler dev` and `next dev` with no extra setup. Set the secret in
- * production and every route below the gate needs it.
+ * An unset `API_SECRET` is false, never true. A missing secret closes the back door;
+ * it does not prop it open. This is the one place that distinction is made, and
+ * having it backwards would hand every identity in the deployment to anyone at all.
  */
 function trustedCaller(request: Request, env: Env): boolean {
-  if (!env.API_SECRET) return true;
+  if (!env.API_SECRET) return false;
   return request.headers.get(API_SECRET_HEADER) === env.API_SECRET;
 }
 
 /**
- * The signed-in address on whose behalf this call is made, or "" when the deployment
- * is unguarded and nobody was named. An empty address never matches an access list,
- * so an agent's routes stay closed unless the check is explicitly skipped.
+ * What a deployment has to have been given before it is allowed to answer anything.
+ *
+ * `CLERK_ISSUER` is the one that matters. It is what lets the Worker verify a session
+ * token, and a verified token is how every ordinary caller here becomes somebody.
+ * Without it no signature can be checked, so no normal user can be identified at all,
+ * and the only remaining way in is the `API_SECRET` back door — a deployment where
+ * the sole working identity is the impersonation one. Worth refusing to start over.
+ *
+ * `API_SECRET` is deliberately *not* required. It is the back door, not the gate, and
+ * a deployment without one simply has no back door — which is the safe direction to
+ * fail in.
+ *
+ * Checked per request rather than at module load on purpose: a `throw` in the global
+ * scope of a Worker surfaces as an opaque 1101, and the point of this gate is to say
+ * exactly what is missing.
  */
-function callerEmail(request: Request): string {
+function unconfigured(env: Env): string[] {
+  const missing: string[] = [];
+  if (!env.CLERK_ISSUER) missing.push("CLERK_ISSUER");
+  return missing;
+}
+
+/**
+ * The signed-in address on whose behalf this call is made, or "" when nobody was
+ * named. An empty address never matches an access list, so an agent's routes stay
+ * closed unless the check is explicitly skipped.
+ *
+ * The Clerk token wins when there is one. Its signature was checked against Clerk's
+ * own keys, so nothing between the browser and here could have changed the address in
+ * it, and `clerkEmail` caches the result for the token's short life so this costs a
+ * map lookup rather than a public-key operation on the calls that follow.
+ *
+ * `x-user-email` is the fallback, and it is only ever reached when there is no
+ * verified token to prefer. It is trusted on the strength of `API_SECRET` alone —
+ * see the note on the headers above for what that means and why it stays.
+ */
+async function callerEmail(request: Request, env: Env): Promise<string> {
+  const verified = await clerkEmail(request, env);
+  if (verified) return verified;
+  // The back door, and it opens for nobody without the secret. `trustedCaller` is
+  // false when `API_SECRET` is unset, so a deployment that never configured one has
+  // no second way in rather than an unguarded one.
+  if (!trustedCaller(request, env)) return "";
   return (request.headers.get(USER_EMAIL_HEADER) ?? "").trim().toLowerCase();
 }
 
@@ -145,17 +192,13 @@ async function agentAccess(
 /**
  * Whether the caller may *use* `agentId`: its chats, its files, its settings.
  *
- * An unguarded deployment lets everything through — there is no identity to check
- * against, and pretending otherwise would only lock local development out of its own
- * agents. A guarded one requires the address to be on the agent's list.
- *
- * Membership, and only membership. The admin is deliberately not consulted: an admin
- * who never put their own address on the list administers an agent they cannot open,
- * which is the ordinary case now that the two are separate.
+ * The address has to be on the agent's list. Membership, and only membership: the
+ * admin is deliberately not consulted, so an admin who never put their own address on
+ * the list administers an agent they cannot open, which is the ordinary case now that
+ * the two are separate.
  */
 async function mayUseAgent(request: Request, env: Env, agentId: string): Promise<boolean> {
-  if (!env.API_SECRET) return true;
-  const email = callerEmail(request);
+  const email = await callerEmail(request, env);
   if (!email) return false;
   const access = await agentAccess(env, agentId);
   return !!access && emailAllowed(access.allowed_emails, email);
@@ -1167,9 +1210,9 @@ async function handleAgents(
 
   if (!agentId) {
     if (request.method === "GET") {
-      // A guarded deployment lists only what the caller may open; an unguarded one
-      // has no identity to filter on and lists everything.
-      const email = env.API_SECRET ? callerEmail(request) : undefined;
+      // Only what the caller may open. An address that names nobody filters to
+      // nothing, which is the right answer for a call that proved no identity.
+      const email = await callerEmail(request, env);
       return withCors(Response.json({ agents: await dir.list(email) }));
     }
     if (request.method === "POST") {
@@ -1217,7 +1260,7 @@ async function handleAgents(
       } catch (err) {
         return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
       }
-      if (env.API_SECRET && !allowed) {
+      if (!allowed) {
         return withCors(
           Response.json({ error: "at least one email is required" }, { status: 400 })
         );
@@ -1236,10 +1279,10 @@ async function handleAgents(
       // things now, and the box above is the whole answer to the second.
       //
       // Resolved here rather than inside the directory so that both objects are told
-      // the same thing. An unguarded deployment has no caller to name, and falls back
-      // to the first address on the list.
+      // the same thing. A call that named nobody falls back to the first address on
+      // the list, so the agent is never left with no administrator at all.
       const newId = AGENT_ID();
-      const admin = callerEmail(request) || (splitEmails(allowed)[0] ?? "");
+      const admin = (await callerEmail(request, env)) || (splitEmails(allowed)[0] ?? "");
 
       // The agent's own object first, the index second. The access list is only ever
       // decided by the registry, so writing it there is what brings the agent into
@@ -1321,13 +1364,10 @@ async function handleAgents(
    *
    * Both are true at once when the admin put their own address on the list, which is
    * the ordinary case for an agent someone made for themselves.
-   *
-   * An unguarded deployment has no identity to check against, so both are true.
    */
-  const guarded = !!env.API_SECRET;
-  const email = callerEmail(request);
-  const isUser = !guarded || emailAllowed(access.allowed_emails, email);
-  const isAdmin = !guarded || (!!email && access.admin_email === email);
+  const email = await callerEmail(request, env);
+  const isUser = emailAllowed(access.allowed_emails, email);
+  const isAdmin = !!email && access.admin_email === email;
   if (!isUser && !isAdmin) return notFound();
 
   const section = segments[3];
@@ -1363,7 +1403,7 @@ async function handleAgents(
         // The editor stays on the list. Removing yourself would hand the agent to
         // the remaining addresses and lock you out of the page that could undo it —
         // and emptying the list entirely would strand the agent for everyone.
-        const caller = callerEmail(request);
+        const caller = await callerEmail(request, env);
         let allowed: string;
         try {
           allowed = normalizeEmails([
@@ -1809,6 +1849,22 @@ async function handleWebhook(
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // Before anything else, including CORS: a Worker that cannot identify anyone
+    // answers nothing at all. 503 rather than 500 — the deployment is not broken, it
+    // is incomplete, and it starts working the moment the variable is set without
+    // anything here changing.
+    const missing = unconfigured(env);
+    if (missing.length) {
+      return withCors(
+        Response.json(
+          {
+            error: `This Worker is not configured: ${missing.join(", ")} is not set, so no Clerk session token can be verified and no ordinary caller can be identified. Set it in \`vars\` in agent/wrangler.jsonc — it is the \`iss\` your Clerk tokens carry, e.g. https://<subdomain>.clerk.accounts.dev.`,
+          },
+          { status: 503 }
+        )
+      );
+    }
+
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
 
     const url = new URL(request.url);
@@ -1822,14 +1878,22 @@ export default {
       return await handleOauthCallback(url, env);
     }
 
-    // Everything past this point is the app's own API, and the app is the only thing
-    // meant to call it. Telegram's webhook and the MCP OAuth redirect are the two
-    // exceptions, and both are matched before it: Telegram proves itself with the
-    // per-bot secret it echoes back, and the redirect arrives from the provider's
-    // browser, carrying a state token instead of a header.
+    // Everything past this point has to be somebody. Not "came from the app" — that
+    // was the old gate, and a shared secret is a poor answer to a question about
+    // identity — but an address this Worker is willing to stand behind: one out of a
+    // verified Clerk token, or one named beside the `API_SECRET` back door.
+    //
+    // Nothing below this line is reachable anonymously, and everything below it can
+    // assume `callerEmail` is non-empty. The two exceptions are matched before it:
+    // Telegram proves itself with the per-bot secret it echoes back, and the MCP
+    // OAuth redirect arrives from the provider's browser carrying a state token
+    // instead of a header.
+    //
+    // `clerkEmail` caches by token, so the verification this forces is paid once per
+    // token rather than once per request, and the checks further down reuse it.
     if (
       (segments[0] === "api" || segments[0] === "agents") &&
-      !trustedCaller(request, env)
+      !(await callerEmail(request, env))
     ) {
       return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
     }

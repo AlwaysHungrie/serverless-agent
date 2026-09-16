@@ -1,1 +1,12 @@
-OPENROUTER_API_KEY=sk-or-v1-...
+# No OPENROUTER_API_KEY here: there is no deployment-wide fallback. Every agent is
+# given its own key under Settings, and an agent without one cannot answer.
+
+# The impersonation back door. Optional: unset simply means there is no back door.
+# Set it and any browser holding the same value in localStorage under the key
+# `API_SECRET` can act as any address at all, with no sign-in. The frontend never
+# holds it — it is pasted into one browser by hand.
+API_SECRET=local-dev-secret
+
+# CLERK_ISSUER is not here: it is a public URL, not a secret, so it lives in `vars` in
+# wrangler.jsonc and is the same for `wrangler dev` and for a deploy. Set it here only
+# to point local development at a different Clerk instance.
