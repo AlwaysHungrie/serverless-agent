@@ -1154,11 +1154,17 @@ async function handleAgents(
       //
       // It may not be empty, though. An agent nobody is on is one nobody can reach,
       // including to delete it.
-      const allowed = normalizeEmails(
-        Array.isArray(body.allowed_emails)
-          ? body.allowed_emails
-          : (body.allowed_emails ?? "").split(/[\n,;]/)
-      );
+      // Too many addresses is refused rather than trimmed to fit: see `MAX_MEMBERS`.
+      let allowed: string;
+      try {
+        allowed = normalizeEmails(
+          Array.isArray(body.allowed_emails)
+            ? body.allowed_emails
+            : (body.allowed_emails ?? "").split(/[\n,;]/)
+        );
+      } catch (err) {
+        return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+      }
       if (env.API_SECRET && !allowed) {
         return withCors(
           Response.json({ error: "at least one email is required" }, { status: 400 })
@@ -1270,12 +1276,17 @@ async function handleAgents(
         // the remaining addresses and lock you out of the page that could undo it —
         // and emptying the list entirely would strand the agent for everyone.
         const caller = callerEmail(request);
-        const allowed = normalizeEmails([
-          ...(caller ? [caller] : []),
-          ...(Array.isArray(body.allowed_emails)
-            ? body.allowed_emails
-            : body.allowed_emails.split(/[\n,;]/)),
-        ]);
+        let allowed: string;
+        try {
+          allowed = normalizeEmails([
+            ...(caller ? [caller] : []),
+            ...(Array.isArray(body.allowed_emails)
+              ? body.allowed_emails
+              : body.allowed_emails.split(/[\n,;]/)),
+          ]);
+        } catch (err) {
+          return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+        }
         if (!allowed) {
           return withCors(
             Response.json({ error: "at least one email is required" }, { status: 400 })

@@ -944,7 +944,30 @@ export type AgentRow = {
   admin_email: string;
 };
 
-/** The stored form of an access list: lowercased, de-duplicated, one per line. */
+/**
+ * How many addresses one agent's access list may hold.
+ *
+ * A ceiling rather than a storage limit — membership is rows now, not one column, so
+ * this is only about keeping a pasted mailing list from turning into ten thousand
+ * inserts. Going over is an error, not a truncation: silently dropping the addresses
+ * past the cap is how someone adds a teammate, sees the save succeed, and finds out
+ * weeks later that the teammate was never on the list.
+ */
+export const MAX_MEMBERS = 200;
+
+/** The addresses in a stored access list: lowercased, trimmed, blanks dropped. */
+export function splitEmails(stored: string): string[] {
+  return stored
+    .split("\n")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * The stored form of an access list: lowercased, de-duplicated, one per line.
+ *
+ * Throws when there are more than `MAX_MEMBERS` of them, so the caller can say so.
+ */
 export function normalizeEmails(input: string | string[]): string {
   const raw = Array.isArray(input) ? input : input.split(/[\n,;]/);
   const seen = new Set<string>();
@@ -953,28 +976,30 @@ export function normalizeEmails(input: string | string[]): string {
     // Enough of a shape check to keep typos and pasted prose out of the list.
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) seen.add(email);
   }
-  return [...seen].slice(0, 50).join("\n");
+  if (seen.size > MAX_MEMBERS) {
+    throw new Error(`an agent may have at most ${MAX_MEMBERS} addresses on its access list`);
+  }
+  return [...seen].join("\n");
 }
 
 /** The first address on a stored access list, or "" when it is empty. */
 function firstEmail(allowed: string): string {
-  return (
-    allowed
-      .split("\n")
-      .map((e) => e.trim().toLowerCase())
-      .find(Boolean) ?? ""
-  );
+  return splitEmails(allowed)[0] ?? "";
 }
 
-/** Whether `email` appears in a stored access list. */
+/**
+ * Whether `email` appears in a stored access list.
+ *
+ * Still here, and still exact, because the access list travels to the Worker as the
+ * text column on `AgentRow` — `mayUseAgent` and the per-section checks in `server.ts`
+ * have a row in hand and no reason to ask the directory a second question. The
+ * `agent_members` table is what makes *finding* rows by address indexable; this is
+ * what checks one row already fetched.
+ */
 export function emailAllowed(allowed: string, email: string): boolean {
   const wanted = email.trim().toLowerCase();
   if (!wanted) return false;
-  return allowed
-    .split("\n")
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean)
-    .includes(wanted);
+  return splitEmails(allowed).includes(wanted);
 }
 
 /**
@@ -1024,33 +1049,150 @@ export class AgentDirectory extends DurableObject {
                      ELSE allowed_emails END))
         WHERE admin_email = ''`
     );
+
+    // One row per address, which is what makes "the agents this person may open" an
+    // index lookup instead of a walk over every agent in the deployment.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS agent_members (
+         agent_id TEXT NOT NULL,
+         email TEXT NOT NULL,
+         PRIMARY KEY (agent_id, email)
+       )`
+    );
+    this.ctx.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_agent_members_email ON agent_members(email)`
+    );
+    this.ctx.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_agents_admin_email ON agents(admin_email)`
+    );
+
+    this.migrate();
     this.ready = true;
+  }
+
+  /**
+   * One-time data migrations, guarded by a version number rather than by the shape of
+   * the data.
+   *
+   * The `admin_email` backfill above can re-run harmlessly because "no admin" is a
+   * state the data can express. Membership cannot: an agent with no rows in
+   * `agent_members` is indistinguishable from one that has not been migrated yet, and
+   * guessing wrong in the second direction would silently re-add addresses that were
+   * deliberately removed. So the version is written down.
+   *
+   * Nothing here drops anything. `agents.allowed_emails` stays exactly as it was —
+   * see `setAllowedEmails` for why it is still written.
+   */
+  private migrate() {
+    const sql = this.ctx.storage.sql;
+    sql.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`);
+    const current = Number(
+      (sql.exec(`SELECT version FROM schema_version LIMIT 1`).toArray()[0]?.version as
+        | number
+        | undefined) ?? 0
+    );
+
+    // v1: membership moves from the newline-separated column to its own table. The
+    // column is the only record of who was on which list, so it is read, not cleared.
+    if (current < 1) {
+      this.ctx.storage.transactionSync(() => {
+        const rows = sql
+          .exec(`SELECT id, allowed_emails FROM agents`)
+          .toArray() as unknown as { id: string; allowed_emails: string }[];
+        for (const row of rows) {
+          for (const email of splitEmails(row.allowed_emails)) {
+            sql.exec(
+              `INSERT OR IGNORE INTO agent_members (agent_id, email) VALUES (?, ?)`,
+              row.id,
+              email
+            );
+          }
+        }
+        sql.exec(`DELETE FROM schema_version`);
+        sql.exec(`INSERT INTO schema_version (version) VALUES (1)`);
+      });
+    }
+  }
+
+  /**
+   * Point `agent_members` at exactly `emails`, and mirror the same list back into
+   * `agents.allowed_emails`.
+   *
+   * Two places, one write, because they answer different questions. The table answers
+   * "which agents may this address open", which has to be indexable. The column
+   * answers "who is on this agent's list", which every read of a row already needs —
+   * so keeping it means `get()` stays a single-row read with no join, and the shape
+   * the Worker and the browser see does not change at all.
+   *
+   * It is a projection, not a second opinion: this is the only method that writes
+   * either of them, and it writes both inside one transaction.
+   */
+  private writeMembers(id: string, allowedEmails: string) {
+    const emails = splitEmails(allowedEmails);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`DELETE FROM agent_members WHERE agent_id = ?`, id);
+      for (const email of emails) {
+        this.ctx.storage.sql.exec(
+          `INSERT OR IGNORE INTO agent_members (agent_id, email) VALUES (?, ?)`,
+          id,
+          email
+        );
+      }
+      this.ctx.storage.sql.exec(
+        `UPDATE agents SET allowed_emails = ?, updated_at = ? WHERE id = ?`,
+        emails.join("\n"),
+        Date.now(),
+        id
+      );
+    });
   }
 
   /**
    * Every agent, or — given an email — only the ones that address may open.
    *
-   * The filter is a substring match on the stored list, then an exact re-check in
-   * TypeScript: SQLite has no split, and `LIKE` alone would let `bob@x.com` match
-   * `rob@x.com`. The narrowing still happens in SQL, so the exact pass only ever
-   * walks rows that could plausibly match.
+   * Two ways onto the list, and both are an index lookup: the address administers the
+   * agent, or it is one of the agent's members. An admin sees the agent they made
+   * whether or not they are also on its access list — administering one you cannot
+   * open is the ordinary case now that the two are separate.
+   *
+   * The match is exact on both sides. Addresses are stored already lowercased and
+   * trimmed, by `normalizeEmails` on the way in, so there is nothing to normalize
+   * here beyond the address being asked about.
    */
   list(email?: string): AgentRow[] {
     this.ensureSchema();
-    const rows = this.ctx.storage.sql
+    if (email === undefined) {
+      return this.ctx.storage.sql
+        .exec(
+          `SELECT id, name, created_at, updated_at, allowed_emails, admin_email FROM agents
+           ORDER BY created_at`
+        )
+        .toArray() as unknown as AgentRow[];
+    }
+    const wanted = email.trim().toLowerCase();
+    if (!wanted) return [];
+    // A `UNION` of the two ways on, rather than one `WHERE x OR EXISTS (…)`.
+    //
+    // They return the same rows, but SQLite cannot use an index for an `OR` across
+    // two tables — it falls back to scanning every agent and running the subquery per
+    // row, which is the walk this table exists to remove. Split in two, each half is
+    // an index lookup: `idx_agents_admin_email` for the left, `idx_agent_members_email`
+    // for the right. `UNION` is the deduplicating one, which is what keeps an admin
+    // who is also on the access list from appearing twice.
+    return this.ctx.storage.sql
       .exec(
-        `SELECT id, name, created_at, updated_at, allowed_emails, admin_email FROM agents
-         ORDER BY created_at`
+        `SELECT a.id, a.name, a.created_at, a.updated_at, a.allowed_emails, a.admin_email
+           FROM agents a
+          WHERE a.admin_email = ?1
+          UNION
+         SELECT a.id, a.name, a.created_at, a.updated_at, a.allowed_emails, a.admin_email
+           FROM agents a
+           JOIN agent_members m ON m.agent_id = a.id
+          WHERE m.email = ?1
+          ORDER BY created_at`,
+        wanted
       )
       .toArray() as unknown as AgentRow[];
-    if (email === undefined) return rows;
-    const wanted = email.trim().toLowerCase();
-    // An admin sees the agent they made whether or not they are on its access list:
-    // the list is about opening the agent, and administering one you cannot open is
-    // the ordinary case now that the two are separate.
-    return rows.filter(
-      (row) => emailAllowed(row.allowed_emails, wanted) || row.admin_email === wanted
-    );
   }
 
   get(id: string): AgentRow | undefined {
@@ -1062,16 +1204,6 @@ export class AgentDirectory extends DurableObject {
         id
       )
       .toArray()[0] as unknown as AgentRow | undefined;
-  }
-
-  /**
-   * Whether an address may open this agent. Used on every agent-scoped request, so a
-   * link to an agent someone was never given is indistinguishable from a link to one
-   * that does not exist.
-   */
-  allows(id: string, email: string): boolean {
-    const row = this.get(id);
-    return row ? emailAllowed(row.allowed_emails, email) : false;
   }
 
   /**
@@ -1096,6 +1228,8 @@ export class AgentDirectory extends DurableObject {
       allowedEmails,
       admin
     );
+    // The row is in; this puts the same addresses in `agent_members` beside it.
+    this.writeMembers(id, allowedEmails);
     return {
       id,
       name,
@@ -1114,12 +1248,7 @@ export class AgentDirectory extends DurableObject {
    */
   setAllowedEmails(id: string, allowedEmails: string) {
     this.ensureSchema();
-    this.ctx.storage.sql.exec(
-      `UPDATE agents SET allowed_emails = ?, updated_at = ? WHERE id = ?`,
-      allowedEmails,
-      Date.now(),
-      id
-    );
+    this.writeMembers(id, allowedEmails);
   }
 
   rename(id: string, name: string) {
@@ -1139,6 +1268,12 @@ export class AgentDirectory extends DurableObject {
 
   remove(id: string) {
     this.ensureSchema();
-    this.ctx.storage.sql.exec(`DELETE FROM agents WHERE id = ?`, id);
+    // The member rows go too. Nothing else points at them, so one left behind would
+    // be invisible for good — and would put the agent back on somebody's list if its
+    // id were ever reused.
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`DELETE FROM agent_members WHERE agent_id = ?`, id);
+      this.ctx.storage.sql.exec(`DELETE FROM agents WHERE id = ?`, id);
+    });
   }
 }
