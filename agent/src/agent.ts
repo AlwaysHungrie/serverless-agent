@@ -597,7 +597,7 @@ export class SessionAgent extends Think<Env> {
     // person reading it could act on.
     if (!key) {
       throw new Error(
-        "This agent has no OpenRouter key. Paste one in Settings and it can answer."
+        "OpenRouter API key is missing. Add it in Settings."
       );
     }
     return createOpenAI({
@@ -932,11 +932,11 @@ export class SessionAgent extends Think<Env> {
         a.kind === "image"
           ? { type: "image", image: `data:${a.mime};base64,${base64}` }
           : {
-              type: "file",
-              data: `data:application/pdf;base64,${base64}`,
-              mediaType: "application/pdf",
-              filename: a.name,
-            }
+            type: "file",
+            data: `data:application/pdf;base64,${base64}`,
+            mediaType: "application/pdf",
+            filename: a.name,
+          }
       );
     }
     return parts;
@@ -1070,9 +1070,9 @@ export class SessionAgent extends Think<Env> {
       // session's whole history, so none are sent rather than all of them.
       const drawn = this.turnUsage.started
         ? this.exec<Attachment>(
-            `SELECT * FROM attachments WHERE kind = 'image' AND ts >= ? ORDER BY ts ASC`,
-            this.turnUsage.started
-          )
+          `SELECT * FROM attachments WHERE kind = 'image' AND ts >= ? ORDER BY ts ASC`,
+          this.turnUsage.started
+        )
         : [];
       for (const image of drawn) {
         const bytes = await this.workspace.readFileBytes(image.path);
@@ -1623,7 +1623,7 @@ export class SessionAgent extends Think<Env> {
           mode: "stream",
           input: [userMessage],
           callback: {
-            onStart: () => {},
+            onStart: () => { },
             onEvent: (json: string) => {
               const chunk = JSON.parse(json) as {
                 type: string;
@@ -1642,7 +1642,7 @@ export class SessionAgent extends Think<Env> {
                 this.emit({ type: "tool_done", name: toolNames.get(chunk.toolCallId) ?? "tool", ok: false });
               }
             },
-            onDone: () => {},
+            onDone: () => { },
             onError: (error: string) => {
               this.emit({ type: "error", error: reportable(error, this.name) });
             },
@@ -1847,27 +1847,27 @@ export class SessionAgent extends Think<Env> {
     const page = visible.slice(start, upTo);
 
     const messages = page.map((m) => {
-        const usage = this.exec<{
-          prompt_tokens: number;
-          completion_tokens: number;
-          cost_usd: number;
-          ms: number;
-          ts: number;
-        }>(`SELECT * FROM usage WHERE message_id = ?`, m.id)[0];
-        const steps = stepsOf(m);
-        const toolLines = steps.some((s) => s.kind === "tools");
-        return {
-          id: m.id,
-          role: m.role as "user" | "assistant",
-          content: this.spokenText(m),
-          ts: usage?.ts ?? 0,
-          prompt_tokens: usage?.prompt_tokens ?? 0,
-          completion_tokens: usage?.completion_tokens ?? 0,
-          cost_usd: usage?.cost_usd ?? 0,
-          ms: usage?.ms ?? 0,
-          attachments: this.attachmentsOf(m.id).map(publicAttachment),
-          steps: toolLines ? JSON.stringify(steps) : "[]",
-        };
+      const usage = this.exec<{
+        prompt_tokens: number;
+        completion_tokens: number;
+        cost_usd: number;
+        ms: number;
+        ts: number;
+      }>(`SELECT * FROM usage WHERE message_id = ?`, m.id)[0];
+      const steps = stepsOf(m);
+      const toolLines = steps.some((s) => s.kind === "tools");
+      return {
+        id: m.id,
+        role: m.role as "user" | "assistant",
+        content: this.spokenText(m),
+        ts: usage?.ts ?? 0,
+        prompt_tokens: usage?.prompt_tokens ?? 0,
+        completion_tokens: usage?.completion_tokens ?? 0,
+        cost_usd: usage?.cost_usd ?? 0,
+        ms: usage?.ms ?? 0,
+        attachments: this.attachmentsOf(m.id).map(publicAttachment),
+        steps: toolLines ? JSON.stringify(steps) : "[]",
+      };
     });
 
     return {
