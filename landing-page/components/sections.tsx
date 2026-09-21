@@ -19,7 +19,7 @@ export function Hero() {
       <Wrap className="relative text-center">
         <Reveal>
           <span className="inline-flex items-center gap-2 rounded-[10px] bg-canvas-soft px-4 py-2 text-[13px] font-semibold text-muted">
-            Create AI agents that have Telegram accounts
+            AI agents with their own Telegram accounts
           </span>
         </Reveal>
 
@@ -30,10 +30,16 @@ export function Hero() {
         </Reveal>
 
         <Reveal delay={0.1}>
+          <p className="mx-auto mt-6 max-w-[680px] text-xl font-light leading-[1.4] text-muted text-balance">
+            Create an agent that never sleeps and runs{" "}
+            <span className="font-medium">free, forever.</span> Use its built-in
+            capabilities or connect it to any external websites or tools you
+            already use, like Gmail or X. Let your agent manage your day, your
+            inbox, your relationships, your spreadsheets, your business &mdash;
+            via web or telegram.
+          </p>
           <p className="mx-auto mt-6 max-w-[620px] text-xl font-light leading-[1.4] text-muted text-balance">
-            It gets a Telegram account of its own and stays there — through new
-            phones, new laptops, new years. Everything you've ever told it,
-            still there.
+            Bring your own API key and run any model that works for you.
           </p>
         </Reveal>
 
@@ -45,7 +51,7 @@ export function Hero() {
             </Button>
           </div>
           <p className="mt-4 text-sm text-faint">
-            Subject to usage limits. Self hosting requires a Cloudflare account.
+            Usage limits apply. Self-hosting needs a Cloudflare account.
           </p>
         </Reveal>
 
@@ -167,7 +173,7 @@ export function Features() {
       <Wrap>
         <Reveal>
           <div className="mx-auto max-w-[640px] text-center">
-            <Eyebrow>What it can do</Eyebrow>
+            <Eyebrow>What it does</Eyebrow>
             <h2 className="mt-3 text-[clamp(30px,4.5vw,44px)] font-[650] leading-[1.08] tracking-[-0.025em]">
               Less of a chatbot. More of a someone.
             </h2>

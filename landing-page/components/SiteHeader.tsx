@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 const LINKS = [
   { id: "skills", label: "What it does" },
   { id: "how", label: "How it works" },
-  { id: "costs", label: "Price" },
+  { id: "costs", label: "Pricing" },
   { id: "faq", label: "FAQ" },
 ];
 
