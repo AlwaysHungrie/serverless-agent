@@ -7,6 +7,7 @@ import {
   Cta,
   Features,
   Hero,
+  Mission,
   Stats,
   Steps,
 } from "@/components/sections";
@@ -24,6 +25,7 @@ export default function Page() {
           <Hero />
           <Stats />
           <Features />
+          <Mission />
           <Steps />
           <Costs />
           <Capabilities />
@@ -34,7 +36,7 @@ export default function Page() {
                 <div className="mx-auto max-w-[640px] text-center">
                   <Eyebrow>FAQ</Eyebrow>
                   <h2 className="mt-3 text-[clamp(30px,4.5vw,44px)] font-[650] leading-[1.08] tracking-[-0.025em]">
-                    Questions worth answering first.
+                    Everything people ask first.
                   </h2>
                 </div>
               </Reveal>

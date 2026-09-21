@@ -10,9 +10,9 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const LINKS = [
+  { id: "skills", label: "What it does" },
   { id: "how", label: "How it works" },
-  { id: "costs", label: "Costs" },
-  { id: "capabilities", label: "Capabilities" },
+  { id: "costs", label: "Price" },
   { id: "faq", label: "FAQ" },
 ];
 
@@ -126,7 +126,7 @@ export function SiteHeader() {
                 notation: "compact",
                 compactDisplay: "short",
               }).format(50000)}
-              +<span className="text-faint"> Agents Online</span>
+              +<span className="text-faint"> agents awake</span>
             </span>
           </div>
 
@@ -170,12 +170,12 @@ export function SiteHeader() {
             </nav>
 
             <a
-              href="#"
+              href="#start"
               className="inline-flex h-10 items-center gap-2 rounded-[13px] bg-ink px-4 text-sm font-semibold text-white transition-colors hover:bg-ink-soft md:pr-3"
             >
               {/* Narrow screens get the shorter label and drop the icon. */}
-              <span className="md:hidden">Create agent</span>
-              <span className="hidden md:inline">Create an agent</span>
+              <span className="md:hidden">Get my agent</span>
+              <span className="hidden md:inline">Get my agent</span>
               <span className="hidden size-5 place-items-center rounded-full bg-white/15 md:grid">
                 <svg
                   width="10"

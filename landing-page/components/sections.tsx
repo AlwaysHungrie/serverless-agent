@@ -1,4 +1,5 @@
-import { HeroSquircles, Reveal } from "./motion";
+import { CountUp, HeroSquircles, Reveal } from "./motion";
+import { TelegramSignup } from "./TelegramSignup";
 import { Button, Eyebrow, Placeholder, Wrap } from "./ui";
 
 /* ---------------------------------------------------------------- Hero -- */
@@ -17,43 +18,78 @@ export function Hero() {
 
       <Wrap className="relative text-center">
         <Reveal>
-          <span className="inline-flex items-center gap-2 rounded-full bg-canvas-soft px-4 py-2 text-[13px] font-semibold text-muted">
-            <span className="size-1.5 rounded-full bg-accent" />
-            One object per agent. One per session.
+          <span className="inline-flex items-center gap-2 rounded-[10px] bg-canvas-soft px-4 py-2 text-[13px] font-semibold text-muted">
+            Create AI agents that have Telegram accounts
           </span>
         </Reveal>
 
         <Reveal delay={0.05}>
-          <h1 className="mx-auto mt-6 max-w-[14ch] text-[clamp(44px,8vw,84px)] font-[650] leading-[0.98] tracking-[-0.03em] text-balance">
-            Run agents that share nothing.
+          <h1 className="mx-auto mt-6 max-w-[15ch] text-[clamp(44px,8vw,84px)] font-[650] leading-[0.98] tracking-[-0.03em] text-balance">
+            Personal AI Agents. Always Online. Forever.
           </h1>
         </Reveal>
 
         <Reveal delay={0.1}>
           <p className="mx-auto mt-6 max-w-[620px] text-xl font-light leading-[1.4] text-muted text-balance">
-            Every agent gets its own keys, memory and sessions. You see what each
-            message costs while it streams.
+            It gets a Telegram account of its own and stays there — through new
+            phones, new laptops, new years. Everything you've ever told it,
+            still there.
           </p>
         </Reveal>
 
         <Reveal delay={0.15}>
           <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-            <Button href="#">Create an agent</Button>
+            <Button href="#start">Get my agent</Button>
             <Button href="#how" variant="outline">
               See how it works
             </Button>
           </div>
           <p className="mt-4 text-sm text-faint">
-            Bring your own OpenRouter key. No shared deployment key, ever.
+            Subject to usage limits. Self hosting requires a Cloudflare account.
           </p>
         </Reveal>
 
         <Reveal delay={0.2}>
           <Placeholder
             frame
-            label="Placeholder — chat view with per-message tokens, cost and latency"
+            label="Placeholder — a Telegram chat with your agent answering"
             className="mt-14 text-left"
           />
+        </Reveal>
+      </Wrap>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------- Mission -- */
+
+export function Mission() {
+  return (
+    <section id="mission" className="mt-32 scroll-mt-28">
+      <Wrap>
+        <Reveal>
+          <div className="rounded-[32px] bg-ink px-6 py-16 text-center text-white sm:px-12 sm:py-20">
+            <p className="text-xs font-semibold uppercase tracking-[0.08em] text-faint">
+              The plan
+            </p>
+            <p className="mt-6 text-[clamp(44px,9vw,96px)] font-[650] leading-none tracking-[-0.03em]">
+              <CountUp to={8.1} decimals={1} suffix="B" />
+            </p>
+            <h2 className="mx-auto mt-6 max-w-[18ch] text-[clamp(26px,3.5vw,38px)] font-[650] leading-[1.1] tracking-[-0.025em] text-balance">
+              People on Earth. One AI agent each.
+            </h2>
+            <p className="mx-auto mt-4 max-w-[540px] text-lg font-light leading-[1.45] text-faint text-balance">
+              Not one giant assistant shared by everyone. One small agent per
+              person, that only knows you, and that you can switch off whenever
+              you like.
+            </p>
+            <p className="mt-8 text-sm text-faint">
+              <span className="font-semibold text-white">
+                <CountUp to={50241} />
+              </span>{" "}
+              awake so far.
+            </p>
+          </div>
         </Reveal>
       </Wrap>
     </section>
@@ -63,9 +99,19 @@ export function Hero() {
 /* --------------------------------------------------------------- Stats -- */
 
 const STATS = [
-  { value: "1:1", label: "One Durable Object per session, one per agent. Nothing is pooled." },
-  { value: "$0.00005", label: "Roughly what a message costs to run. About 78% of it is tokens." },
-  { value: "0", label: "Shared secrets between agents. Delete one, its data goes too." },
+  {
+    value: "1 min",
+    label: "From a Telegram token to your first reply. No app to install.",
+  },
+  {
+    value: "24/7",
+    label: "It answers at 3am, on your commute, in the queue at the shop.",
+  },
+  {
+    value: "$0.00005",
+    label:
+      "What a typical message costs to run. You see the number every time.",
+  },
 ];
 
 export function Stats() {
@@ -78,7 +124,9 @@ export function Stats() {
               <p className="tnum text-[40px] font-[650] leading-none tracking-[-0.03em]">
                 {s.value}
               </p>
-              <p className="mt-3 text-sm leading-relaxed text-muted">{s.label}</p>
+              <p className="mt-3 text-sm leading-relaxed text-muted">
+                {s.label}
+              </p>
             </div>
           ))}
         </div>
@@ -91,62 +139,70 @@ export function Stats() {
 
 const FEATURES = [
   {
-    title: "Isolated by default",
-    body: "Each agent holds its own OpenRouter key, Telegram bot, MCP servers and memories. Two agents can't read each other.",
+    title: "It lives in Telegram",
+    body: "The same app you use for your family group. Type to it, forward it a link, send a photo of a menu, hold the mic and talk. No new login, no new app on your home screen.",
     wide: true,
   },
   {
-    title: "Sessions with real storage",
-    body: "Every session is a Durable Object with its own SQLite database. Create one, it registers. Delete one, its storage is wiped.",
+    title: "It remembers you",
+    body: "Your dog's name, how you take your coffee, the project you're stuck on. Tell it once and it keeps it.",
   },
   {
-    title: "Costs as they happen",
-    body: "Tokens in, tokens out, dollars and model latency — on each assistant message, not in a monthly invoice.",
+    title: "It looks things up",
+    body: "It searches the web and reads pages you send, so the answer is today's, not last year's.",
   },
   {
-    title: "Access you control",
-    body: "Sign-in is Clerk. Each agent carries its own list of addresses, and an address not on it is told the agent doesn't exist.",
+    title: "It reminds you",
+    body: "Ask it to check in at 8am, every Monday, or before your flight. It messages you first.",
   },
   {
-    title: "Capabilities you switch on",
-    body: "Web search, file ingest, images, audio, scheduled tasks and memory. Each is off until you turn it on.",
+    title: "It reads photos and files",
+    body: "A receipt, a lease, a handwritten note, a screenshot. Send it over and ask what it says.",
   },
 ];
 
 export function Features() {
   return (
-    <section className="mt-32">
+    <section id="skills" className="mt-32 scroll-mt-28">
       <Wrap>
         <Reveal>
           <div className="mx-auto max-w-[640px] text-center">
-            <Eyebrow>What you get</Eyebrow>
+            <Eyebrow>What it can do</Eyebrow>
             <h2 className="mt-3 text-[clamp(30px,4.5vw,44px)] font-[650] leading-[1.08] tracking-[-0.025em]">
-              An agent you can account for.
+              Less of a chatbot. More of a someone.
             </h2>
             <p className="mt-4 text-xl font-light leading-[1.4] text-muted text-balance">
-              Most agent platforms hide the machine. This one shows you the object,
-              the tokens and the bill.
+              It keeps what you tell it, brings things up when they matter, and
+              talks the way you already text.
             </p>
           </div>
         </Reveal>
 
         <div className="mt-12 grid gap-4 md:grid-cols-3">
           {FEATURES.map((f, i) => (
-            <Reveal key={f.title} delay={i * 0.05} className={f.wide ? "md:col-span-2" : ""}>
+            <Reveal
+              key={f.title}
+              delay={i * 0.05}
+              className={f.wide ? "md:col-span-2" : ""}
+            >
               <article className="flex h-full flex-col rounded-[24px] bg-canvas p-7 ring-1 ring-hairline-soft transition-colors hover:bg-canvas-soft">
-                <h3 className="text-xl font-semibold tracking-[-0.01em]">{f.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-muted">{f.body}</p>
+                <h3 className="text-xl font-semibold tracking-[-0.01em]">
+                  {f.title}
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-muted">
+                  {f.body}
+                </p>
               </article>
             </Reveal>
           ))}
           <Reveal delay={0.25}>
             <article className="flex h-full flex-col justify-between rounded-[24px] bg-ink p-7 text-white">
               <h3 className="text-xl font-semibold tracking-[-0.01em]">
-                Any model on OpenRouter
+                It's yours alone
               </h3>
               <p className="mt-2 text-sm leading-relaxed text-faint">
-                Set the model, instructions, reasoning effort, temperature and context
-                window per agent. Change them without a deploy.
+                Your agent has its own memory and its own chat. No one else's
+                agent can read it, and deleting it takes everything with it.
               </p>
             </article>
           </Reveal>
@@ -204,31 +260,31 @@ export function Costs() {
     <section id="costs" className="mt-32 scroll-mt-28 space-y-24">
       <Wrap>
         <Split
-          eyebrow="Costs"
-          title="Read the meter, not the estimate."
-          body="OpenRouter reports the exact price of every call, so that's the number you see. Cloudflare's own costs aren't guessed at — they can't be measured honestly from inside the object, so we document them instead."
+          eyebrow="What it costs"
+          title="Pennies, and you see every one."
+          body="Most AI apps charge a flat fee and never tell you what you used. Here, each reply shows what it cost to produce. A month of everyday chatting usually adds up to less than a coffee."
           bullets={[
-            "Tokens in and out on every assistant message",
-            "Dollar cost and model latency per reply",
-            "Session totals in the header: model, messages, tokens, spend",
-            "Stop a stream and keep the partial reply — and the tokens already billed",
+            "The cost of a reply, shown next to the reply",
+            "A running total for every conversation",
+            "No subscription to forget about",
+            "Stop a long answer halfway and stop paying for it",
           ]}
-          label="Placeholder — cost breakdown panel"
+          label="Placeholder — a reply with its cost shown underneath"
         />
       </Wrap>
       <Wrap>
         <Split
           reverse
-          eyebrow="Architecture"
-          title="One object per session."
-          body="An agent is a Durable Object. So is each of its sessions. State lives next to the code that reads it, the object sleeps when nobody is talking, and scaling out means more objects, not a bigger box."
+          eyebrow="Your agent, your business"
+          title="Nobody is reading over your shoulder."
+          body="Your agent keeps its own memory in its own place. It isn't pooled with anyone else's, it isn't training anything, and it's gone the moment you say so."
           bullets={[
-            "Cloudflare Workers and Durable Objects underneath",
-            "SQLite storage per session, not a shared table",
-            "A Next.js app that streams the reply as it arrives",
-            "No browser-to-worker calls — every request goes through a route handler",
+            "Your chats stay in your agent, not in a shared pile",
+            "Only you can open it — an invite is the only way in",
+            "Delete a conversation and it's wiped, not archived",
+            "Delete the agent and the memories go with it",
           ]}
-          label="Placeholder — architecture diagram"
+          label="Placeholder — the settings screen for one agent"
         />
       </Wrap>
     </section>
@@ -238,16 +294,16 @@ export function Costs() {
 /* -------------------------------------------------------- Capabilities -- */
 
 const CAPABILITIES = [
-  "Web search",
-  "Read a URL",
-  "File ingest",
-  "Image input",
-  "Image generation",
-  "Audio input",
-  "Scheduled tasks",
-  "Memory",
-  "MCP servers",
-  "Telegram bot",
+  "Answer questions",
+  "Search the web",
+  "Read a link you send",
+  "Look at photos",
+  "Listen to voice notes",
+  "Make pictures",
+  "Read files and receipts",
+  "Remember what matters",
+  "Check in on a schedule",
+  "Connect to your other apps",
 ];
 
 export function Capabilities() {
@@ -257,13 +313,13 @@ export function Capabilities() {
         <Reveal>
           <div className="rounded-[32px] bg-canvas-soft p-8 sm:p-12">
             <div className="max-w-[560px]">
-              <Eyebrow>Capabilities</Eyebrow>
+              <Eyebrow>Switches</Eyebrow>
               <h2 className="mt-3 text-[clamp(26px,3.5vw,34px)] font-[650] leading-[1.1] tracking-[-0.025em]">
-                Turn on only what the agent needs.
+                Turn on only what you want it doing.
               </h2>
               <p className="mt-4 leading-relaxed text-muted">
-                Every capability starts off. The ones that need a key say so before you
-                enable them.
+                Every one of these starts off. Flip a switch when you need it,
+                flip it back when you don't.
               </p>
             </div>
             <div className="mt-8 flex flex-wrap gap-2">
@@ -276,7 +332,7 @@ export function Capabilities() {
                 </span>
               ))}
               <span className="rounded-full px-4 py-2 text-sm text-faint ring-1 ring-hairline">
-                and the settings behind each one
+                and more as we add them
               </span>
             </div>
           </div>
@@ -291,18 +347,18 @@ export function Capabilities() {
 const STEPS = [
   {
     n: "01",
-    title: "Name it and key it",
-    body: "Give the agent a name and an OpenRouter key. It can answer the moment it opens.",
+    title: "Make a bot in Telegram",
+    body: "Message @BotFather, send /newbot, and copy the token it gives you. A minute, no coding.",
   },
   {
     n: "02",
-    title: "Set how it talks",
-    body: "Pick the model, write the instructions, set the reply cap and context window.",
+    title: "Name your agent",
+    body: "Paste the token, pick a name, and choose how you'd like it to talk to you.",
   },
   {
     n: "03",
-    title: "Open a session",
-    body: "Start chatting. Each session gets its own object, and the cost shows as the reply streams.",
+    title: "Say hello",
+    body: "Open Telegram and text it. It's there from then on, in the same list as everyone else.",
   },
 ];
 
@@ -314,7 +370,7 @@ export function Steps() {
           <div className="mx-auto max-w-[640px] text-center">
             <Eyebrow>How it works</Eyebrow>
             <h2 className="mt-3 text-[clamp(30px,4.5vw,44px)] font-[650] leading-[1.08] tracking-[-0.025em]">
-              Three steps to a working agent.
+              Three steps, about a minute.
             </h2>
           </div>
         </Reveal>
@@ -324,8 +380,12 @@ export function Steps() {
             <Reveal key={s.n} delay={i * 0.06}>
               <div className="border-t border-hairline pt-5">
                 <p className="tnum text-sm font-semibold text-faint">{s.n}</p>
-                <h3 className="mt-2 text-xl font-semibold tracking-[-0.01em]">{s.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-muted">{s.body}</p>
+                <h3 className="mt-2 text-xl font-semibold tracking-[-0.01em]">
+                  {s.title}
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-muted">
+                  {s.body}
+                </p>
               </div>
             </Reveal>
           ))}
@@ -339,22 +399,19 @@ export function Steps() {
 
 export function Cta() {
   return (
-    <section className="mt-32 pb-32">
+    <section id="start" className="mt-32 scroll-mt-28 pb-32">
       <Wrap>
         <Reveal>
           <div className="rounded-[32px] bg-canvas-soft px-6 py-20 text-center">
             <h2 className="text-[clamp(30px,4.5vw,44px)] font-[650] leading-[1.08] tracking-[-0.025em]">
-              Start with one agent.
+              Your agent is one message away.
             </h2>
             <p className="mx-auto mt-4 max-w-[520px] text-xl font-light leading-[1.4] text-muted text-balance">
-              A name and a key is the whole setup. Everything else is a switch you can
-              flip later.
+              Grab a token from Telegram, give your agent a name, and it's
+              yours. Everything else is a switch you can flip later.
             </p>
-            <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-              <Button href="#">Create an agent</Button>
-              <Button href="#" variant="outline">
-                Read the docs
-              </Button>
+            <div className="mt-10">
+              <TelegramSignup />
             </div>
           </div>
         </Reveal>

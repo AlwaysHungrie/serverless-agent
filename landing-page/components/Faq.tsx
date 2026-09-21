@@ -5,24 +5,28 @@ import { useState } from "react";
 
 const ITEMS = [
   {
-    q: "Do I need my own OpenRouter key?",
-    a: "Yes. There's no deployment-wide key. Each agent is given its own under Settings, and an agent without one can't answer.",
+    q: "Do I need to know how to code?",
+    a: "No. If you can send a message on Telegram, you can set this up. The one technical-sounding bit — a bot token — is three taps in a Telegram chat, and we walk you through it.",
   },
   {
-    q: "Which model does an agent use?",
-    a: "Any model your OpenRouter key can reach. There's a default, and Settings lets you change it per agent — image input needs a model that can see.",
+    q: "What is a bot token, exactly?",
+    a: "It's the password that lets your agent use a Telegram account of its own. You get it from @BotFather, Telegram's official bot for making bots. Send /newbot, pick a name, and it replies with the token. Paste it here and you're done.",
   },
   {
-    q: "What happens when I delete an agent?",
-    a: "Its sessions, files, memories and MCP connections go with it. Deleting a single session wipes that session's storage only.",
+    q: "Is my agent private?",
+    a: "Yes. Your agent has its own memory and its own chats. Nobody else's agent can see them, and only people you invite can talk to yours.",
   },
   {
-    q: "Who can open an agent?",
-    a: "Only the addresses on that agent's list. Anyone else is told the agent doesn't exist, which is the honest answer from where they stand.",
+    q: "What does it cost?",
+    a: "You pay for what your agent actually says. Each reply shows its cost, and everyday use usually lands under a few dollars a month. There's no subscription to cancel.",
   },
   {
-    q: "Are Cloudflare costs included in what I see?",
-    a: "No. The app shows LLM cost, because that's the number OpenRouter reports exactly. Cloudflare's costs are documented separately rather than estimated in the UI.",
+    q: "Can I delete it?",
+    a: "Any time, in one tap. Deleting a conversation wipes that conversation. Deleting the agent takes its memories and files with it.",
+  },
+  {
+    q: "What's the 'one agent per person' thing about?",
+    a: "We think everyone should have an AI that's theirs — not a shared assistant that treats you like a row in a database. So that's what we're building, one agent at a time.",
   },
 ];
 

@@ -9,9 +9,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Salt Agents — chat agents that run one to an object",
+  title: "Salt Agents — your own AI, right inside Telegram",
   description:
-    "Salt Agents runs every chat agent as its own Cloudflare Durable Object, with its own keys, memory and sessions — and shows what each message costs as it streams.",
+    "Give your AI agent a name and a Telegram account, then text it like a friend. It remembers you, searches the web, reads your photos and voice notes — and shows what every reply costs. One agent for every person on Earth.",
 };
 
 export default function RootLayout({

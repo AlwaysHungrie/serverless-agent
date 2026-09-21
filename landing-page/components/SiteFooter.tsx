@@ -4,16 +4,16 @@ const COLUMNS = [
   {
     title: "Product",
     links: [
+      { href: "#skills", label: "What it does" },
       { href: "#how", label: "How it works" },
-      { href: "#capabilities", label: "Capabilities" },
-      { href: "#costs", label: "Costs" },
+      { href: "#costs", label: "Price" },
     ],
   },
   {
     title: "Resources",
     links: [
-      { href: "#", label: "Documentation" },
-      { href: "#", label: "Architecture" },
+      { href: "#mission", label: "The plan" },
+      { href: "https://t.me/BotFather", label: "Get a Telegram token" },
       { href: "#faq", label: "FAQ" },
     ],
   },
@@ -50,8 +50,8 @@ export function SiteFooter() {
               <span className="text-[17px] font-[650] tracking-[-0.02em]">Salt Agents</span>
             </div>
             <p className="mt-3 max-w-[320px] text-sm leading-relaxed text-faint">
-              Chat agents that run one to a Durable Object, with the cost of every
-              message in plain sight.
+              An AI agent of your own, living in Telegram. One for every person on
+              Earth — starting with yours.
             </p>
           </div>
 
@@ -80,7 +80,7 @@ export function SiteFooter() {
       <Wrap>
         <div className="flex flex-col gap-3 border-t border-white/12 pt-5 text-xs text-faint sm:flex-row sm:items-center sm:justify-between">
           <span>© 2026 Salt Agents</span>
-          <span>Built on Cloudflare Workers and Durable Objects</span>
+          <span>Works wherever Telegram works</span>
         </div>
       </Wrap>
     </footer>
