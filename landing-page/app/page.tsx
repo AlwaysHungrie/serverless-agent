@@ -24,9 +24,9 @@ export default function Page() {
           <Hero />
           <Stats />
           <Features />
+          <Steps />
           <Costs />
           <Capabilities />
-          <Steps />
 
           <section id="faq" className="mt-32 scroll-mt-28">
             <Wrap>

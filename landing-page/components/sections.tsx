@@ -1,4 +1,4 @@
-import { Reveal } from "./motion";
+import { HeroSquircles, Reveal } from "./motion";
 import { Button, Eyebrow, Placeholder, Wrap } from "./ui";
 
 /* ---------------------------------------------------------------- Hero -- */
@@ -13,12 +13,7 @@ export function Hero() {
       />
 
       {/* Squircle slots stand in for the app icons this page will eventually show. */}
-      <div aria-hidden className="pointer-events-none absolute inset-0 hidden lg:block">
-        <div className="squircle absolute left-[6%] top-[22%] size-16 bg-canvas-soft ring-1 ring-hairline-soft" />
-        <div className="squircle absolute left-[13%] top-[52%] size-12 bg-canvas-soft ring-1 ring-hairline-soft" />
-        <div className="squircle absolute right-[7%] top-[28%] size-20 bg-canvas-soft ring-1 ring-hairline-soft" />
-        <div className="squircle absolute right-[15%] top-[58%] size-12 bg-canvas-soft ring-1 ring-hairline-soft" />
-      </div>
+      <HeroSquircles />
 
       <Wrap className="relative text-center">
         <Reveal>

@@ -22,12 +22,12 @@
 
 /* Height of the fixed footer the page scrolls away from. */
 :root {
-  --footer-h: 620px;
+  --footer-h: 560px;
 }
 
 @media (min-width: 768px) {
   :root {
-    --footer-h: 540px;
+    --footer-h: 320px;
   }
 }
 
