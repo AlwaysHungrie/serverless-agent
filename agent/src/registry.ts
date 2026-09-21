@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { McpTokenError, refreshToken, type McpServerRow } from "./mcp";
+import { McpTokenError, refreshToken, type McpAuth, type McpServerRow } from "./mcp";
 
 /**
  * One agent's settings, split in two:
@@ -157,6 +157,17 @@ export type MetaSettings = {
   mcp: {
     /** Preset ids offered on the capabilities page. Empty means every preset. */
     templates: string[];
+    /**
+     * Templates supplied by whoever provisioned this agent, shown on the capabilities
+     * page in place of the ones the Worker ships.
+     *
+     * The strip's built-in presets are compiled into this deployment's frontend, so an
+     * owner running their own connector catalogue elsewhere cannot reach them with
+     * `templates` — an id it does not hold renders nothing. A definition carries what a
+     * tile actually needs (a name, a url, how it authenticates), which is what lets a
+     * catalogue live outside this repo. Empty leaves the built-in presets alone.
+     */
+    catalog: McpCatalogEntry[];
     /** Servers added to the agent when the defaults are applied, matched by name. */
     servers: MetaMcpServer[];
     /**
@@ -171,6 +182,24 @@ export type MetaSettings = {
      */
     user_servers: boolean;
   };
+};
+
+/**
+ * One provider on the capabilities page's strip, described by whoever provisioned the
+ * agent rather than by this deployment.
+ *
+ * The same four things a built-in preset is, minus the logo: a mark drawn from `letter`
+ * and `color` needs no asset shipped, and an SVG from outside would be markup this
+ * Worker has no business rendering.
+ */
+export type McpCatalogEntry = {
+  id: string;
+  name: string;
+  url: string;
+  auth: McpAuth;
+  /** Placeholder mark: this letter on this colour. Both optional — the name's first letter does. */
+  letter?: string;
+  color?: string;
 };
 
 /**
@@ -216,7 +245,7 @@ export const DEFAULT_META: MetaSettings = {
   locked: [],
   capabilities: {},
   field_options: {},
-  mcp: { templates: [], servers: [], user_servers: true },
+  mcp: { templates: [], catalog: [], servers: [], user_servers: true },
 };
 
 /** The config columns, in the order they are written, excluding the primary key. */

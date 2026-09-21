@@ -23,6 +23,7 @@ import {
   type AgentRow,
   DEFAULT_META,
   type Config,
+  type McpCatalogEntry,
   type MetaCapability,
   type MetaMcpServer,
   type MetaSettings,
@@ -702,6 +703,9 @@ async function handleMcp(
         // back here rather than being read off `/meta`, which is the admin's route
         // and answers nobody else.
         templates: mcp.templates,
+        // Templates provisioned from outside this deployment. They replace the
+        // built-in strip rather than filtering it — see `MetaSettings.mcp.catalog`.
+        catalog: mcp.catalog,
         user_servers: mcp.user_servers,
       })
     );
@@ -931,7 +935,12 @@ function validateMeta(
     locked: [],
     capabilities: {},
     field_options: {},
-    mcp: { templates: [], servers: [], user_servers: DEFAULT_META.mcp.user_servers },
+    mcp: {
+      templates: [],
+      catalog: [],
+      servers: [],
+      user_servers: DEFAULT_META.mcp.user_servers,
+    },
   };
 
   if (body.models !== undefined) {
@@ -1038,6 +1047,10 @@ function validateMeta(
         ...new Set(body.mcp.templates.filter((t): t is string => typeof t === "string")),
       ];
     }
+    if (body.mcp.catalog !== undefined) {
+      if (!Array.isArray(body.mcp.catalog)) throw new Error("mcp.catalog must be an array");
+      meta.mcp.catalog = body.mcp.catalog.map((entry) => validateCatalogEntry(entry));
+    }
     if (body.mcp.user_servers !== undefined) {
       meta.mcp.user_servers = !!body.mcp.user_servers;
     }
@@ -1068,6 +1081,46 @@ function validateMeta(
   }
 
   return meta;
+}
+
+/**
+ * One provisioned template, checked before it is stored.
+ *
+ * Every field is rendered on a page the agent's own owner opens, so a bad entry is a
+ * broken tile rather than a bad request — hence the refusal here rather than a filter.
+ * `url` is parsed because the tile turns it into a server; `auth` is checked against
+ * the three this Worker can actually connect with.
+ */
+function validateCatalogEntry(entry: unknown): McpCatalogEntry {
+  if (typeof entry !== "object" || entry === null) throw new Error("each MCP template must be an object");
+  const raw = entry as Record<string, unknown>;
+  const text = (key: string): string => {
+    const value = raw[key];
+    if (typeof value !== "string" || !value.trim()) throw new Error(`each MCP template needs a ${key}`);
+    return value.trim();
+  };
+  const url = text("url");
+  try {
+    new URL(url);
+  } catch {
+    throw new Error(`MCP template ${text("id")} has an invalid URL`);
+  }
+  const auth = raw.auth ?? "none";
+  if (auth !== "none" && auth !== "headers" && auth !== "oauth") {
+    throw new Error("an MCP template's auth must be none, headers or oauth");
+  }
+  const optional = (key: string): string | undefined => {
+    const value = raw[key];
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  };
+  return {
+    id: text("id"),
+    name: text("name"),
+    url,
+    auth,
+    letter: optional("letter"),
+    color: optional("color"),
+  };
 }
 
 /** Meta settings as the browser may see them: every secret becomes a mask. */

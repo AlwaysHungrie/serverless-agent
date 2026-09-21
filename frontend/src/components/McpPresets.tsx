@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { McpAuth } from "@/lib/agent";
+import type { McpAuth, McpCatalogEntry } from "@/lib/agent";
 
 /**
  * A provider whose MCP server is known: the values its server expects, so connecting
@@ -38,6 +38,29 @@ export const MCP_PRESETS: McpPreset[] = [
   },
 ];
 
+/**
+ * A provisioned template as a tile: the same shape a built-in preset has, with a
+ * letter mark standing in for the logo this deployment does not ship.
+ */
+function toPreset(entry: McpCatalogEntry): McpPreset {
+  const letter = (entry.letter || entry.name).trim().charAt(0).toUpperCase();
+  return {
+    id: entry.id,
+    name: entry.name,
+    url: entry.url,
+    auth: entry.auth,
+    logo: (
+      <span
+        aria-hidden="true"
+        className="flex h-[26px] w-[26px] items-center justify-center rounded-[8px] text-[13px] font-semibold text-white"
+        style={{ background: entry.color || "#6b7280" }}
+      >
+        {letter}
+      </span>
+    ),
+  };
+}
+
 /** How fast the strip drifts, in pixels per second. */
 const SPEED = 4;
 /** Past this much movement a pointer was dragging the strip, not picking a tile. */
@@ -54,10 +77,17 @@ const DRAG_SLOP = 4;
 export function McpPresetStrip({
   onPick,
   only = [],
+  catalog = [],
 }: {
   onPick: (preset: McpPreset) => void;
   /** Preset ids to show. Empty shows every preset. */
   only?: string[];
+  /**
+   * Templates provisioned for this agent. When there are any they ARE the strip —
+   * whoever provisioned it named the providers it should offer, and the ones compiled
+   * in here are this deployment's own suggestion, not an addition to theirs.
+   */
+  catalog?: McpCatalogEntry[];
 }) {
   const track = useRef<HTMLDivElement>(null);
   const offset = useRef(0);
@@ -102,9 +132,11 @@ export function McpPresetStrip({
   // is wide enough to look like a strip at all — and then doubled, for the wrap.
   // An agent's meta settings may narrow the catalogue; a list that narrowed it to
   // nothing is treated as no restriction, so the strip is never an empty rail.
-  const offered = only.length
+  const provisioned = catalog.map(toPreset);
+  const builtIn = only.length
     ? MCP_PRESETS.filter((p) => only.includes(p.id))
     : MCP_PRESETS;
+  const offered = provisioned.length ? provisioned : builtIn;
   const presets = offered.length ? offered : MCP_PRESETS;
   const filled = Array.from(
     { length: Math.max(1, Math.ceil(8 / presets.length)) },

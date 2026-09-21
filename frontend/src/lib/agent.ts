@@ -242,6 +242,23 @@ export function capabilityReady(
 /** How an external MCP server authenticates this agent. */
 export type McpAuth = "none" | "headers" | "oauth";
 
+/**
+ * One provider the capabilities page may offer, described by whoever provisioned this
+ * agent rather than compiled into this app.
+ *
+ * What a tile needs to become a server: a name, a url and how it authenticates. No
+ * logo — the mark is drawn from `letter` on `color`, because an SVG arriving as data
+ * would be markup from outside rendered inside the page.
+ */
+export type McpCatalogEntry = {
+  id: string;
+  name: string;
+  url: string;
+  auth: McpAuth;
+  letter?: string;
+  color?: string;
+};
+
 /** One tool an MCP server advertises. */
 export type McpTool = {
   name: string;
@@ -311,6 +328,11 @@ export type MetaSettings = {
   mcp: {
     /** Preset ids offered on the capabilities page. Empty means every preset. */
     templates: string[];
+    /**
+     * Templates provisioned from outside this deployment, shown in place of the
+     * built-in presets. Empty leaves those alone. See `McpCatalogEntry`.
+     */
+    catalog: McpCatalogEntry[];
     /** Servers added to the agent when defaults are applied, matched by name. */
     servers: MetaMcpServer[];
     /**
@@ -358,7 +380,7 @@ export const EMPTY_META: MetaSettings = {
   locked: [],
   capabilities: {},
   field_options: {},
-  mcp: { templates: [], servers: [], user_servers: true },
+  mcp: { templates: [], catalog: [], servers: [], user_servers: true },
 };
 
 /** A file the user attached, or an image the agent drew, minus the bytes. */

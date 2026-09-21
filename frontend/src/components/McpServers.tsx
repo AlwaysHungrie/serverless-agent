@@ -2,7 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Check, Link2, Plus, RefreshCw, Trash2, X } from "lucide-react";
-import { SECRET_MASK, type McpAuth, type McpServer } from "@/lib/agent";
+import {
+  SECRET_MASK,
+  type McpAuth,
+  type McpCatalogEntry,
+  type McpServer,
+} from "@/lib/agent";
 import { Toggle } from "@/components/CapabilitySection";
 import { McpPresetStrip, type McpPreset } from "@/components/McpPresets";
 import { apiFetch } from "@/lib/identity";
@@ -482,6 +487,8 @@ export function McpServers({
   const [busy, setBusy] = useState(false);
   /** Preset ids this agent's meta settings offer. Empty means every preset. */
   const [templates, setTemplates] = useState<string[]>([]);
+  /** Templates provisioned for this agent, which replace the built-in strip. */
+  const [catalog, setCatalog] = useState<McpCatalogEntry[]>([]);
   /** Whether the list itself may be changed from here. */
   const [manage, setManage] = useState(meta);
 
@@ -494,6 +501,7 @@ export function McpServers({
       servers: McpServer[];
       redirect_uri: string;
       templates?: string[];
+      catalog?: McpCatalogEntry[];
       user_servers?: boolean;
       error?: string;
     } | null;
@@ -504,6 +512,7 @@ export function McpServers({
     setServers(payload.servers);
     setRedirectUri(payload.redirect_uri);
     setTemplates(payload.templates ?? []);
+    setCatalog(payload.catalog ?? []);
     // The dialog manages the list whatever the setting says; everywhere else the
     // setting decides. An agent with no meta document has never been narrowed.
     if (!meta) setManage(payload.user_servers ?? true);
@@ -625,6 +634,7 @@ export function McpServers({
         <McpPresetStrip
           // Meta settings decide which templates this agent is offered.
           only={templates}
+          catalog={catalog}
           onPick={(picked) => {
             setPreset(picked);
             setPicks((n) => n + 1);
