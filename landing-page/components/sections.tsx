@@ -1,3 +1,4 @@
+import { Globe } from "./Globe";
 import { CountUp, HeroSquircles, Reveal } from "./motion";
 import { TelegramSignup } from "./TelegramSignup";
 import { Button, Eyebrow, Placeholder, Wrap } from "./ui";
@@ -74,27 +75,33 @@ export function Mission() {
     <section id="mission" className="mt-32 scroll-mt-28">
       <Wrap>
         <Reveal>
-          <div className="rounded-[32px] bg-ink px-6 py-16 text-center text-white sm:px-12 sm:py-20">
-            <p className="text-xs font-semibold uppercase tracking-[0.08em] text-faint">
-              The plan
-            </p>
-            <p className="mt-6 text-[clamp(44px,9vw,96px)] font-[650] leading-none tracking-[-0.03em]">
-              <CountUp to={8.1} decimals={1} suffix="B" />
-            </p>
-            <h2 className="mx-auto mt-6 max-w-[18ch] text-[clamp(26px,3.5vw,38px)] font-[650] leading-[1.1] tracking-[-0.025em] text-balance">
-              People on Earth. One AI agent each.
-            </h2>
-            <p className="mx-auto mt-4 max-w-[540px] text-lg font-light leading-[1.45] text-faint text-balance">
-              Not one giant assistant shared by everyone. One small agent per
-              person, that only knows you, and that you can switch off whenever
-              you like.
-            </p>
-            <p className="mt-8 text-sm text-faint">
-              <span className="font-semibold text-white">
-                <CountUp to={50241} />
-              </span>{" "}
-              awake so far.
-            </p>
+          <div className="relative overflow-hidden rounded-[32px] bg-ink px-6 py-16 text-center text-white sm:px-12 sm:py-20">
+            {/* Cropped by the card edge, so it reads as a world still turning. */}
+            <Globe
+              className="pointer-events-none absolute right-0 top-1/2 hidden h-[520px] w-[520px] -translate-y-1/2 translate-x-[45%] lg:block"
+            />
+            <div className="relative">
+              <p className="text-xs font-semibold uppercase tracking-[0.08em] text-faint">
+                The plan
+              </p>
+              <p className="mt-6 text-[clamp(44px,9vw,96px)] font-[650] leading-none tracking-[-0.03em]">
+                <CountUp to={8.1} decimals={1} suffix="B" />
+              </p>
+              <h2 className="mx-auto mt-6 max-w-[18ch] text-[clamp(26px,3.5vw,38px)] font-[650] leading-[1.1] tracking-[-0.025em] text-balance">
+                People on Earth. One AI agent each.
+              </h2>
+              <p className="mx-auto mt-4 max-w-[540px] text-lg font-light leading-[1.45] text-faint text-balance">
+                Not one giant assistant shared by everyone. One small agent per
+                person, that only knows you, and that you can switch off
+                whenever you like.
+              </p>
+              <p className="mt-8 text-sm text-faint">
+                <span className="font-semibold text-white">
+                  <CountUp to={50241} />
+                </span>{" "}
+                awake so far.
+              </p>
+            </div>
           </div>
         </Reveal>
       </Wrap>
