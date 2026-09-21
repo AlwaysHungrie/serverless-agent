@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "serverless-agent",
+  "name": "salt-agent",
   "main": "src/server.ts",
   "compatibility_date": "2026-09-07",
   "compatibility_flags": ["nodejs_compat"],
@@ -19,7 +19,7 @@
     { "tag": "v3", "new_sqlite_classes": ["AgentDirectory"] }
   ],
   "r2_buckets": [
-    { "binding": "FILES", "bucket_name": "serverless-agent-files" }
+    { "binding": "FILES", "bucket_name": "salt-agent-files" }
   ],
   "vars": {
     // The Clerk instance whose session tokens this Worker verifies, as the exact `iss`
@@ -27,7 +27,7 @@
     // is public too — so it lives here rather than in `wrangler secret`, and the same
     // value is right for `wrangler dev` and for a deploy because both sign in against
     // the same Clerk instance.
-    "CLERK_ISSUER": "https://choice-robin-70.clerk.accounts.dev",
+    "CLERK_ISSUER": "https://rich-horse-1284.clerk.accounts.dev",
     "MODEL": "deepseek/deepseek-v4-flash",
     // What the settings page offers. `vision` is false for a model that cannot be
     // sent an image; leaving it out means it can. Override per environment — nothing

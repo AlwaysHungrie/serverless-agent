@@ -35,7 +35,7 @@ Attachment bytes (images, voice-note clips) live in R2, not in the session's SQL
 Create the bucket once before deploying — `wrangler dev` simulates it locally:
 
 ```bash
-wrangler r2 bucket create serverless-agent-files
+wrangler r2 bucket create salt-agent-files
 ```
 
 Objects are keyed `<session-id>/<attachment-id>`, and a session reset or delete drops

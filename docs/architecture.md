@@ -157,7 +157,7 @@ thread, not one request at a time.
 
 **R2** is object storage — a bucket you put blobs in and get blobs out of, addressed by
 key, priced for bulk, with no query language. It is where bytes go when they are too big
-to want in a SQLite row. Here that is `serverless-agent-files`, bound as `FILES` in
+to want in a SQLite row. Here that is `salt-agent-files`, bound as `FILES` in
 [wrangler.jsonc](../agent/wrangler.jsonc).
 
 The bindings in [wrangler.jsonc](../agent/wrangler.jsonc) are how the Worker reaches any of
