@@ -70,12 +70,13 @@ export function SignupCard() {
   return (
     <div className="mx-auto w-full max-w-140 rounded-[28px] bg-canvas p-2 ring-1 ring-hairline-soft shadow-[0_24px_60px_-32px_rgba(20,20,20,0.35)]">
       <div className="rounded-[22px] bg-canvas-soft p-6 sm:p-8">
-        {/* Where you are, in two words each. */}
-        <ol className="flex items-center gap-2 text-[12px] font-semibold">
+        {/* Where you are, in two words each. Narrow screens only fit one
+            label, so the rest stay as numbered dots. */}
+        <ol className="flex items-center justify-center gap-2 text-[12px] font-semibold sm:justify-start">
           {SIGNUP.steps.map((s, i) => (
-            <li key={s} className="flex items-center gap-2">
+            <li key={s} className="flex min-w-0 items-center gap-2">
               <span
-                className={`grid size-5 place-items-center rounded-full text-[11px] tnum ${
+                className={`grid size-5 shrink-0 place-items-center rounded-full text-[11px] tnum ${
                   i <= step
                     ? "bg-ink text-white"
                     : "bg-canvas text-faint ring-1 ring-hairline"
@@ -83,10 +84,16 @@ export function SignupCard() {
               >
                 {i + 1}
               </span>
-              <span className={i <= step ? "text-ink" : "text-faint"}>{s}</span>
+              <span
+                className={`truncate whitespace-nowrap ${
+                  i === step ? "inline" : "hidden sm:inline"
+                } ${i <= step ? "text-ink" : "text-faint"}`}
+              >
+                {s}
+              </span>
               {i < SIGNUP.steps.length - 1 && (
                 <span
-                  className="mx-1 h-px w-4 bg-hairline sm:w-6"
+                  className="mx-1 h-px w-3 shrink-0 bg-hairline sm:w-6"
                   aria-hidden
                 />
               )}
