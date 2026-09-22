@@ -9,14 +9,16 @@ import {
 } from "framer-motion";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const LINKS = [
-  { id: "skills", label: "What it does" },
-  { id: "how", label: "How it works" },
-  { id: "costs", label: "Pricing" },
-  { id: "faq", label: "FAQ" },
-];
-
-const LINK_IDS = LINKS.map((l) => l.id);
+import {
+  AGENTS_DEPLOYED,
+  BRAND,
+  HERO,
+  LINKS as DESTINATIONS,
+  NAV,
+  NAV_OWNER,
+  NAV_SECTION_IDS,
+} from "./content";
+import { MaybeLink } from "./ui";
 
 function Mark() {
   const tile = useAnimationControls();
@@ -67,8 +69,16 @@ function Mark() {
   );
 }
 
-/** Reports which section the reader is actually looking at. */
-function useActiveSection(ids: string[]) {
+/**
+ * Reports which nav entry the reader is looking at.
+ *
+ * It observes every section id in NAV_SECTION_IDS — not just the four that
+ * have a link — and maps whichever is most in view back to the nav entry that
+ * owns it. That way a section added between two existing ones keeps the
+ * highlight lit instead of breaking the chain; give it an id and list that id
+ * in the right NAV group in content.ts.
+ */
+function useActiveNav() {
   const [active, setActive] = useState<string | null>(null);
 
   useEffect(() => {
@@ -77,17 +87,17 @@ function useActiveSection(ids: string[]) {
       (entries) => {
         for (const e of entries) seen.set(e.target.id, e.intersectionRatio);
         const [best] = [...seen.entries()].sort((a, b) => b[1] - a[1]);
-        setActive(best && best[1] > 0 ? best[0] : null);
+        setActive(best && best[1] > 0 ? (NAV_OWNER[best[0]] ?? null) : null);
       },
       { rootMargin: "-25% 0px -55% 0px", threshold: [0, 0.25, 0.5, 1] },
     );
 
-    ids
-      .map((id) => document.getElementById(id))
-      .forEach((el) => el && observer.observe(el));
+    NAV_SECTION_IDS.map((id) => document.getElementById(id)).forEach(
+      (el) => el && observer.observe(el),
+    );
 
     return () => observer.disconnect();
-  }, [ids]);
+  }, []);
 
   return active;
 }
@@ -96,7 +106,7 @@ export function SiteHeader() {
   const { scrollY } = useScroll();
   const [open, setOpen] = useState(false);
   const [lifted, setLifted] = useState(false);
-  const active = useActiveSection(LINK_IDS);
+  const active = useActiveNav();
 
   useMotionValueEvent(scrollY, "change", (y) => setLifted(y > 12));
 
@@ -117,7 +127,7 @@ export function SiteHeader() {
             <a href="#top" className="flex items-center gap-2.5">
               <Mark />
               <span className="text-[17px] font-[650] tracking-[-0.02em]">
-                Salts
+                {BRAND.name}
               </span>
             </a>
             <span className="hidden h-5 w-px bg-hairline lg:block" />
@@ -125,15 +135,15 @@ export function SiteHeader() {
               {new Intl.NumberFormat("en-US", {
                 notation: "compact",
                 compactDisplay: "short",
-              }).format(50000)}
-              +<span className="text-faint"> agents awake</span>
+              }).format(AGENTS_DEPLOYED)}
+              <span className="text-faint"> agents awake</span>
             </span>
           </div>
 
           {/* Navigation island — links, a hairline, then the one filled action. */}
           <div className={`${island} ml-auto flex items-center gap-1 p-1.5`}>
             <nav className="hidden items-center md:flex">
-              {LINKS.map((l) => {
+              {NAV.map((l) => {
                 const isActive = active === l.id;
                 return (
                   <a
@@ -161,21 +171,20 @@ export function SiteHeader() {
                 );
               })}
               <span className="mx-2 h-5 w-px bg-hairline" />
-              <a
-                href="#"
+              <MaybeLink
+                href={DESTINATIONS.signIn}
                 className="rounded-[12px] px-3 py-2 text-[15px] font-semibold text-muted transition-colors hover:text-ink"
               >
                 Sign in
-              </a>
+              </MaybeLink>
             </nav>
 
             <a
               href="#start"
               className="inline-flex h-10 items-center gap-2 rounded-[13px] bg-ink px-4 text-sm font-semibold text-white transition-colors hover:bg-ink-soft md:pr-3"
             >
-              {/* Narrow screens get the shorter label and drop the icon. */}
-              <span className="md:hidden">Get my agent</span>
-              <span className="hidden md:inline">Get my agent</span>
+              <span>{HERO.primaryCta}</span>
+              {/* The icon is desktop-only; the label is the same either way. */}
               <span className="hidden size-5 place-items-center rounded-full bg-white/15 md:grid">
                 <svg
                   width="10"
@@ -199,9 +208,7 @@ export function SiteHeader() {
               aria-label={open ? "Close menu" : "Open menu"}
               aria-expanded={open}
               onClick={() => setOpen((v) => !v)}
-              className={`grid size-10 place-items-center rounded-[13px] ring-1 transition-colors md:hidden ${
-                open ? "ring-hairline" : "ring-hairline"
-              }`}
+              className="grid size-10 place-items-center rounded-[13px] ring-1 ring-hairline transition-colors md:hidden"
             >
               <span className="flex flex-col gap-[5px]">
                 <span
@@ -240,7 +247,7 @@ export function SiteHeader() {
               transition={{ duration: 0.2, ease: "easeOut" }}
               className="mt-2 overflow-hidden rounded-[18px] bg-white/95 p-2 shadow-[0_0_0_1px_var(--color-hairline-soft)] backdrop-blur-xl md:hidden"
             >
-              {LINKS.map((l) => (
+              {NAV.map((l) => (
                 <a
                   key={l.id}
                   href={`#${l.id}`}
@@ -250,12 +257,12 @@ export function SiteHeader() {
                   {l.label}
                 </a>
               ))}
-              <a
-                href="#"
+              <MaybeLink
+                href={DESTINATIONS.signIn}
                 className="block rounded-[12px] px-4 py-3 text-[15px] font-semibold text-muted hover:bg-canvas-soft hover:text-ink"
               >
                 Sign in
-              </a>
+              </MaybeLink>
             </motion.nav>
           )}
         </AnimatePresence>

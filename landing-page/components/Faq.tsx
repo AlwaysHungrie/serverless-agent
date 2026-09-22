@@ -3,39 +3,35 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
 
-const ITEMS = [
-  {
-    q: "Do I need to know how to code?",
-    a: "No. If you can send a message on Telegram, you can set this up. The one technical-sounding bit — a bot token — is three taps in a Telegram chat, and we walk you through it.",
-  },
-  {
-    q: "What is a bot token, exactly?",
-    a: "It's the password that lets your agent use a Telegram account of its own. You get it from @BotFather, Telegram's official bot for making bots. Send /newbot, pick a name, and it replies with the token. Paste it here and you're done.",
-  },
-  {
-    q: "Is my agent private?",
-    a: "Yes. Your agent has its own memory and its own chats. Nobody else's agent can see them, and only people you invite can talk to yours.",
-  },
-  {
-    q: "What does it cost?",
-    a: "You pay for what your agent actually says. Each reply shows its cost, and everyday use usually lands under a few dollars a month. There's no subscription to cancel.",
-  },
-  {
-    q: "Can I delete it?",
-    a: "Any time, in one tap. Deleting a conversation wipes that conversation. Deleting the agent takes its memories and files with it.",
-  },
-  {
-    q: "What's the 'one agent per person' thing about?",
-    a: "We think everyone should have an AI that's theirs — not a shared assistant that treats you like a row in a database. So that's what we're building, one agent at a time.",
-  },
-];
+import { FAQ } from "./content";
+import { Reveal } from "./motion";
+import { Eyebrow, Wrap } from "./ui";
 
-export function Faq() {
+/** The whole FAQ block, heading included, so app/page.tsx stays a list of sections. */
+export function FaqSection() {
+  return (
+    <section id="faq" className="mt-32 scroll-mt-28">
+      <Wrap>
+        <Reveal>
+          <div className="mx-auto max-w-[640px] text-center">
+            <Eyebrow>{FAQ.eyebrow}</Eyebrow>
+            <h2 className="mt-3 text-[clamp(30px,4.5vw,44px)] font-[650] leading-[1.08] tracking-[-0.025em]">
+              {FAQ.title}
+            </h2>
+          </div>
+        </Reveal>
+        <Faq />
+      </Wrap>
+    </section>
+  );
+}
+
+function Faq() {
   const [open, setOpen] = useState<number | null>(0);
 
   return (
     <div className="mx-auto mt-12 max-w-[760px] space-y-2">
-      {ITEMS.map((item, i) => {
+      {FAQ.items.map((item, i) => {
         const isOpen = open === i;
         return (
           <div

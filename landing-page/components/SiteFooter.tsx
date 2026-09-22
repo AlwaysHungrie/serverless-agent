@@ -1,35 +1,11 @@
-import { Wrap } from "./ui";
-
-const COLUMNS = [
-  {
-    title: "Product",
-    links: [
-      { href: "#skills", label: "What it does" },
-      { href: "#how", label: "How it works" },
-      { href: "#costs", label: "Pricing" },
-    ],
-  },
-  {
-    title: "Resources",
-    links: [
-      { href: "#mission", label: "The plan" },
-      { href: "https://t.me/BotFather", label: "Get a Telegram token" },
-      { href: "#faq", label: "FAQ" },
-    ],
-  },
-  {
-    title: "Company",
-    links: [
-      { href: "#", label: "Contact" },
-      { href: "#", label: "Privacy" },
-      { href: "#", label: "Terms" },
-    ],
-  },
-];
+import { BRAND, FOOTER } from "./content";
+import { MaybeLink, Wrap } from "./ui";
 
 /**
  * Fixed to the viewport floor. The page sheet scrolls up off it, so the footer
  * is uncovered rather than scrolled into — see the spacer in app/page.tsx.
+ *
+ * Copy and link targets live in ./content.ts.
  */
 export function SiteFooter() {
   return (
@@ -47,15 +23,16 @@ export function SiteFooter() {
                   <span className="size-[5px] rounded-[1.5px] bg-white" />
                 </span>
               </span>
-              <span className="text-[17px] font-[650] tracking-[-0.02em]">Salt Agents</span>
+              <span className="text-[17px] font-[650] tracking-[-0.02em]">
+                {BRAND.name}
+              </span>
             </div>
             <p className="mt-3 max-w-[320px] text-sm leading-relaxed text-faint">
-              An AI agent of your own, living in Telegram. One for every person on
-              Earth — starting with yours.
+              {FOOTER.tagline}
             </p>
           </div>
 
-          {COLUMNS.map((col) => (
+          {FOOTER.columns.map((col) => (
             <div key={col.title}>
               <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-faint">
                 {col.title}
@@ -63,12 +40,12 @@ export function SiteFooter() {
               <ul className="mt-3 space-y-2">
                 {col.links.map((l) => (
                   <li key={l.label}>
-                    <a
+                    <MaybeLink
                       href={l.href}
                       className="text-sm text-faint transition-colors hover:text-white"
                     >
                       {l.label}
-                    </a>
+                    </MaybeLink>
                   </li>
                 ))}
               </ul>
@@ -79,8 +56,10 @@ export function SiteFooter() {
 
       <Wrap>
         <div className="flex flex-col gap-3 border-t border-white/12 pt-5 text-xs text-faint sm:flex-row sm:items-center sm:justify-between">
-          <span>© 2026 Salt Agents</span>
-          <span>Works wherever Telegram works</span>
+          <span>
+            © {BRAND.year} {BRAND.legalName}
+          </span>
+          <span>{FOOTER.note}</span>
         </div>
       </Wrap>
     </footer>

@@ -3,63 +3,88 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
 
+import { LINKS, SIGNUP } from "./content";
+
 /**
- * The quick-start card in the hero. Three short steps — token, name, done —
- * so a visitor has their agent on Telegram before they have an account.
- * Nothing is sent anywhere yet; the last step hands off to sign-up.
+ * The signup card in the closing call to action. Three steps — key, bot, done —
+ * matching the "How it works" list, so the page explains a flow and then runs
+ * exactly that flow.
+ *
+ * It never asks for a name: the agent inherits the name of the bot behind the
+ * token. Nothing is sent anywhere yet; the last step hands off to sign-up.
  */
+
+/** OpenRouter keys are `sk-or-v1-` followed by a long opaque tail. */
+const KEY = /^sk-or-v1-[A-Za-z0-9_-]{20,}$/;
 
 /** BotFather hands out tokens shaped `<digits>:<35 or so characters>`. */
 const TOKEN = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
 
-const STEPS = ["Get a token", "Name your agent", "Say hello"];
-
-export function TelegramSignup() {
+export function SignupCard() {
   const [step, setStep] = useState(0);
+  const [key, setKey] = useState("");
   const [token, setToken] = useState("");
-  const [name, setName] = useState("");
+  const [hasBot, setHasBot] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function submitToken(e: React.FormEvent) {
+  function submitKey(e: React.FormEvent) {
     e.preventDefault();
-    if (!token.trim()) {
-      setError("Paste the token BotFather sent you.");
+    const value = key.trim();
+    if (!value) {
+      setError(SIGNUP.key.empty);
       return;
     }
-    if (!TOKEN.test(token.trim())) {
-      setError("That doesn't look like a token. Copy the whole line, numbers and all.");
+    if (!KEY.test(value)) {
+      setError(SIGNUP.key.invalid);
       return;
     }
     setError(null);
     setStep(1);
   }
 
-  function submitName(e: React.FormEvent) {
+  function submitToken(e: React.FormEvent) {
     e.preventDefault();
-    if (name.trim().length < 2) {
-      setError("Give your agent a name — two letters is enough.");
+    if (!TOKEN.test(token.trim())) {
+      setError(SIGNUP.token.invalid);
       return;
     }
     setError(null);
+    setHasBot(true);
     setStep(2);
+  }
+
+  function skipToken() {
+    setError(null);
+    setHasBot(false);
+    setStep(2);
+  }
+
+  function restart() {
+    setStep(0);
+    setKey("");
+    setToken("");
+    setHasBot(false);
+    setError(null);
   }
 
   return (
     <div className="mx-auto w-full max-w-[560px] rounded-[28px] bg-canvas p-2 ring-1 ring-hairline-soft shadow-[0_24px_60px_-32px_rgba(20,20,20,0.35)]">
       <div className="rounded-[22px] bg-canvas-soft p-6 sm:p-8">
-        {/* Where you are, in three words each. */}
+        {/* Where you are, in two words each. */}
         <ol className="flex items-center gap-2 text-[12px] font-semibold">
-          {STEPS.map((s, i) => (
+          {SIGNUP.steps.map((s, i) => (
             <li key={s} className="flex items-center gap-2">
               <span
                 className={`grid size-5 place-items-center rounded-full text-[11px] tnum ${
-                  i <= step ? "bg-ink text-white" : "bg-canvas text-faint ring-1 ring-hairline"
+                  i <= step
+                    ? "bg-ink text-white"
+                    : "bg-canvas text-faint ring-1 ring-hairline"
                 }`}
               >
                 {i + 1}
               </span>
               <span className={i <= step ? "text-ink" : "text-faint"}>{s}</span>
-              {i < STEPS.length - 1 && (
+              {i < SIGNUP.steps.length - 1 && (
                 <span className="mx-1 h-px w-4 bg-hairline sm:w-6" aria-hidden />
               )}
             </li>
@@ -69,26 +94,73 @@ export function TelegramSignup() {
         <div className="mt-6 text-left">
           <AnimatePresence mode="wait" initial={false}>
             {step === 0 && (
+              <Panel key="key">
+                <form onSubmit={submitKey} noValidate>
+                  <label
+                    htmlFor="openrouter-key"
+                    className="block text-[15px] font-semibold"
+                  >
+                    {SIGNUP.key.label}
+                  </label>
+                  <p className="mt-1 text-sm leading-relaxed text-muted">
+                    Create a key on{" "}
+                    <a
+                      href={LINKS.openRouter}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-semibold text-ink underline decoration-hairline underline-offset-4 hover:decoration-ink"
+                    >
+                      {SIGNUP.key.linkLabel}
+                    </a>
+                    , set a spending limit, and paste it here. You pay OpenRouter
+                    directly for whatever your agent uses.
+                  </p>
+                  <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                    <input
+                      id="openrouter-key"
+                      name="openrouter-key"
+                      value={key}
+                      onChange={(e) => setKey(e.target.value)}
+                      aria-invalid={error ? "true" : undefined}
+                      aria-describedby={error ? "signup-error" : undefined}
+                      placeholder={SIGNUP.key.placeholder}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="h-12 w-full rounded-full bg-canvas px-5 text-[15px] ring-1 ring-hairline outline-none transition-[box-shadow] placeholder:text-faint focus:ring-2 focus:ring-ink"
+                    />
+                    <button
+                      type="submit"
+                      className="h-12 shrink-0 rounded-full bg-ink px-6 text-sm font-semibold text-white transition-colors hover:bg-ink-soft"
+                    >
+                      {SIGNUP.key.cta}
+                    </button>
+                  </div>
+                </form>
+              </Panel>
+            )}
+
+            {step === 1 && (
               <Panel key="token">
                 <form onSubmit={submitToken} noValidate>
                   <label
                     htmlFor="bot-token"
                     className="block text-[15px] font-semibold"
                   >
-                    Paste your Telegram bot token
+                    {SIGNUP.token.label}
                   </label>
                   <p className="mt-1 text-sm leading-relaxed text-muted">
                     Message{" "}
                     <a
-                      href="https://t.me/BotFather"
+                      href={LINKS.botFather}
                       target="_blank"
                       rel="noreferrer"
                       className="font-semibold text-ink underline decoration-hairline underline-offset-4 hover:decoration-ink"
                     >
-                      @BotFather on Telegram
+                      {SIGNUP.token.linkLabel}
                     </a>
-                    , send <span className="font-semibold text-ink">/newbot</span>, and
-                    copy the token it replies with. Takes about a minute.
+                    , send <span className="font-semibold text-ink">/newbot</span>
+                    , and copy the token it replies with. Your agent takes its
+                    name from that bot, so there's nothing else to fill in.
                   </p>
                   <div className="mt-4 flex flex-col gap-2 sm:flex-row">
                     <input
@@ -98,7 +170,7 @@ export function TelegramSignup() {
                       onChange={(e) => setToken(e.target.value)}
                       aria-invalid={error ? "true" : undefined}
                       aria-describedby={error ? "signup-error" : undefined}
-                      placeholder="8412345678:AAH…"
+                      placeholder={SIGNUP.token.placeholder}
                       autoComplete="off"
                       spellCheck={false}
                       className="h-12 w-full rounded-full bg-canvas px-5 text-[15px] ring-1 ring-hairline outline-none transition-[box-shadow] placeholder:text-faint focus:ring-2 focus:ring-ink"
@@ -107,41 +179,17 @@ export function TelegramSignup() {
                       type="submit"
                       className="h-12 shrink-0 rounded-full bg-ink px-6 text-sm font-semibold text-white transition-colors hover:bg-ink-soft"
                     >
-                      Continue
+                      {SIGNUP.token.cta}
                     </button>
                   </div>
-                </form>
-              </Panel>
-            )}
-
-            {step === 1 && (
-              <Panel key="name">
-                <form onSubmit={submitName} noValidate>
-                  <label htmlFor="agent-name" className="block text-[15px] font-semibold">
-                    What should your agent be called?
-                  </label>
-                  <p className="mt-1 text-sm leading-relaxed text-muted">
-                    This is the name you'll see in your chats. You can change it later.
-                  </p>
-                  <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-                    <input
-                      id="agent-name"
-                      name="agent-name"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      aria-invalid={error ? "true" : undefined}
-                      aria-describedby={error ? "signup-error" : undefined}
-                      placeholder="Nova"
-                      autoComplete="off"
-                      className="h-12 w-full rounded-full bg-canvas px-5 text-[15px] ring-1 ring-hairline outline-none transition-[box-shadow] placeholder:text-faint focus:ring-2 focus:ring-ink"
-                    />
-                    <button
-                      type="submit"
-                      className="h-12 shrink-0 rounded-full bg-ink px-6 text-sm font-semibold text-white transition-colors hover:bg-ink-soft"
-                    >
-                      Continue
-                    </button>
-                  </div>
+                  {/* Step two is optional, exactly as "How it works" says. */}
+                  <button
+                    type="button"
+                    onClick={skipToken}
+                    className="mt-3 text-sm font-semibold text-faint underline decoration-hairline underline-offset-4 transition-colors hover:text-ink"
+                  >
+                    {SIGNUP.token.skip}
+                  </button>
                 </form>
               </Panel>
             )}
@@ -163,27 +211,23 @@ export function TelegramSignup() {
                   </span>
                   <div>
                     <p className="text-[15px] font-semibold">
-                      {name.trim()} is ready to wake up.
+                      {hasBot ? SIGNUP.done.withBot : SIGNUP.done.withoutBot}
                     </p>
                     <p className="mt-1 text-sm leading-relaxed text-muted">
-                      Create your account and {name.trim()} starts answering in your
-                      Telegram. Free to try, and you can delete it in one tap.
+                      {hasBot
+                        ? SIGNUP.done.bodyWithBot
+                        : SIGNUP.done.bodyWithoutBot}
                     </p>
                   </div>
                 </div>
                 <div className="mt-5 flex flex-col gap-2 sm:flex-row">
-                  <a
-                    href="#"
-                    className="inline-flex h-12 items-center justify-center rounded-full bg-ink px-6 text-sm font-semibold text-white transition-colors hover:bg-ink-soft"
-                  >
-                    Create my agent
-                  </a>
+                  <SubmitAction />
                   <button
                     type="button"
-                    onClick={() => setStep(0)}
+                    onClick={restart}
                     className="inline-flex h-12 items-center justify-center rounded-full bg-canvas px-6 text-sm font-semibold text-muted ring-1 ring-hairline transition-colors hover:text-ink"
                   >
-                    Start over
+                    {SIGNUP.done.restart}
                   </button>
                 </div>
               </Panel>
@@ -209,9 +253,32 @@ export function TelegramSignup() {
       </div>
 
       <p className="px-6 py-3 text-center text-[13px] text-faint">
-        No credit card. Your token stays yours — delete the agent and it's gone.
+        {SIGNUP.footnote}
       </p>
     </div>
+  );
+}
+
+/**
+ * Step three's action. There is no sign-up destination yet, so it renders as a
+ * button that goes nowhere rather than a link that lies — see BROKEN-LINKS.md.
+ */
+function SubmitAction() {
+  const className =
+    "inline-flex h-12 items-center justify-center rounded-full bg-ink px-6 text-sm font-semibold text-white transition-colors hover:bg-ink-soft";
+
+  if (!LINKS.signUp) {
+    return (
+      <button type="button" className={className}>
+        {SIGNUP.done.cta}
+      </button>
+    );
+  }
+
+  return (
+    <a href={LINKS.signUp} className={className}>
+      {SIGNUP.done.cta}
+    </a>
   );
 }
 

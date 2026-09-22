@@ -89,3 +89,38 @@ export function Placeholder({
     </div>
   );
 }
+
+/**
+ * A destination that may not exist yet. Real href renders a link; `null`
+ * renders plain text, so the page never ships a `#` that goes nowhere.
+ * Unbuilt destinations are listed in BROKEN-LINKS.md.
+ */
+export function MaybeLink({
+  href,
+  className = "",
+  children,
+}: {
+  href: string | null;
+  className?: string;
+  children: ReactNode;
+}) {
+  if (!href) {
+    return (
+      <span className={className} aria-disabled="true">
+        {children}
+      </span>
+    );
+  }
+
+  const external = href.startsWith("http");
+
+  return (
+    <a
+      href={href}
+      {...(external ? { target: "_blank", rel: "noreferrer" } : {})}
+      className={className}
+    >
+      {children}
+    </a>
+  );
+}

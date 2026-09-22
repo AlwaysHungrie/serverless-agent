@@ -1,4 +1,4 @@
-import { Faq } from "@/components/Faq";
+import { FaqSection } from "@/components/Faq";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
 import {
@@ -11,9 +11,13 @@ import {
   Stats,
   Steps,
 } from "@/components/sections";
-import { Eyebrow, Wrap } from "@/components/ui";
-import { Reveal } from "@/components/motion";
 
+/**
+ * Section order matters twice over: it's the reading order, and it's what the
+ * header highlight walks through. Every section below carries an id that is
+ * listed in a NAV group in components/content.ts — add a section, add its id
+ * to the group it belongs to, and the highlight stays unbroken.
+ */
 export default function Page() {
   return (
     <>
@@ -29,21 +33,7 @@ export default function Page() {
           <Steps />
           <Costs />
           <Capabilities />
-
-          <section id="faq" className="mt-32 scroll-mt-28">
-            <Wrap>
-              <Reveal>
-                <div className="mx-auto max-w-[640px] text-center">
-                  <Eyebrow>FAQ</Eyebrow>
-                  <h2 className="mt-3 text-[clamp(30px,4.5vw,44px)] font-[650] leading-[1.08] tracking-[-0.025em]">
-                    Everything people ask first.
-                  </h2>
-                </div>
-              </Reveal>
-              <Faq />
-            </Wrap>
-          </section>
-
+          <FaqSection />
           <Cta />
         </main>
       </div>
