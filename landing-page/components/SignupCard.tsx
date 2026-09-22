@@ -68,8 +68,8 @@ export function SignupCard() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-140 rounded-[28px] bg-canvas p-2 ring-1 ring-hairline-soft shadow-[0_24px_60px_-32px_rgba(20,20,20,0.35)]">
-      <div className="rounded-[22px] bg-canvas-soft p-6 sm:p-8">
+    <div className="mx-auto w-full max-w-140 rounded-[28px] bg-canvas p-1.5 ring-1 sm:p-2 ring-hairline-soft shadow-[0_24px_60px_-32px_rgba(20,20,20,0.35)]">
+      <div className="rounded-[22px] bg-canvas-soft p-4 sm:p-8">
         {/* Where you are, in two words each. Narrow screens only fit one
             label, so the rest stay as numbered dots. */}
         <ol className="flex items-center justify-center gap-2 text-[12px] font-semibold sm:justify-start">
@@ -85,9 +85,7 @@ export function SignupCard() {
                 {i + 1}
               </span>
               <span
-                className={`truncate whitespace-nowrap ${
-                  i === step ? "inline" : "hidden sm:inline"
-                } ${i <= step ? "text-ink" : "text-faint"}`}
+                className={`truncate whitespace-nowrap hidden sm:inline ${i <= step ? "text-ink" : "text-faint"}`}
               >
                 {s}
               </span>
@@ -101,12 +99,17 @@ export function SignupCard() {
           ))}
         </ol>
 
-        <div className="mt-6 text-left">
+        {/* The dots carry no labels on a narrow screen, so name the step once. */}
+        <p className="mt-2 text-center text-[12px] font-semibold text-ink sm:hidden">
+          {SIGNUP.steps[step]}
+        </p>
+
+        <div className="mt-4 text-left sm:mt-6">
           <AnimatePresence mode="wait" initial={false}>
             {step === 0 && (
               <Panel key="key">
                 <form onSubmit={submitKey} noValidate>
-                  <p className="mt-1 text-sm leading-relaxed text-muted">
+                  <p className="mt-1 text-sm text-center sm:text-left leading-relaxed text-muted">
                     Create an account on{" "}
                     <a
                       href={LINKS.openRouter}
@@ -269,10 +272,6 @@ export function SignupCard() {
           )}
         </div>
       </div>
-
-      <p className="px-6 py-3 text-center text-[13px] text-faint">
-        {SIGNUP.footnote}
-      </p>
     </div>
   );
 }

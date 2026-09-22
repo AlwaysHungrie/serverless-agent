@@ -295,7 +295,6 @@ export const SIGNUP = {
     cta: "Create Agent",
     restart: "Start over",
   },
-  footnote: "Custom LLM provider support comming soon.",
 } as const;
 
 export const FOOTER = {

@@ -27,7 +27,7 @@ import { Button, Eyebrow, Placeholder, Wrap } from "./ui";
 
 export function Hero() {
   return (
-    <section className="relative overflow-hidden pt-36 pb-10 sm:pt-44">
+    <section className="relative overflow-hidden pt-28 pb-8 sm:pt-36 sm:pb-10 lg:pt-44">
       {/* A single faint wash behind the headline; no gradients elsewhere. */}
       <div
         aria-hidden
@@ -73,7 +73,7 @@ export function Hero() {
         </Reveal>
 
         <Reveal delay={0.2}>
-          <AppPreview className="mt-24 sm:mt-32" />
+          <AppPreview className="mt-16 sm:mt-24 lg:mt-32" />
         </Reveal>
       </Wrap>
     </section>
@@ -84,7 +84,7 @@ export function Hero() {
 
 export function Stats() {
   return (
-    <section id="stats" className="mt-24 scroll-mt-28">
+    <section id="stats" className="mt-16 scroll-mt-28 sm:mt-20 lg:mt-24">
       <Wrap>
         <Reveal>
           <div className="grid gap-px overflow-hidden rounded-[24px] bg-hairline-soft sm:grid-cols-3">
@@ -109,7 +109,7 @@ export function Stats() {
 
 export function Features() {
   return (
-    <section id="skills" className="mt-32 scroll-mt-28">
+    <section id="skills" className="mt-20 scroll-mt-28 sm:mt-28 lg:mt-32">
       <Wrap>
         <Reveal>
           <div className="mx-auto max-w-[640px] text-center">
@@ -117,13 +117,13 @@ export function Features() {
             <h2 className="mt-3 text-[clamp(30px,4.5vw,44px)] font-[650] leading-[1.08] tracking-[-0.025em]">
               {FEATURES_COPY.title}
             </h2>
-            <p className="mt-4 text-xl font-light leading-[1.4] text-muted text-balance">
+            <p className="mt-4 text-base sm:text-xl font-light leading-[1.4] text-muted text-balance">
               {FEATURES_COPY.body}
             </p>
           </div>
         </Reveal>
 
-        <div className="mt-12 grid gap-4 md:grid-cols-3">
+        <div className="mt-8 grid gap-4 sm:mt-12 md:grid-cols-3">
           {FEATURES_COPY.cards.map((f, i) => (
             <Reveal
               key={f.title}
@@ -160,10 +160,10 @@ export function Features() {
 
 export function Mission() {
   return (
-    <section id="mission" className="mt-32 scroll-mt-28">
+    <section id="mission" className="mt-20 scroll-mt-28 sm:mt-28 lg:mt-32">
       <Wrap>
         <Reveal>
-          <div className="relative overflow-hidden rounded-[32px] bg-ink px-6 py-16 text-center text-white sm:px-12 sm:py-20">
+          <div className="relative overflow-hidden rounded-[32px] bg-ink px-5 py-12 text-center text-white sm:px-12 sm:py-16 lg:py-20">
             {/* Cropped by the card edge, so it reads as a world still turning. */}
             <Globe className="pointer-events-none absolute right-0 top-1/2 hidden h-[520px] w-[520px] -translate-y-1/2 translate-x-[45%] lg:block" />
             <div className="relative">
@@ -212,7 +212,7 @@ function Split({
   reverse?: boolean;
 }) {
   return (
-    <div className="grid items-center gap-12 md:grid-cols-2">
+    <div className="grid items-center gap-8 sm:gap-12 md:grid-cols-2">
       <Reveal className={reverse ? "md:order-2" : ""}>
         <Eyebrow>{eyebrow}</Eyebrow>
         <h2 className="mt-3 text-[clamp(26px,3.5vw,34px)] font-[650] leading-[1.1] tracking-[-0.025em]">
@@ -239,7 +239,10 @@ function Split({
 
 export function Costs() {
   return (
-    <section id="costs" className="mt-32 scroll-mt-28 space-y-24">
+    <section
+      id="costs"
+      className="mt-20 scroll-mt-28 space-y-16 sm:mt-28 sm:space-y-20 lg:mt-32 lg:space-y-24"
+    >
       <Wrap>
         <Split
           eyebrow={PRICING.eyebrow}
@@ -267,29 +270,29 @@ export function Costs() {
 
 export function Capabilities() {
   return (
-    <section id="capabilities" className="mt-32 scroll-mt-28">
+    <section id="capabilities" className="mt-20 scroll-mt-28 sm:mt-28 lg:mt-32">
       <Wrap>
         <Reveal>
-          <div className="rounded-[32px] bg-canvas-soft p-8 sm:p-12">
+          <div className="rounded-[32px] bg-canvas-soft px-5 py-7 sm:p-8 lg:p-12">
             <div className="max-w-[560px]">
               <Eyebrow>{CAPABILITIES_COPY.eyebrow}</Eyebrow>
               <h2 className="mt-3 text-[clamp(26px,3.5vw,34px)] font-[650] leading-[1.1] tracking-[-0.025em]">
                 {CAPABILITIES_COPY.title}
               </h2>
-              <p className="mt-4 leading-relaxed text-muted">
+              <p className="mt-3 text-[15px] leading-relaxed text-muted sm:mt-4 sm:text-base">
                 {CAPABILITIES_COPY.body}
               </p>
             </div>
-            <div className="mt-8 flex flex-wrap gap-2">
+            <div className="mt-6 flex flex-wrap gap-1.5 sm:mt-8 sm:gap-2">
               {CAPABILITIES_COPY.items.map((c) => (
                 <span
                   key={c}
-                  className="rounded-full bg-canvas px-4 py-2 text-sm ring-1 ring-hairline-soft"
+                  className="rounded-full bg-canvas px-3 py-1.5 text-[13px] ring-1 ring-hairline-soft sm:px-4 sm:py-2 sm:text-sm"
                 >
                   {c}
                 </span>
               ))}
-              <span className="rounded-full px-4 py-2 text-sm text-faint ring-1 ring-hairline">
+              <span className="rounded-full px-3 py-1.5 text-[13px] text-faint ring-1 ring-hairline sm:px-4 sm:py-2 sm:text-sm">
                 {CAPABILITIES_COPY.more}
               </span>
             </div>
@@ -305,7 +308,7 @@ export function Capabilities() {
 /** The three-step setup, rendered identically wherever it appears. */
 export function StepList() {
   return (
-    <div className="grid gap-8 text-left md:grid-cols-3">
+    <div className="grid gap-6 text-left sm:gap-8 md:grid-cols-3">
       {STEPS.map((s, i) => (
         <Reveal key={s.n} delay={i * 0.06}>
           <div className="border-t border-hairline pt-5">
@@ -326,7 +329,7 @@ export function StepList() {
 
 export function Steps() {
   return (
-    <section id="how" className="mt-32 scroll-mt-28">
+    <section id="how" className="mt-20 scroll-mt-28 sm:mt-28 lg:mt-32">
       <Wrap>
         <Reveal>
           <div className="mx-auto max-w-[640px] text-center">
@@ -337,7 +340,7 @@ export function Steps() {
           </div>
         </Reveal>
 
-        <div className="mt-12">
+        <div className="mt-8 sm:mt-12">
           <StepList />
         </div>
       </Wrap>
@@ -349,10 +352,13 @@ export function Steps() {
 
 export function Cta() {
   return (
-    <section id="start" className="mt-32 scroll-mt-28 pb-32">
+    <section
+      id="start"
+      className="mt-20 scroll-mt-28 pb-10 sm:mt-28 sm:pb-24 lg:mt-32 lg:pb-32"
+    >
       <Wrap>
         <Reveal>
-          <div className="rounded-[32px] bg-canvas-soft px-6 py-20 sm:px-12">
+          <div className="rounded-[32px] bg-canvas-soft px-5 pt-12 pb-8 sm:px-12 sm:py-16 lg:py-20">
             <div className="mx-auto max-w-[640px] text-center">
               <h2 className="text-[clamp(30px,4.5vw,44px)] font-[650] leading-[1.08] tracking-[-0.025em]">
                 {CTA_COPY.title}
@@ -363,7 +369,7 @@ export function Cta() {
             </div>
 
             {/* The same three steps as "How it works", run for real. */}
-            <div className="mt-10">
+            <div className="mt-8 sm:mt-10">
               <SignupCard />
             </div>
           </div>

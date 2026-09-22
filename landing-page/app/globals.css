@@ -20,9 +20,17 @@
   --radius-lg: 32px;
 }
 
-/* Height of the fixed footer the page scrolls away from. */
+/* Height of the fixed footer the page scrolls away from. It must match what
+   the footer actually needs at each width, or the page sheet uncovers too much
+   ink or clips the last row of links. */
 :root {
-  --footer-h: 560px;
+  --footer-h: 500px;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --footer-h: 420px;
+  }
 }
 
 @media (min-width: 768px) {
