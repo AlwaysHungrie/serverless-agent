@@ -42,22 +42,11 @@ export async function agentHeaders(): Promise<Record<string, string>> {
   const email = incoming?.get("x-user-email")?.trim().toLowerCase() ?? "";
   if (secret && email) return { "x-api-secret": secret, "x-user-email": email };
 
-  const session = await auth().catch((err) => {
-    console.error("[agentHeaders] auth() threw:", err);
-    return null;
-  });
-  console.error("[agentHeaders] session:", {
-    userId: session?.userId ?? null,
-    sessionId: session?.sessionId ?? null,
-  });
+  const session = await auth().catch(() => null);
   // Clerk hands back the session's current token from its own cache and only mints a
   // new one when the old one is close to expiring, so asking per call is cheap.
   const token = await session
     ?.getToken(TEMPLATE ? { template: TEMPLATE } : undefined)
-    .catch((err) => {
-      console.error("[agentHeaders] getToken() threw:", err);
-      return null;
-    });
-  console.error("[agentHeaders] got token:", !!token);
+    .catch(() => null);
   return token ? { authorization: `Bearer ${token}` } : {};
 }
