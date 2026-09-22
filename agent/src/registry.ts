@@ -1235,6 +1235,19 @@ export class AgentDirectory extends DurableObject {
        )`
     );
 
+    // A queue, not a log: a request sits here until the owner resolves it, then it's
+    // gone — approving folds the increase into `account_limits` and deleting just
+    // clears the ask. Nothing downstream reads a resolved request, so there is
+    // nothing worth keeping one around for.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS business_requests (
+         id TEXT PRIMARY KEY,
+         email TEXT NOT NULL,
+         requested_increase INTEGER NOT NULL,
+         created_at INTEGER NOT NULL
+       )`
+    );
+
     this.migrate();
     this.ready = true;
   }
@@ -1534,4 +1547,65 @@ export class AgentDirectory extends DurableObject {
       this.ctx.storage.sql.exec(`DELETE FROM agents WHERE id = ?`, id);
     });
   }
+
+  /** File a request to raise `email`'s agent limit by `increase`. Returns the queued row. */
+  fileBusinessRequest(email: string, increase: number): BusinessRequest {
+    this.ensureSchema();
+    const row: BusinessRequest = {
+      id: crypto.randomUUID().replace(/-/g, "").slice(0, 8),
+      email: email.trim().toLowerCase(),
+      requested_increase: increase,
+      created_at: Date.now(),
+    };
+    this.ctx.storage.sql.exec(
+      `INSERT INTO business_requests (id, email, requested_increase, created_at) VALUES (?, ?, ?, ?)`,
+      row.id,
+      row.email,
+      row.requested_increase,
+      row.created_at
+    );
+    return row;
+  }
+
+  /** Every open request, oldest first, each carrying the limit it would raise. */
+  listBusinessRequests(): (BusinessRequest & { current_limit: number })[] {
+    this.ensureSchema();
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT id, email, requested_increase, created_at FROM business_requests ORDER BY created_at ASC`)
+      .toArray() as unknown as BusinessRequest[];
+    return rows.map((r) => ({ ...r, current_limit: this.getAgentLimit(r.email) }));
+  }
+
+  /** Drop a request without acting on it — the owner declined it. */
+  deleteBusinessRequest(id: string) {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(`DELETE FROM business_requests WHERE id = ?`, id);
+  }
+
+  /**
+   * Grant a request: fold its increase into the account's limit, then remove it from
+   * the queue. Undefined when the request is already gone — resolved, or raced by a
+   * second click — so the route can tell the caller nothing happened.
+   */
+  approveBusinessRequest(id: string): { email: string; agent_limit: number } | undefined {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql
+      .exec(`SELECT email, requested_increase FROM business_requests WHERE id = ? LIMIT 1`, id)
+      .toArray()[0] as { email: string; requested_increase: number } | undefined;
+    if (!row) return undefined;
+    const agent_limit = this.getAgentLimit(row.email) + row.requested_increase;
+    this.ctx.storage.transactionSync(() => {
+      this.setAgentLimit(row.email, agent_limit);
+      this.ctx.storage.sql.exec(`DELETE FROM business_requests WHERE id = ?`, id);
+    });
+    return { email: row.email, agent_limit };
+  }
 }
+
+/** A pending ask to raise one account's agent limit, waiting on the owner. */
+export type BusinessRequest = {
+  id: string;
+  email: string;
+  requested_increase: number;
+  created_at: number;
+};

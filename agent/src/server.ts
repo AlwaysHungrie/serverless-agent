@@ -1267,7 +1267,13 @@ async function handleAgents(
       // Only what the caller may open. An address that names nobody filters to
       // nothing, which is the right answer for a call that proved no identity.
       const email = await callerEmail(request, env);
-      return withCors(Response.json({ agents: await dir.list(email) }));
+      // How many more this caller may administer, so the frontend can hide the
+      // create button before the account hits the wall rather than after.
+      const limit = email ? await dir.getAgentLimit(email) : 0;
+      const owned = email ? await dir.countByAdmin(email) : 0;
+      return withCors(
+        Response.json({ agents: await dir.list(email), agent_limit: limit, agents_owned: owned })
+      );
     }
     if (request.method === "POST") {
       const body = (await request.json().catch(() => ({}))) as {
@@ -1977,6 +1983,57 @@ export default {
       return withCors(Response.json({ email, agent_limit: limit }));
     }
 
+    // A signed-in account asking the owner to raise its own ceiling. Anyone can file
+    // one — approving it is what actually changes anything, and that stays behind
+    // `API_SECRET` below.
+    if (segments[0] === "api" && segments[1] === "business-requests" && !segments[2]) {
+      if (request.method !== "POST") {
+        return withCors(Response.json({ error: "method not allowed" }, { status: 405 }));
+      }
+      const email = await callerEmail(request, env);
+      if (!email) {
+        return withCors(Response.json({ error: "sign in required" }, { status: 401 }));
+      }
+      const body = (await request.json().catch(() => ({}))) as { increase?: number };
+      const increase = Number(body.increase);
+      if (!Number.isInteger(increase) || increase < 1) {
+        return withCors(
+          Response.json({ error: "a positive integer increase is required" }, { status: 400 })
+        );
+      }
+      const row = await directory(env).fileBusinessRequest(email, increase);
+      return withCors(Response.json(row));
+    }
+
+    // The owner's queue of open asks — who wants how much more, and what they have
+    // now. Same gate as the routes above: this is the owner's own inbox, not
+    // anything a caller's own identity could unlock.
+    if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "business-requests") {
+      if (!trustedCaller(request, env)) {
+        return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
+      }
+      const dir = directory(env);
+      const id = segments[3];
+      if (!id) {
+        if (request.method !== "GET") {
+          return withCors(Response.json({ error: "method not allowed" }, { status: 405 }));
+        }
+        return withCors(Response.json({ requests: await dir.listBusinessRequests() }));
+      }
+      if (segments[4] === "approve" && request.method === "POST") {
+        const result = await dir.approveBusinessRequest(id);
+        if (!result) {
+          return withCors(Response.json({ error: "no such request" }, { status: 404 }));
+        }
+        return withCors(Response.json(result));
+      }
+      if (!segments[4] && request.method === "DELETE") {
+        await dir.deleteBusinessRequest(id);
+        return withCors(Response.json({ ok: true }));
+      }
+      return withCors(Response.json({ error: "method not allowed" }, { status: 405 }));
+    }
+
     // The owner's own dashboard feed: deployment-wide counts plus a row per agent.
     // Same gate as the business-account route, and for the same reason — this is
     // usage data across every account, not any one caller's own.
@@ -2107,6 +2164,7 @@ export default {
             metrics: "GET /agents/session-agent/:sessionId/metrics",
             telegram: "POST /telegram/webhook/:agentId",
             admin: "POST /api/admin/business-account { email, agent_limit }, GET /api/admin/stats  -> owner only, via API_SECRET",
+            business_requests: "POST /api/business-requests { increase } -> signed-in caller; GET /api/admin/business-requests, POST .../:id/approve, DELETE .../:id -> owner only, via API_SECRET",
           },
           note: "A session id is `<agentId>~<local>`; every /agents/session-agent route takes that whole id.",
         })

@@ -36,6 +36,8 @@ export default function Agents() {
    */
   const { ready: isLoaded, signedIn: isSignedIn, email } = useIdentity();
   const [agents, setAgents] = useState<AgentRow[] | null>(null);
+  /** How many more agents this account may administer, from the last load. */
+  const [atLimit, setAtLimit] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** The agent the delete dialog is asking about, if it is open. */
@@ -46,11 +48,15 @@ export default function Agents() {
   const [metaFor, setMetaFor] = useState<AgentRow | null>(null);
   /** Whether the sign-in dialog is up. */
   const [authing, setAuthing] = useState(false);
+  /** Whether the "want more agents" dialog is up. */
+  const [businessAsking, setBusinessAsking] = useState(false);
 
   const load = useCallback(async () => {
     const res = await apiFetch("/api/agents", { cache: "no-store" });
     const payload = (await res.json().catch(() => null)) as {
       agents?: AgentRow[];
+      agent_limit?: number;
+      agents_owned?: number;
       error?: string;
     } | null;
     if (!res.ok || !payload?.agents) {
@@ -61,6 +67,11 @@ export default function Agents() {
       return;
     }
     setAgents(payload.agents);
+    setAtLimit(
+      typeof payload.agent_limit === "number" &&
+        typeof payload.agents_owned === "number" &&
+        payload.agents_owned >= payload.agent_limit,
+    );
     setError(null);
   }, []);
 
@@ -260,13 +271,30 @@ export default function Agents() {
                   );
                 })}
 
-                <div
-                  onClick={() => setCreating(true)}
-                  className="min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-4 transition"
-                >
-                  <Plus size={18} strokeWidth={2} />
-                  Create a new Agent
-                </div>
+                {atLimit ? (
+                  <div
+                    onClick={() => setBusinessAsking(true)}
+                    className="min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-4 transition"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-base font-semibold leading-[1.38]">
+                        Want more agents?
+                      </span>
+                      <span className="text-faint block text-xs leading-[1.33]">
+                        You can sponsor and co-manage more agents for your
+                        group. Click here to learn more.
+                      </span>
+                    </span>
+                  </div>
+                ) : (
+                  <div
+                    onClick={() => setCreating(true)}
+                    className="min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-4 transition"
+                  >
+                    <Plus size={18} strokeWidth={2} />
+                    Create a new Agent
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -279,6 +307,10 @@ export default function Agents() {
 
       {metaFor && (
         <MetaSettingsDialog agent={metaFor} onClose={() => setMetaFor(null)} />
+      )}
+
+      {businessAsking && (
+        <BusinessRequestDialog onClose={() => setBusinessAsking(false)} />
       )}
 
       {creating && (
@@ -573,6 +605,119 @@ function DeleteAgentDialog({
             Delete
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A business account is nothing but a raised ceiling on this same limit — one row
+ * the owner writes by hand once they've heard the ask. This dialog is that ask: it
+ * explains the arrangement, then files a request for a specific increase rather than
+ * granting anything itself. The owner reviews every one from the admin CLI, so what
+ * reaches the account is always a number they chose, not one a caller typed in.
+ */
+function BusinessRequestDialog({ onClose }: { onClose: () => void }) {
+  const [increase, setIncrease] = useState("5");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sent, setSent] = useState(false);
+
+  const submit = async () => {
+    const n = Number(increase);
+    if (!Number.isInteger(n) || n < 1) {
+      setError("Enter a whole number of at least 1.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const res = await apiFetch("/api/business-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ increase: n }),
+    });
+    setBusy(false);
+    if (!res.ok) {
+      const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+      setError(payload?.error ?? "Couldn't send that request. Try again.");
+      return;
+    }
+    setSent(true);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-5"
+      onClick={onClose}
+    >
+      <div
+        className="bg-canvas w-full max-w-sm rounded-[20px] px-6 py-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {sent ? (
+          <>
+            <p className="text-base font-semibold leading-[1.38]">
+              Request sent
+            </p>
+            <p className="text-muted mt-2 text-sm font-light leading-[1.43]">
+              We&apos;ll review it and raise your limit once it&apos;s
+              approved.
+            </p>
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={onClose}
+                className="bg-ink text-on-primary h-10 rounded-full px-5 text-sm font-semibold transition hover:opacity-85"
+              >
+                Done
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-base font-semibold leading-[1.38]">
+              Business accounts
+            </p>
+            <p className="text-muted mt-2 text-sm font-light leading-[1.43]">
+              A business account can sponsor and co-manage agents on behalf of
+              its customers — administering more agents than a personal
+              account, all from one place. Tell us how many more you need and
+              we&apos;ll review your request.
+            </p>
+            <label className="mt-4 block">
+              <span className="block text-sm font-semibold leading-[1.43]">
+                Increase agent limit by
+              </span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={increase}
+                onChange={(e) => setIncrease(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void submit();
+                  if (e.key === "Escape") onClose();
+                }}
+                className="bg-field placeholder:text-faint mt-2 w-full rounded-2xl px-4 py-3 text-sm outline-none"
+              />
+            </label>
+            {error && <p className="mt-3 text-xs leading-[1.33]">{error}</p>}
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                onClick={onClose}
+                className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-sm font-semibold transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void submit()}
+                disabled={busy}
+                className="bg-ink text-on-primary h-10 rounded-full px-5 text-sm font-semibold transition hover:opacity-85 disabled:opacity-40"
+              >
+                {busy ? "Sending…" : "Send request"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
