@@ -38,6 +38,25 @@ export function AppPreview({ className = "" }: { className?: string }) {
         className="pointer-events-none absolute -inset-x-10 -top-6 bottom-0 -z-10 rounded-[40px] bg-[radial-gradient(60%_55%_at_50%_45%,rgba(0,102,255,0.10)_0%,rgba(0,102,255,0.04)_45%,rgba(255,255,255,0)_75%)] blur-2xl"
       />
 
+      {/* The sidebar has no room on a phone, so the one thing it is here to do —
+          switch between the two sessions — moves above the card. */}
+      <div className="mb-3 flex gap-2 sm:hidden">
+        {SESSIONS.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => setSelected(s.id)}
+            aria-pressed={selected === s.id}
+            className={`flex-1 rounded-full px-3 py-2 text-[12px] font-semibold transition ${
+              selected === s.id
+                ? "bg-ink text-white"
+                : "bg-canvas text-muted ring-1 ring-hairline"
+            }`}
+          >
+            {s.title}
+          </button>
+        ))}
+      </div>
+
       <div className="overflow-hidden rounded-[24px] bg-canvas shadow-[0_18px_50px_-20px_rgba(20,20,20,0.22)] ring-1 ring-hairline">
         {/* Browser chrome, so a product shot reads as a product shot. */}
         <div className="flex items-center gap-1.5 border-b border-hairline-soft bg-white/60 px-4 py-3">
@@ -317,7 +336,7 @@ function TelegramToast({ armed }: { armed: boolean }) {
 
   return createPortal(
     // Clear of the fixed header, which owns the very top of the page.
-    <div className="pointer-events-none fixed top-[12px] right-8 z-[60] w-[304px] max-w-[calc(100vw-2rem)] sm:top-[86px]">
+    <div className="pointer-events-none fixed top-[14px] right-4 sm:right-8 z-[60] w-[304px] max-w-[calc(100vw-2rem)] sm:top-[86px]">
       <AnimatePresence>
         {armed && !dismissed && (
           <motion.div

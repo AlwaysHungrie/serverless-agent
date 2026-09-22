@@ -20,27 +20,29 @@ export function Hero() {
 
       <Wrap className="relative text-center">
         <Reveal>
-          <span className="inline-flex items-center gap-2 rounded-[10px] bg-canvas-soft px-4 py-2 text-[13px] font-semibold text-muted">
+          <span className="inline-flex items-center gap-2 rounded-[10px] bg-canvas-soft px-3 py-1.5 text-[12px] font-semibold text-muted sm:px-4 sm:py-2 sm:text-[13px]">
             AI agents with their own Telegram accounts
           </span>
         </Reveal>
 
         <Reveal delay={0.05}>
-          <h1 className="mx-auto mt-6 max-w-[15ch] text-[clamp(44px,8vw,84px)] font-[650] leading-[0.98] tracking-[-0.03em] text-balance">
+          <h1 className="mx-auto mt-5 max-w-[15ch] text-[clamp(34px,9vw,84px)] font-[650] leading-[1.02] tracking-[-0.03em] text-balance sm:mt-6 sm:leading-[0.98]">
             Personal AI Agents. Always Online. Forever.
           </h1>
         </Reveal>
 
         <Reveal delay={0.1}>
-          <p className="mx-auto mt-6 max-w-[680px] text-xl font-light leading-[1.4] text-muted text-balance">
+          <p className="mx-auto mt-5 max-w-[680px] text-[16px] font-light leading-[1.5] text-muted text-balance sm:mt-6 sm:text-xl sm:leading-[1.4]">
             Create an agent that never sleeps and runs{" "}
-            <span className="font-medium">free, forever.</span> Chat via web or
-            telegram, use built-in capabilities or connect it to any external
-            websites or tools you use. Manage your day, your inbox, your
-            relationships, your spreadsheets, your business &mdash; it's your
-            agent.
+            <span className="font-medium">free, forever.</span>{" "}
+            <span className="hidden">
+              Chat via web or telegram, use built-in capabilities or connect it
+              to any external websites or tools you use.
+            </span>{" "}
+            Manage your day, your inbox, your relationships, your spreadsheets,
+            your business.
           </p>
-          <p className="mx-auto mt-6 max-w-[620px] text-xl font-light leading-[1.4] text-muted text-balance">
+          <p className="mx-auto mt-4 max-w-[620px] text-[16px] font-light leading-[1.5] text-muted text-balance sm:mt-6 sm:text-xl sm:leading-[1.4]">
             Bring your own API key and run any model that works for you.
           </p>
         </Reveal>
@@ -52,13 +54,13 @@ export function Hero() {
               See how it works
             </Button>
           </div>
-          <p className="mt-4 text-sm text-faint">
+          <p className="mt-4 text-[13px] text-faint sm:text-sm">
             Usage limits apply. Self-hosting needs a Cloudflare account.
           </p>
         </Reveal>
 
         <Reveal delay={0.2}>
-          <AppPreview className="mt-32" />
+          <AppPreview className="mt-24 sm:mt-32" />
         </Reveal>
       </Wrap>
     </section>
@@ -108,17 +110,19 @@ export function Mission() {
 
 const STATS = [
   {
-    value: "1 min",
-    label: "From a Telegram token to your first reply. No app to install.",
-  },
-  {
-    value: "24/7",
-    label: "It answers at 3am, on your commute, in the queue at the shop.",
-  },
-  {
-    value: "$0.00005",
+    value: "1 agent",
     label:
-      "What a typical message costs to run. You see the number every time.",
+      "Per user. Business accounts can sponsor multiple agents for their customers.",
+  },
+  {
+    value: "256 sessions",
+    label:
+      "Delete older sessions. Or use a Cloudflare account to bypass all usage limits.",
+  },
+  {
+    value: "$0",
+    label:
+      "Use your own Openrouter API key, pick any model. Pay only for what you use.",
   },
 ];
 
