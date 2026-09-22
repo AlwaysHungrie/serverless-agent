@@ -136,7 +136,7 @@ export function SiteHeader() {
                 notation: "compact",
                 compactDisplay: "short",
               }).format(AGENTS_DEPLOYED)}
-              <span className="text-faint"> agents awake</span>
+              <span className="text-faint"> agents online</span>
             </span>
           </div>
 

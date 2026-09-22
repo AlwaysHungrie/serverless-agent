@@ -226,36 +226,36 @@ export const FAQ = {
   title: "Something on your mind.",
   items: [
     {
-      q: "What do I need before I start?",
-      a: "An OpenRouter API key. That's the only requirement — create an account, set a spending limit, and copy the key. A Telegram bot token is optional and takes about a minute if you want your agent to live in Telegram.",
+      q: "Is it really free?",
+      a: `Yes. Running ${BRAND.name} is free, subject to the usage limits. You pay only for the model tokens your agent consumes, and for any external tools that require a paid plan of their own, such as Figma.`,
     },
     {
-      q: `Is it really free, or is "$0" a trick?`,
-      a: `Running ${BRAND.name} costs you nothing. The only thing you pay for is the model, billed by OpenRouter at their rates, on the key you supply. There is no subscription and no card on file with us.`,
+      q: "Why do I need my own OpenRouter API key?",
+      a: "We want you in control of your agent usage. Instead of buying a $200 plan from us, you decide how much to spend each month. Pay only for what you use. No credits to expire or roll over.",
     },
     {
       q: "Do I have to use Telegram?",
-      a: "No. Telegram is the reason most people want an agent that's always reachable, but it's step two and it's optional. Your agent works without it.",
+      a: "No. You can talk to your agent in our web interface at any time. Telegram is simply another interface, with the added benefit that other people can message your agent directly.",
     },
     {
-      q: `What happens when I hit ${SESSION_LIMIT} sessions?`,
-      a: `A free agent keeps up to ${SESSION_LIMIT} active chat sessions. Delete the ones you're finished with to make room, or self-host on your own Cloudflare account to remove the limit entirely.`,
+      q: "What are the usage limits?",
+      a: `Every agent can have up to ${SESSION_LIMIT} active chat sessions. Delete older sessions to make room for more. Each session holds up to 128MB of messages. Keep in mind that the longer a conversation gets, the more tokens each answer costs.`,
     },
     {
-      q: "What does self-hosting actually change?",
-      a: "You run the agent on your own Cloudflare account, so you pay Cloudflare for the resources it uses and every usage limit on this page goes away. Everything else works the same.",
+      q: "Can I upload files?",
+      a: "Yes. Send photographs, screenshots, PDFs, spreadsheets, and voice notes — anything your agent supports. Storage is capped at 50MB per account.",
     },
     {
-      q: "Who can see my agent's chats and memories?",
-      a: "You, and only the people you invite. Your agent's memory and chats are yours — you can share them, restrict who is allowed to message it on Telegram, and delete any of it at any time.",
+      q: "What if I need more agents or higher limits?",
+      a: "If you have a Cloudflare account with a billing plan, you can host Salts yourself. That unlocks unlimited sessions, agents, and storage — you pay Cloudflare for whatever you use.",
     },
     {
-      q: "Can I have more than one agent?",
-      a: "One agent per person on a normal account. Business accounts are the exception: they can sponsor agents for their customers and co-manage those agents alongside them. Reach out if that's you.",
+      q: "What is a business account?",
+      a: "Business accounts let you sponsor and co-manage agents for your customers. Reach out to us if you need to deploy 2 or 20,000 agents.",
     },
     {
-      q: "What's the one-agent-per-person thing about?",
-      a: `We think everyone should have an AI that is genuinely theirs. That's the whole plan — ${WORLD_POPULATION_B} billion agents, one for each person, starting with yours.`,
+      q: "I already have a coding agent.",
+      a: `${BRAND.name} cannot replace a coding agent running on your machine with access to an operating system, terminal, and desktop applications. But it also doesn't need a machine to run, or a paid plan. Use it for your everyday tasks, so you and your coding agent can focus on what truly matters.`,
     },
   ],
 } as const;
@@ -271,40 +271,35 @@ export const CTA = {
  * from the bot behind the token.
  */
 export const SIGNUP = {
-  steps: ["API key", "Telegram bot", "Create"],
+  steps: ["OpenRouter API key", "Telegram bot (Optional)", "Done"],
   key: {
-    label: "Paste your OpenRouter API key",
-    help: "Create a key on OpenRouter, set a spending limit, and paste it here. You pay OpenRouter directly for whatever your agent uses.",
+    help: "Create a key on OpenRouter, set a spending limit, and get an API key.",
     linkLabel: "OpenRouter",
     placeholder: "sk-or-v1-…",
     cta: "Continue",
     empty: "Paste the key from your OpenRouter account.",
-    invalid: "That doesn't look like an OpenRouter key. They start with sk-or-v1-.",
+    invalid: "That doesn't look like an OpenRouter key.",
   },
   token: {
-    label: "Paste your Telegram bot token",
-    help: "Message @BotFather on Telegram, send /newbot, and copy the token it replies with. Your agent takes its name from that bot, so there's nothing else to fill in.",
-    linkLabel: "@BotFather on Telegram",
+    help: "Find @BotFather on Telegram, send /newbot, and complete all the steps. You will get a Bot Token.",
+    linkLabel: "@BotFather",
     placeholder: "8412345678:AAH…",
     cta: "Continue",
-    skip: "Skip for now",
-    invalid: "That doesn't look like a token. Copy the whole line, numbers and all.",
+    skip: "Skip",
+    invalid: "That doesn't look like a bot token.",
   },
   done: {
-    withBot: "Your agent is ready to wake up.",
-    withoutBot: "Your agent is ready without Telegram.",
-    bodyWithBot:
-      "Create your account and your agent starts answering in Telegram under your bot's name. You can delete it in one tap.",
-    bodyWithoutBot:
-      "Create your account and your agent is live. Add a Telegram bot whenever you want it reachable there.",
-    cta: "Create my agent",
+    label: "You are all set",
+    body:
+      "Add/change API keys, tools, capabilities whenever you want.",
+    cta: "Create Agent",
     restart: "Start over",
   },
-  footnote: "No credit card. Your keys stay yours — delete the agent and they're gone.",
+  footnote: "Custom LLM provider support comming soon.",
 } as const;
 
 export const FOOTER = {
-  tagline: `An agent that's yours alone — always online, running on your key, on the model you choose. ${BRAND.name} keeps the chats and memories with you, not with us.`,
+  tagline: `Salts is a personal AI agent that is always online and free to use. Manage your day, your inbox, your relationships, your spreadsheets, your business.`,
   note: "Free forever. Self-host for higher usage limits.",
   columns: [
     {

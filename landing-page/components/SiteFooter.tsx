@@ -9,18 +9,18 @@ import { MaybeLink, Wrap } from "./ui";
  */
 export function SiteFooter() {
   return (
-    <footer className="fixed inset-x-0 bottom-0 z-0 flex h-[var(--footer-h)] flex-col justify-between bg-ink pb-8 pt-12 text-white">
+    <footer className="fixed inset-x-0 bottom-0 z-0 flex h-(--footer-h) flex-col justify-between bg-ink pb-8 pt-12 text-white">
       <Wrap>
         <div className="grid gap-8 md:grid-cols-[2fr_1fr_1fr_1fr]">
           <div>
             <div className="flex items-center gap-2.5">
               {/* Same dark tile as the header; a lift and a hairline keep it off the ink. */}
               <span className="grid size-8 place-items-center rounded-[10px] bg-ink-soft ring-1 ring-inset ring-white/14 shadow-[0_1px_0_0_rgba(255,255,255,0.06)_inset]">
-                <span className="grid grid-cols-2 gap-[3px]">
-                  <span className="size-[5px] rounded-[1.5px] bg-white" />
-                  <span className="size-[5px] rounded-[1.5px] bg-white/45" />
-                  <span className="size-[5px] rounded-[1.5px] bg-white/45" />
-                  <span className="size-[5px] rounded-[1.5px] bg-white" />
+                <span className="grid grid-cols-2 gap-0.75">
+                  <span className="size-1.25 rounded-[1.5px] bg-white" />
+                  <span className="size-1.25 rounded-[1.5px] bg-white/45" />
+                  <span className="size-1.25 rounded-[1.5px] bg-white/45" />
+                  <span className="size-1.25 rounded-[1.5px] bg-white" />
                 </span>
               </span>
               <span className="text-[17px] font-[650] tracking-[-0.02em]">

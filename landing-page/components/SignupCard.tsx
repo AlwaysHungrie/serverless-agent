@@ -21,10 +21,9 @@ const KEY = /^sk-or-v1-[A-Za-z0-9_-]{20,}$/;
 const TOKEN = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
 
 export function SignupCard() {
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(2);
   const [key, setKey] = useState("");
   const [token, setToken] = useState("");
-  const [hasBot, setHasBot] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function submitKey(e: React.FormEvent) {
@@ -49,26 +48,27 @@ export function SignupCard() {
       return;
     }
     setError(null);
-    setHasBot(true);
     setStep(2);
   }
 
-  function skipToken() {
+  function skipStep(step: number) {
     setError(null);
-    setHasBot(false);
-    setStep(2);
+    if (step == 0) {
+      setStep(1);
+    } else if (step == 1) {
+      setStep(2);
+    }
   }
 
   function restart() {
     setStep(0);
     setKey("");
     setToken("");
-    setHasBot(false);
     setError(null);
   }
 
   return (
-    <div className="mx-auto w-full max-w-[560px] rounded-[28px] bg-canvas p-2 ring-1 ring-hairline-soft shadow-[0_24px_60px_-32px_rgba(20,20,20,0.35)]">
+    <div className="mx-auto w-full max-w-140 rounded-[28px] bg-canvas p-2 ring-1 ring-hairline-soft shadow-[0_24px_60px_-32px_rgba(20,20,20,0.35)]">
       <div className="rounded-[22px] bg-canvas-soft p-6 sm:p-8">
         {/* Where you are, in two words each. */}
         <ol className="flex items-center gap-2 text-[12px] font-semibold">
@@ -85,7 +85,10 @@ export function SignupCard() {
               </span>
               <span className={i <= step ? "text-ink" : "text-faint"}>{s}</span>
               {i < SIGNUP.steps.length - 1 && (
-                <span className="mx-1 h-px w-4 bg-hairline sm:w-6" aria-hidden />
+                <span
+                  className="mx-1 h-px w-4 bg-hairline sm:w-6"
+                  aria-hidden
+                />
               )}
             </li>
           ))}
@@ -96,14 +99,8 @@ export function SignupCard() {
             {step === 0 && (
               <Panel key="key">
                 <form onSubmit={submitKey} noValidate>
-                  <label
-                    htmlFor="openrouter-key"
-                    className="block text-[15px] font-semibold"
-                  >
-                    {SIGNUP.key.label}
-                  </label>
                   <p className="mt-1 text-sm leading-relaxed text-muted">
-                    Create a key on{" "}
+                    Create an account on{" "}
                     <a
                       href={LINKS.openRouter}
                       target="_blank"
@@ -112,8 +109,7 @@ export function SignupCard() {
                     >
                       {SIGNUP.key.linkLabel}
                     </a>
-                    , set a spending limit, and paste it here. You pay OpenRouter
-                    directly for whatever your agent uses.
+                    , set a spending limit, and get an API key.
                   </p>
                   <div className="mt-4 flex flex-col gap-2 sm:flex-row">
                     <input
@@ -126,7 +122,7 @@ export function SignupCard() {
                       placeholder={SIGNUP.key.placeholder}
                       autoComplete="off"
                       spellCheck={false}
-                      className="h-12 w-full rounded-full bg-canvas px-5 text-[15px] ring-1 ring-hairline outline-none transition-[box-shadow] placeholder:text-faint focus:ring-2 focus:ring-ink"
+                      className="h-12 w-full rounded-full bg-canvas px-5 text-[15px] ring-1 ring-hairline outline-none transition-shadow placeholder:text-faint focus:ring-2 focus:ring-ink"
                     />
                     <button
                       type="submit"
@@ -142,14 +138,8 @@ export function SignupCard() {
             {step === 1 && (
               <Panel key="token">
                 <form onSubmit={submitToken} noValidate>
-                  <label
-                    htmlFor="bot-token"
-                    className="block text-[15px] font-semibold"
-                  >
-                    {SIGNUP.token.label}
-                  </label>
                   <p className="mt-1 text-sm leading-relaxed text-muted">
-                    Message{" "}
+                    Find{" "}
                     <a
                       href={LINKS.botFather}
                       target="_blank"
@@ -157,10 +147,11 @@ export function SignupCard() {
                       className="font-semibold text-ink underline decoration-hairline underline-offset-4 hover:decoration-ink"
                     >
                       {SIGNUP.token.linkLabel}
-                    </a>
-                    , send <span className="font-semibold text-ink">/newbot</span>
-                    , and copy the token it replies with. Your agent takes its
-                    name from that bot, so there's nothing else to fill in.
+                    </a>{" "}
+                    on telegram, send{" "}
+                    <span className="font-semibold text-ink">/newbot</span>{" "}
+                    command, and complete all the steps. You will get a Bot
+                    Token.
                   </p>
                   <div className="mt-4 flex flex-col gap-2 sm:flex-row">
                     <input
@@ -173,7 +164,7 @@ export function SignupCard() {
                       placeholder={SIGNUP.token.placeholder}
                       autoComplete="off"
                       spellCheck={false}
-                      className="h-12 w-full rounded-full bg-canvas px-5 text-[15px] ring-1 ring-hairline outline-none transition-[box-shadow] placeholder:text-faint focus:ring-2 focus:ring-ink"
+                      className="h-12 w-full rounded-full bg-canvas px-5 text-[15px] ring-1 ring-hairline outline-none transition-shadow placeholder:text-faint focus:ring-2 focus:ring-ink"
                     />
                     <button
                       type="submit"
@@ -182,52 +173,65 @@ export function SignupCard() {
                       {SIGNUP.token.cta}
                     </button>
                   </div>
-                  {/* Step two is optional, exactly as "How it works" says. */}
-                  <button
-                    type="button"
-                    onClick={skipToken}
-                    className="mt-3 text-sm font-semibold text-faint underline decoration-hairline underline-offset-4 transition-colors hover:text-ink"
-                  >
-                    {SIGNUP.token.skip}
-                  </button>
                 </form>
               </Panel>
             )}
 
             {step === 2 && (
               <Panel key="done">
-                <div className="flex items-start gap-3">
-                  <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-ink text-white">
-                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-                      <path
-                        d="M1.5 6.4 4.4 9.3 10.5 3"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </span>
-                  <div>
-                    <p className="text-[15px] font-semibold">
-                      {hasBot ? SIGNUP.done.withBot : SIGNUP.done.withoutBot}
+                <div className="flex flex-col items-center">
+                  <div className="flex mt-3 items-center gap-2 justify-center">
+                    <span className="-mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-ink text-white">
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 12 12"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M1.5 6.4 4.4 9.3 10.5 3"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </span>
+                    <p className="text-[24px] font-semibold">
+                      {SIGNUP.done.label}
                     </p>
+                  </div>
+                  <div>
                     <p className="mt-1 text-sm leading-relaxed text-muted">
-                      {hasBot
-                        ? SIGNUP.done.bodyWithBot
-                        : SIGNUP.done.bodyWithoutBot}
+                      {SIGNUP.done.body}
                     </p>
                   </div>
                 </div>
-                <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+                <div className="mt-5 flex justify-center flex-col gap-2 sm:flex-row">
                   <SubmitAction />
+                  {/* Icon-only, so the one filled action keeps the width. */}
                   <button
                     type="button"
                     onClick={restart}
-                    className="inline-flex h-12 items-center justify-center rounded-full bg-canvas px-6 text-sm font-semibold text-muted ring-1 ring-hairline transition-colors hover:text-ink"
+                    aria-label={SIGNUP.done.restart}
+                    title={SIGNUP.done.restart}
+                    className="inline-grid size-12 shrink-0 place-items-center rounded-full bg-canvas text-muted ring-1 ring-hairline transition-colors hover:text-ink"
                   >
-                    {SIGNUP.done.restart}
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1.06 6.74 2.74L21 8" />
+                      <path d="M21 3v5h-5" />
+                    </svg>
                   </button>
                 </div>
               </Panel>
@@ -238,16 +242,23 @@ export function SignupCard() {
             <p
               id="signup-error"
               role="alert"
-              className="mt-3 flex items-center gap-2 text-sm font-medium text-ink"
+              className="mt-2 w-full text-sm text-center font-light text-ink"
             >
-              <span
-                aria-hidden
-                className="grid size-4 shrink-0 place-items-center rounded-full bg-ink text-[10px] font-bold text-white"
-              >
-                !
-              </span>
               {error}
             </p>
+          )}
+
+          {/* Step two is optional, exactly as "How it works" says. */}
+          {step !== 2 && (
+            <div className="w-full flex justify-center">
+              <button
+                type="button"
+                onClick={() => skipStep(step)}
+                className="mt-3 text-sm font-semibold text-faint underline decoration-hairline underline-offset-4 transition-colors hover:text-ink"
+              >
+                {SIGNUP.token.skip}
+              </button>
+            </div>
           )}
         </div>
       </div>
