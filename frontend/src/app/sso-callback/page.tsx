@@ -9,7 +9,7 @@ import { AuthenticateWithRedirectCallback } from "@clerk/nextjs";
 export default function Page() {
   return (
     <div className="flex min-h-screen items-center justify-center px-5">
-      <p className="text-muted text-[14px] leading-[1.43]">Signing you in…</p>
+      <p className="text-muted text-sm leading-[1.43]">Signing you in…</p>
       <AuthenticateWithRedirectCallback />
     </div>
   );

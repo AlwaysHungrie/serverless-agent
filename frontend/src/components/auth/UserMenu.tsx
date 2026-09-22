@@ -64,7 +64,7 @@ export function UserMenu() {
             className="h-full w-full object-cover"
           />
         ) : (
-          <span className="bg-field text-ink flex h-full w-full items-center justify-center text-[16px] font-semibold uppercase">
+          <span className="bg-field text-ink flex h-full w-full items-center justify-center text-base font-semibold uppercase">
             {label.slice(0, 1)}
           </span>
         )}
@@ -73,7 +73,7 @@ export function UserMenu() {
       {open && (
         <div
           role="menu"
-          className="bg-canvas border-hairline-soft absolute right-0 z-50 mt-2 w-44 rounded-[12px] border"
+          className="bg-canvas border-hairline-soft absolute right-0 z-50 mt-2 w-44 rounded-xl border"
         >
           <button
             type="button"
@@ -82,7 +82,7 @@ export function UserMenu() {
               setOpen(false);
               signOut();
             }}
-            className="hover:bg-canvas-soft w-full cursor-pointer rounded-[12px] px-3 py-2 text-left text-[14px] leading-[1.43] transition"
+            className="hover:bg-canvas-soft w-full cursor-pointer rounded-xl px-3 py-2 text-left text-sm leading-[1.43] transition"
           >
             Log out
           </button>

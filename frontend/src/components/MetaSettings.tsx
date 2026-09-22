@@ -44,7 +44,7 @@ import { apiFetch } from "@/lib/identity";
  */
 
 const input =
-  "bg-field placeholder:text-faint text-ink w-full rounded-[16px] px-4 py-3 text-[14px] outline-none";
+  "bg-field placeholder:text-faint text-ink w-full rounded-2xl px-4 py-3 text-sm outline-none";
 
 const REASONING: ReasoningEffort[] = ["off", "low", "medium", "high"];
 
@@ -89,9 +89,9 @@ function Section({
     <div className="border-hairline-soft border-t py-6">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="text-[16px] font-semibold leading-[1.38]">{title}</p>
+          <p className="text-base font-semibold leading-[1.38]">{title}</p>
           {hint && (
-            <p className="text-muted mt-1 text-[12px] font-light leading-[1.33]">
+            <p className="text-muted mt-1 text-xs font-light leading-[1.33]">
               {hint}
             </p>
           )}
@@ -191,7 +191,7 @@ function IdList({
               key={s.id}
               onClick={() => onChange([...value, s.id])}
               title={s.id}
-              className="border-hairline text-muted hover:border-ink hover:text-ink rounded-full border px-3 py-1 text-[12px] transition"
+              className="border-hairline text-muted hover:border-ink hover:text-ink rounded-full border px-3 py-1 text-xs transition"
             >
               + {s.label}
             </button>
@@ -280,19 +280,19 @@ function ModelList({
             if (e.key === "Escape") setDraft("");
           }}
           aria-label="OpenRouter model id"
-          className="bg-field placeholder:text-faint min-w-0 flex-1 rounded-[16px] px-4 py-3 text-[14px] outline-none"
+          className="bg-field placeholder:text-faint min-w-0 flex-1 rounded-2xl px-4 py-3 text-sm outline-none"
         />
         <button
           onMouseDown={(e) => e.preventDefault()}
           onClick={commit}
           disabled={draft.trim() === ""}
-          className="bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-5 text-[14px] font-semibold transition disabled:opacity-40"
+          className="bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-2xl border px-5 text-sm font-semibold transition disabled:opacity-40"
         >
           Add
         </button>
       </div>
 
-      <label className="text-muted mt-2 flex cursor-pointer items-center gap-2 text-[12px] leading-[1.33]">
+      <label className="text-muted mt-2 flex cursor-pointer items-center gap-2 text-xs leading-[1.33]">
         <input
           type="checkbox"
           checked={blind}
@@ -304,7 +304,7 @@ function ModelList({
 
       {missing.length > 0 && (
         <>
-          <p className="text-faint mt-3 text-[12px] leading-[1.33]">
+          <p className="text-faint mt-3 text-xs leading-[1.33]">
             Default options
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
@@ -313,7 +313,7 @@ function ModelList({
                 key={m.id}
                 onClick={() => add(m.id, m.vision)}
                 title={m.id}
-                className="border-hairline text-muted hover:border-ink hover:text-ink rounded-full border px-3 py-1 text-[12px] transition"
+                className="border-hairline text-muted hover:border-ink hover:text-ink rounded-full border px-3 py-1 text-xs transition"
               >
                 + {m.label}
                 {!m.vision && " (no image)"}
@@ -590,7 +590,7 @@ export function MetaSettingsForm({
             onChange={(e) => setValue("temperature", Number(e.target.value))}
             className="accent-ink h-1 flex-1 cursor-pointer"
           />
-          <span className="tnum text-muted w-16 shrink-0 text-right text-[14px]">
+          <span className="tnum text-muted w-16 shrink-0 text-right text-sm">
             {(valueOf("temperature") ?? 0.7).toFixed(1)}
           </span>
         </div>
@@ -611,7 +611,7 @@ export function MetaSettingsForm({
             onChange={(e) => setValue("max_tokens", Number(e.target.value))}
             className="accent-ink h-1 flex-1 cursor-pointer"
           />
-          <span className="tnum text-muted w-24 shrink-0 text-right text-[14px]">
+          <span className="tnum text-muted w-24 shrink-0 text-right text-sm">
             {valueOf("max_tokens")
               ? `${valueOf("max_tokens")} tokens`
               : "No cap"}
@@ -636,7 +636,7 @@ export function MetaSettingsForm({
             }
             className="accent-ink h-1 shrink flex-1 cursor-pointer"
           />
-          <span className="tnum text-muted w-24 shrink-0 text-right text-[14px]">
+          <span className="tnum text-muted w-24 shrink-0 text-right text-sm">
             {valueOf("context_messages")
               ? `Last ${valueOf("context_messages")}`
               : "Full history"}
@@ -655,14 +655,14 @@ export function MetaSettingsForm({
             return (
               <div
                 key={capability.id}
-                className="bg-canvas-soft rounded-[16px] px-4 py-3"
+                className="bg-canvas-soft rounded-2xl px-4 py-3"
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="min-w-0">
-                    <span className="block text-[14px] font-semibold leading-[1.43]">
+                    <span className="block text-sm font-semibold leading-[1.43]">
                       {capability.label}
                     </span>
-                    <span className="text-faint block text-[12px] leading-[1.33]">
+                    <span className="text-faint block text-xs leading-[1.33]">
                       {capability.alwaysOn
                         ? "Always on; its own configuration decides what it does."
                         : capability.summary}
@@ -725,7 +725,7 @@ export function MetaSettingsForm({
                     },
                   })
                 }
-                className={`flex items-center gap-2 rounded-[12px] border px-3 py-2 text-[13px] font-semibold transition ${
+                className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-[13px] font-semibold transition ${
                   on
                     ? "border-ink bg-canvas-soft"
                     : "border-hairline hover:border-ink"
@@ -751,9 +751,9 @@ export function MetaSettingsForm({
             already holds. Off is for an agent handed to somebody else: they can still
             switch a server off, choose which of its tools it may call and approve its
             OAuth — what it is for, rather than what it is. */}
-        <div className="bg-canvas-soft mb-3 flex items-center justify-between gap-3 rounded-[16px] px-4 py-3">
+        <div className="bg-canvas-soft mb-3 flex items-center justify-between gap-3 rounded-2xl px-4 py-3">
           <span className="min-w-0">
-            <span className="block text-[14px] font-semibold leading-[1.43]">
+            <span className="block text-sm font-semibold leading-[1.43]">
               Allow adding more MCP servers
             </span>
           </span>
@@ -880,10 +880,10 @@ export function MetaSettingsDialog({
       >
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[18px] font-semibold leading-[1.38]">
+            <p className="text-lg font-semibold leading-[1.38]">
               Meta settings
             </p>
-            <p className="text-muted mt-1 text-[12px] font-light leading-[1.33]">
+            <p className="text-muted mt-1 text-xs font-light leading-[1.33]">
               Default settings for {agent.name}, can be changed later. A locked
               setting will not be shown to the owner and can only be changed
               from Admin Settings.
@@ -899,13 +899,13 @@ export function MetaSettingsDialog({
         </div>
 
         {error && (
-          <p className="bg-canvas-soft border-hairline-soft mt-4 rounded-[16px] border px-4 py-3 text-[13px] leading-[1.33]">
+          <p className="bg-canvas-soft border-hairline-soft mt-4 rounded-2xl border px-4 py-3 text-[13px] leading-[1.33]">
             {error}
           </p>
         )}
 
         {!meta && !error && (
-          <p className="text-muted py-10 text-[14px] leading-[1.43]">
+          <p className="text-muted py-10 text-sm leading-[1.43]">
             Loading meta settings…
           </p>
         )}
@@ -928,14 +928,14 @@ export function MetaSettingsDialog({
                 <button
                   onClick={onClose}
                   disabled={busy}
-                  className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-[14px] font-semibold transition disabled:opacity-40"
+                  className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-sm font-semibold transition disabled:opacity-40"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={() => void save()}
                   disabled={busy}
-                  className="bg-ink text-on-primary h-10 rounded-full px-5 text-[14px] font-semibold transition hover:opacity-85 disabled:opacity-40"
+                  className="bg-ink text-on-primary h-10 rounded-full px-5 text-sm font-semibold transition hover:opacity-85 disabled:opacity-40"
                 >
                   {busy ? "Saving…" : "Save"}
                 </button>
@@ -966,7 +966,7 @@ function McpDefaults({
       {servers.map((server, i) => (
         <div
           key={i}
-          className="bg-canvas-soft space-y-3 rounded-[16px] px-4 py-4"
+          className="bg-canvas-soft space-y-3 rounded-2xl px-4 py-4"
         >
           <div className="flex items-center gap-2">
             <input
@@ -1015,7 +1015,7 @@ function McpDefaults({
             { name: "", url: "", auth: "oauth", headers: {} },
           ])
         }
-        className="border-ink-soft/20 text-ink hover:bg-canvas-soft w-full rounded-[16px] border border-dashed py-3 text-[13px] font-semibold transition"
+        className="border-ink-soft/20 text-ink hover:bg-canvas-soft w-full rounded-2xl border border-dashed py-3 text-[13px] font-semibold transition"
       >
         <span className="inline-flex items-center gap-2">
           <Plus size={14} strokeWidth={2} />
@@ -1085,7 +1085,7 @@ function HeaderRows({
       ))}
       <button
         onClick={() => setRows([...rows, ["", ""]])}
-        className="text-muted hover:text-ink text-[12px] font-semibold transition"
+        className="text-muted hover:text-ink text-xs font-semibold transition"
       >
         + Add header
       </button>

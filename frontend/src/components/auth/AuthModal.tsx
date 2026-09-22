@@ -34,7 +34,7 @@ export function AuthModal({
       onClick={onClose}
     >
       <div
-        className="bg-canvas w-full max-w-sm rounded-[24px] px-6 py-8"
+        className="bg-canvas w-full max-w-sm rounded-3xl px-6 py-8"
         onClick={(e) => e.stopPropagation()}
       >
         <AuthCard mode={mode} redirectUrl={redirectUrl} onDone={onClose} />

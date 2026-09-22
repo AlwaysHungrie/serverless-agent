@@ -136,7 +136,7 @@ export function Sidebar({
               <div className="truncate text-2xl font-[650] leading-tight">
                 {agentName || "Agent"}
               </div>
-              <div className="text-muted text-[14px] font-light leading-[1.43]">
+              <div className="text-muted text-sm font-light leading-[1.43]">
                 Cloud agent
               </div>
             </button>
@@ -151,7 +151,7 @@ export function Sidebar({
         </div>
 
         <div className="px-4 pb-3">
-          <div className="bg-field flex h-10 items-center gap-2 rounded-[16px] px-3">
+          <div className="bg-field flex h-10 items-center gap-2 rounded-2xl px-3">
             <Search
               size={16}
               strokeWidth={1.75}
@@ -162,7 +162,7 @@ export function Sidebar({
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search sessions"
               aria-label="Search sessions"
-              className="placeholder:text-faint text-ink min-w-0 flex-1 bg-transparent text-[14px] outline-none"
+              className="placeholder:text-faint text-ink min-w-0 flex-1 bg-transparent text-sm outline-none"
             />
             {query && (
               <button
@@ -178,19 +178,19 @@ export function Sidebar({
 
         <div className="flex-1 space-y-2 overflow-y-auto px-4 pb-20">
           {sessions.length === 0 && (
-            <p className="text-muted px-2 py-10 text-center text-[14px] leading-[1.43]">
+            <p className="text-muted px-2 py-10 text-center text-sm leading-[1.43]">
               No sessions yet.
             </p>
           )}
           {sessions.length > 0 && visible.length === 0 && (
-            <p className="text-muted px-2 py-10 text-center text-[14px] leading-[1.43]">
+            <p className="text-muted px-2 py-10 text-center text-sm leading-[1.43]">
               No sessions match “{debounced.trim()}”.
             </p>
           )}
           {visible.map((s) => (
             <div
               key={s.id}
-              className={`group flex items-center gap-2 rounded-[16px] px-4 py-3 transition ${
+              className={`group flex items-center gap-2 rounded-2xl px-4 py-3 transition ${
                 selected === s.id ? "bg-canvas-soft" : "hover:bg-canvas-soft/60"
               }`}
             >
@@ -201,10 +201,10 @@ export function Sidebar({
                 }}
                 className="min-w-0 flex-1 text-left"
               >
-                <div className="truncate text-[16px] font-semibold leading-[1.38]">
+                <div className="truncate text-base font-semibold leading-[1.38]">
                   {s.title}
                 </div>
-                <div className="text-faint tnum truncate text-[12px] leading-[1.33]">
+                <div className="text-faint tnum truncate text-xs leading-[1.33]">
                   {formatDate(s.created_at)}
                 </div>
               </button>
@@ -212,7 +212,7 @@ export function Sidebar({
                 onClick={() => setConfirming(s)}
                 title={`Delete ${s.title}`}
                 aria-label={`Delete ${s.title}`}
-                className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[16px] leading-none opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
+                className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-base leading-none opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
               >
                 ×
               </button>
@@ -221,7 +221,7 @@ export function Sidebar({
           {hasMore && (
             <div
               ref={sentinel}
-              className="text-faint px-2 py-4 text-center text-[12px] leading-[1.33]"
+              className="text-faint px-2 py-4 text-center text-xs leading-[1.33]"
             >
               {loadingMore ? "Loading…" : ""}
             </div>
@@ -313,16 +313,16 @@ function ConfirmDelete({
       >
         <h2
           id="confirm-delete-title"
-          className="text-ink text-[18px] font-[650] leading-[1.35]"
+          className="text-ink text-lg font-[650] leading-[1.35]"
         >
           Delete “{session.title}”?
         </h2>
-        <p className="text-muted mt-2 text-[14px] leading-normal">
+        <p className="text-muted mt-2 text-sm leading-normal">
           Its messages, files, and stored data will be deleted permanently. This
           can’t be undone.
         </p>
         {telegram && (
-          <p className="text-muted mt-2 text-[14px] leading-normal">
+          <p className="text-muted mt-2 text-sm leading-normal">
             Messages in the Telegram chat aren’t deleted. The bot starts a new
             session the next time someone writes there.
           </p>
@@ -333,13 +333,13 @@ function ConfirmDelete({
             // Focus starts on the way out, not on the deletion: a stray Return should
             // keep the session, never take it.
             autoFocus
-            className="border-hairline text-ink hover:bg-canvas-soft rounded-full border px-4 py-2 text-[14px] font-medium transition"
+            className="border-hairline text-ink hover:bg-canvas-soft rounded-full border px-4 py-2 text-sm font-medium transition"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className="bg-ink text-on-primary rounded-full px-4 py-2 text-[14px] font-medium transition hover:opacity-85"
+            className="bg-ink text-on-primary rounded-full px-4 py-2 text-sm font-medium transition hover:opacity-85"
           >
             Delete session
           </button>

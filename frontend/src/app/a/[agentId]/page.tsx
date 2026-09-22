@@ -289,7 +289,7 @@ export default function AgentPage({
 
       <main className="flex min-w-0 flex-1 flex-col">
         {error && (
-          <div className="bg-canvas-soft text-ink border-hairline-soft border-b px-5 py-4 text-[14px] md:px-8 leading-[1.43]">
+          <div className="bg-canvas-soft text-ink border-hairline-soft border-b px-5 py-4 text-sm md:px-8 leading-[1.43]">
             {error}
           </div>
         )}
@@ -303,7 +303,7 @@ export default function AgentPage({
               onOpenSidebar={() => setSidebarOpen(true)}
             />
             {loaded?.sessionId !== selected ? (
-              <div className="text-muted flex flex-1 items-center justify-center text-[20px] font-light mb-16">
+              <div className="text-muted flex flex-1 items-center justify-center text-xl font-light mb-16">
                 Connecting Session…
               </div>
             ) : (

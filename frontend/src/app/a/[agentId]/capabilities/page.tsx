@@ -100,7 +100,7 @@ export default function Capabilities({
       <div className="mx-auto w-full max-w-2xl px-5 py-10 md:px-8 md:py-14">
         <Link
           href={`/a/${encodeURIComponent(agentId)}`}
-          className="text-muted hover:text-ink mb-10 inline-flex items-center gap-2 text-[14px] transition"
+          className="text-muted hover:text-ink mb-10 inline-flex items-center gap-2 text-sm transition"
         >
           <ArrowLeft size={16} strokeWidth={1.75} />
           Sessions
@@ -110,23 +110,23 @@ export default function Capabilities({
           <h1 className="text-[32px] font-[650] leading-[1.2]">
             Capabilities.
           </h1>
-          <span className="text-faint text-[12px] leading-[1.33]">
+          <span className="text-faint text-xs leading-[1.33]">
             {saving ? "Saving…" : "Saved"}
           </span>
         </div>
-        <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
+        <p className="text-muted mt-1 text-sm font-light leading-[1.43]">
           Choose what this agent can do besides write. Applies to every one of
           its sessions, and to nothing another agent does.
         </p>
 
         {error && (
-          <div className="bg-canvas-soft border-hairline-soft mt-8 rounded-[16px] border px-5 py-4 text-[14px] leading-[1.43]">
+          <div className="bg-canvas-soft border-hairline-soft mt-8 rounded-2xl border px-5 py-4 text-sm leading-[1.43]">
             {error}
           </div>
         )}
 
         {!config && !error && (
-          <p className="text-muted py-16 text-[14px] leading-[1.43]">
+          <p className="text-muted py-16 text-sm leading-[1.43]">
             Loading your capabilities…
           </p>
         )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import {
   capabilityReady,
@@ -94,12 +94,12 @@ export function ChipList({
   return (
     <div>
       {label && (
-        <span className="block text-[14px] font-semibold leading-[1.43]">
+        <span className="block text-sm font-semibold leading-[1.43]">
           {label}
         </span>
       )}
       {hint && (
-        <span className="text-muted block text-[12px] font-light leading-[1.33]">
+        <span className="text-muted block text-xs font-light leading-[1.33]">
           {hint}
         </span>
       )}
@@ -147,7 +147,7 @@ export function ChipList({
             if (e.key === "Escape") setDraft("");
           }}
           aria-label={label}
-          className={`placeholder:text-faint min-w-0 flex-1 rounded-[16px] px-4 py-3 text-[14px] outline-none ${
+          className={`placeholder:text-faint min-w-0 flex-1 rounded-2xl px-4 py-3 text-sm outline-none ${
             bordered ? "bg-canvas border-hairline border" : "bg-field"
           }`}
         />
@@ -155,7 +155,7 @@ export function ChipList({
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => add(draft)}
           disabled={draft.trim() === ""}
-          className="bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-5 text-[14px] font-semibold transition disabled:opacity-40"
+          className="bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-2xl border px-5 text-sm font-semibold transition disabled:opacity-40"
         >
           Add
         </button>
@@ -163,7 +163,7 @@ export function ChipList({
 
       {suggestionHint && (
         <p
-          className={`mt-2 text-[12px] leading-[1.33] ${bordered ? "text-muted" : "text-faint"}`}
+          className={`mt-2 text-xs leading-[1.33] ${bordered ? "text-muted" : "text-faint"}`}
         >
           {suggestionHint}
         </p>
@@ -171,7 +171,7 @@ export function ChipList({
 
       {entries.length === 0 && emptyNote && (
         <p
-          className={`mt-2 text-[12px] leading-[1.33] ${bordered ? "text-muted" : "text-faint"}`}
+          className={`mt-2 text-xs leading-[1.33] ${bordered ? "text-muted" : "text-faint"}`}
         >
           {emptyNote}
         </p>
@@ -203,9 +203,13 @@ export function Field({
   // secret left untouched both read as an empty draft on blur, so only this tells
   // "delete the key" apart from "keep the one already saved".
   const [edited, setEdited] = useState(false);
-  useEffect(() => {
+  // Sync draft to an incoming value while unfocused, without an effect: track the
+  // last value seen and adjust draft during render when it changes.
+  const [prevValue, setPrevValue] = useState(value);
+  if (value !== prevValue) {
+    setPrevValue(value);
     if (!focused) setDraft(value);
-  }, [value, focused]);
+  }
 
   // A stored secret arrives masked. Focusing clears it, so typing replaces the key
   // and leaving it alone keeps the one already saved.
@@ -232,17 +236,17 @@ export function Field({
 
   return (
     <label className="block">
-      <span className="block text-[14px] font-semibold leading-[1.43]">
+      <span className="block text-sm font-semibold leading-[1.43]">
         {field.label}
       </span>
-      <span className="text-muted block text-[12px] font-light leading-[1.33]">
+      <span className="text-muted block text-xs font-light leading-[1.33]">
         {field.hint}
       </span>
       {field.options ? (
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className={`text-ink mt-2 w-full appearance-none rounded-[16px] px-4 py-3 text-[14px] outline-none ${
+          className={`text-ink mt-2 w-full appearance-none rounded-2xl px-4 py-3 text-sm outline-none ${
             bordered ? "bg-canvas border-hairline border" : "bg-field"
           }`}
         >
@@ -284,7 +288,7 @@ export function Field({
               e.currentTarget.blur();
             }
           }}
-          className={`placeholder:text-faint mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none ${
+          className={`placeholder:text-faint mt-2 w-full rounded-2xl px-4 py-3 text-sm outline-none ${
             bordered ? "bg-canvas border-hairline border" : "bg-field"
           }`}
         />
@@ -338,21 +342,21 @@ export function CapabilitySection({
       }
       className={`${
         tint
-          ? "mb-2 rounded-[24px] bg-gradient-to-b from-[var(--tint)]/18 to-transparent px-5 py-6"
+          ? "mb-2 rounded-3xl bg-linear-to-b from-(--tint)/18 to-transparent px-5 py-6"
           : "border-hairline-soft border-t py-7"
       } ${blocked ? "opacity-50" : ""}`}
     >
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
-          <h2 className="text-[16px] font-semibold leading-[1.38]">
+          <h2 className="text-base font-semibold leading-[1.38]">
             {capability.label}
             {blocked && (
-              <span className="text-faint ml-2 text-[12px] font-normal">
+              <span className="text-faint ml-2 text-xs font-normal">
                 Unavailable
               </span>
             )}
           </h2>
-          <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
+          <p className="text-muted mt-1 text-sm font-light leading-[1.43]">
             {capability.summary}
           </p>
         </div>
@@ -366,7 +370,7 @@ export function CapabilitySection({
       </div>
 
       {blocked && blockedNote && (
-        <p className="text-muted mt-4 text-[12px] leading-[1.33]">
+        <p className="text-muted mt-4 text-xs leading-[1.33]">
           {blockedNote}
         </p>
       )}
@@ -387,7 +391,7 @@ export function CapabilitySection({
 
           {capability.note && (
             <p
-              className={`text-[12px] leading-[1.33] ${tint ? "text-muted" : "text-faint"}`}
+              className={`text-xs leading-[1.33] ${tint ? "text-muted" : "text-faint"}`}
             >
               {capability.note}
             </p>
@@ -395,7 +399,7 @@ export function CapabilitySection({
 
           {!ready && capability.fields.length > 0 && (
             <p
-              className={`rounded-[16px] px-4 py-3 text-[12px] leading-[1.33] ${
+              className={`rounded-2xl px-4 py-3 text-xs leading-[1.33] ${
                 tint ? "bg-canvas border-hairline border" : "bg-canvas-soft"
               }`}
             >

@@ -162,7 +162,7 @@ export function AuthCard({
             ? "Welcome."
             : "Create account."}
       </h2>
-      <p className="text-muted mt-2 text-[14px] font-light leading-[1.43]">
+      <p className="text-muted mt-2 text-sm font-light leading-[1.43]">
         {step === "code"
           ? `We sent a six-digit code to ${email.trim()}`
           : signingIn
@@ -176,7 +176,7 @@ export function AuthCard({
             type="button"
             onClick={() => void google()}
             disabled={busy}
-            className="border-hairline text-ink hover:bg-canvas-soft mt-8 flex h-12 w-full cursor-pointer items-center justify-center gap-3 rounded-full border text-[16px] font-semibold transition disabled:opacity-40"
+            className="border-hairline text-ink hover:bg-canvas-soft mt-8 flex h-12 w-full cursor-pointer items-center justify-center gap-3 rounded-full border text-base font-semibold transition disabled:opacity-40"
           >
             <GoogleMark />
             Continue with Google
@@ -184,12 +184,12 @@ export function AuthCard({
 
           <div className="mt-6 flex items-center gap-3">
             <span className="bg-hairline-soft h-px flex-1" />
-            <span className="text-faint text-[12px] leading-[1.33]">or</span>
+            <span className="text-faint text-xs leading-[1.33]">or</span>
             <span className="bg-hairline-soft h-px flex-1" />
           </div>
 
           <label className="mt-6 block">
-            <span className="block text-[14px] font-semibold leading-[1.43]">
+            <span className="block text-sm font-semibold leading-[1.43]">
               Email
             </span>
             <input
@@ -202,7 +202,7 @@ export function AuthCard({
                 if (e.key === "Enter") void sendCode();
               }}
               placeholder="you@example.com"
-              className="bg-field placeholder:text-faint focus:ring-ink mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none focus:ring-2"
+              className="bg-field placeholder:text-faint focus:ring-ink mt-2 w-full rounded-2xl px-4 py-3 text-sm outline-none focus:ring-2"
             />
           </label>
         </>
@@ -210,7 +210,7 @@ export function AuthCard({
 
       {step === "code" && (
         <label className="mt-8 block">
-          <span className="block text-[14px] font-semibold leading-[1.43]">
+          <span className="block text-sm font-semibold leading-[1.43]">
             Verification code
           </span>
           <input
@@ -224,7 +224,7 @@ export function AuthCard({
               if (e.key === "Enter") void verify();
             }}
             placeholder="123456"
-            className="bg-field placeholder:text-faint focus:ring-ink tnum mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none focus:ring-2"
+            className="bg-field placeholder:text-faint focus:ring-ink tnum mt-2 w-full rounded-2xl px-4 py-3 text-sm outline-none focus:ring-2"
           />
         </label>
       )}
@@ -233,14 +233,14 @@ export function AuthCard({
       <div id="clerk-captcha" className="mt-4 empty:mt-0" />
 
       {error && (
-        <p className="text-muted mt-3 text-[12px] leading-[1.33]">{error}</p>
+        <p className="text-muted mt-3 text-xs leading-[1.33]">{error}</p>
       )}
 
       <button
         type="button"
         onClick={() => void (step === "email" ? sendCode() : verify())}
         disabled={busy || (step === "email" ? !email.trim() : !code.trim())}
-        className="bg-ink text-on-primary mt-4 h-12 w-full cursor-pointer rounded-full text-[16px] font-semibold transition hover:opacity-85 disabled:opacity-40"
+        className="bg-ink text-on-primary mt-4 h-12 w-full cursor-pointer rounded-full text-base font-semibold transition hover:opacity-85 disabled:opacity-40"
       >
         {busy ? "Working…" : step === "email" ? "Continue" : "Verify"}
       </button>
@@ -253,12 +253,12 @@ export function AuthCard({
             setCode("");
             setError(null);
           }}
-          className="text-muted hover:text-ink mt-4 w-full cursor-pointer text-[14px] leading-[1.43] transition"
+          className="text-muted hover:text-ink mt-4 w-full cursor-pointer text-sm leading-[1.43] transition"
         >
           Use a different email
         </button>
       ) : (
-        <p className="text-muted mt-4 text-center text-[14px] leading-[1.43]">
+        <p className="text-muted mt-4 text-center text-sm leading-[1.43]">
           {signingIn ? "No account yet? " : "Already have an account? "}
           <button
             type="button"

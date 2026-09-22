@@ -52,7 +52,7 @@ function toPreset(entry: McpCatalogEntry): McpPreset {
     logo: (
       <span
         aria-hidden="true"
-        className="flex h-[26px] w-[26px] items-center justify-center rounded-[8px] text-[13px] font-semibold text-white"
+        className="flex h-[26px] w-[26px] items-center justify-center rounded-lg text-[13px] font-semibold text-white"
         style={{ background: entry.color || "#6b7280" }}
       >
         {letter}
@@ -190,7 +190,7 @@ export function McpPresetStrip({
               if (moved.current > DRAG_SLOP) return;
               onPick(preset);
             }}
-            className="bg-canvas border-hairline text-ink hover:border-ink flex h-12 w-12 shrink-0 items-center justify-center rounded-[12px] border transition"
+            className="bg-canvas border-hairline text-ink hover:border-ink flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border transition"
           >
             {preset.logo}
           </button>

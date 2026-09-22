@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Link2, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { Plus, Trash2, X } from "lucide-react";
 import {
   SECRET_MASK,
   type McpAuth,
@@ -43,11 +43,11 @@ const objectFrom = (pairs: HeaderPair[]): Record<string, string> =>
   );
 
 const input =
-  "bg-canvas border-hairline placeholder:text-faint text-ink w-full min-w-0 rounded-[16px] border px-4 py-3 text-[14px] outline-none";
+  "bg-canvas border-hairline placeholder:text-faint text-ink w-full min-w-0 rounded-2xl border px-4 py-3 text-sm outline-none";
 const button =
-  "bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[16px] border px-4 py-2.5 text-[13px] font-semibold transition disabled:opacity-40";
+  "bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-2xl border px-4 py-2.5 text-[13px] font-semibold transition disabled:opacity-40";
 const actionButton =
-  "bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-[12px] border px-2 py-1 text-[13px] font-semibold transition disabled:opacity-40";
+  "bg-canvas border-hairline text-ink hover:bg-canvas-soft shrink-0 rounded-xl border px-2 py-1 text-[13px] font-semibold transition disabled:opacity-40";
 
 function AuthPicker({
   value,
@@ -73,7 +73,7 @@ function AuthPicker({
           </button>
         ))}
       </div>
-      <p className="text-muted mt-2 text-[12px] leading-[1.33]">
+      <p className="text-muted mt-2 text-xs leading-[1.33]">
         {AUTH_MODES.find((m) => m.id === value)?.hint}
       </p>
     </div>
@@ -191,11 +191,11 @@ function ServerCard({
           <span className="block truncate text-[15px] font-semibold leading-[1.4]">
             {server.name}
           </span>
-          <span className="text-muted block truncate text-[12px] font-light leading-[1.33]">
+          <span className="text-muted block truncate text-xs font-light leading-[1.33]">
             {server.url}
           </span>
           <span
-            className={`mt-1 inline-block text-[12px] leading-[1.33] ${
+            className={`mt-1 inline-block text-xs leading-[1.33] ${
               server.last_error ? "text-ink font-semibold" : "text-faint"
             }`}
           >
@@ -209,7 +209,7 @@ function ServerCard({
       </div>
 
       {server.last_error && (
-        <p className="bg-canvas-soft mt-3 rounded-[14px] px-4 py-3 text-[12px] leading-[1.33]">
+        <p className="bg-canvas-soft mt-3 rounded-[14px] px-4 py-3 text-xs leading-[1.33]">
           {server.last_error}
         </p>
       )}
@@ -228,7 +228,7 @@ function ServerCard({
             <button
               onClick={() => onAction("connect")}
               disabled={busy}
-              className={`bg-ink text-canvas shrink-0 rounded-[12px] border px-2 py-1 text-[13px] font-semibold transition disabled:opacity-40`}
+              className={`bg-ink text-canvas shrink-0 rounded-xl border px-2 py-1 text-[13px] font-semibold transition disabled:opacity-40`}
             >
               <span className="inline-flex items-center gap-2">Connect</span>
             </button>
@@ -300,7 +300,7 @@ function ServerCard({
           {server.tools.length > 0 && (
             <div>
               <div className="flex items-baseline justify-between gap-4">
-                <span className="text-muted text-[12px] leading-[1.33]">
+                <span className="text-muted text-xs leading-[1.33]">
                   Tools available. Switch one off to keep it from the agent.
                 </span>
                 <button
@@ -309,7 +309,7 @@ function ServerCard({
                       live === 0 ? [] : server.tools.map((t) => t.name),
                     )
                   }
-                  className="text-muted hover:text-ink shrink-0 text-[12px] font-semibold"
+                  className="text-muted hover:text-ink shrink-0 text-xs font-semibold"
                 >
                   {live === 0 ? "Enable all" : "Disable all"}
                 </button>
@@ -334,7 +334,7 @@ function ServerCard({
                       // A tool that is off is struck out rather than recoloured: the
                       // badge stays readable, and the squiggle says "not this one"
                       // without the row turning into a block of solid pills.
-                      className={`bg-canvas rounded-full border px-3 py-1.5 text-[12px] leading-[1.35] transition ${
+                      className={`bg-canvas rounded-full border px-3 py-1.5 text-xs leading-[1.35] transition ${
                         on
                           ? "border-hairline text-ink hover:border-ink"
                           : "border-hairline text-faint"
@@ -385,7 +385,7 @@ function AddServer({
     return (
       <button
         onClick={() => setOpen(true)}
-        className="border-ink-soft/20 text-ink hover:bg-canvas w-full rounded-[20px] border border-dashed py-4 text-[14px] font-semibold transition"
+        className="border-ink-soft/20 text-ink hover:bg-canvas w-full rounded-[20px] border border-dashed py-4 text-sm font-semibold transition"
       >
         <span className="inline-flex items-center gap-2">
           <Plus size={16} strokeWidth={2} />
@@ -425,7 +425,7 @@ function AddServer({
             if (added) reset();
           }}
           disabled={busy || !name.trim() || !url.trim()}
-          className="bg-ink text-canvas rounded-[16px] px-5 py-2.5 text-[13px] font-semibold transition disabled:opacity-40"
+          className="bg-ink text-canvas rounded-2xl px-5 py-2.5 text-[13px] font-semibold transition disabled:opacity-40"
         >
           Add
         </button>
@@ -480,10 +480,6 @@ export function McpServers({
   // read as the initial state rather than in an effect: it is already there on the
   // first render, and there is nothing to synchronize with afterwards.
   const [error, setError] = useState<string | null>(() => oauthResult().failed);
-  const [notice] = useState<string | null>(() => {
-    const { connected } = oauthResult();
-    return connected ? `${connected} is connected.` : null;
-  });
   const [busy, setBusy] = useState(false);
   /** Preset ids this agent's meta settings offer. Empty means every preset. */
   const [templates, setTemplates] = useState<string[]>([]);
@@ -625,7 +621,7 @@ export function McpServers({
   return (
     <div className="space-y-4">
       {error && (
-        <p className="bg-canvas border-hairline rounded-[16px] border px-4 py-3 text-[13px] leading-[1.33]">
+        <p className="bg-canvas border-hairline rounded-2xl border px-4 py-3 text-[13px] leading-[1.33]">
           {error}
         </p>
       )}
@@ -677,14 +673,14 @@ export function McpServers({
         <AddServer key={picks} onAdd={add} busy={busy} preset={preset} />
       ) : (
         servers.length === 0 && (
-          <p className="text-faint text-[12px] leading-[1.33]">
+          <p className="text-faint text-xs leading-[1.33]">
             This agent&rsquo;s MCP servers are managed for you.
           </p>
         )
       )}
 
       {redirectUri && (
-        <p className="text-faint text-[12px] leading-[1.33]">
+        <p className="text-faint text-xs leading-[1.33]">
           Expect external providers to redirect to the following URL to complete
           OAuth flow: <span className="break-all font-bold">{redirectUri}</span>
         </p>

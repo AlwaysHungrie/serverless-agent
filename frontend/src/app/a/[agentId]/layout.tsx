@@ -30,7 +30,7 @@ export default function AgentLayout({ children }: LayoutProps<"/a/[agentId]">) {
   if (!ready) {
     return (
       <div className="bg-canvas text-ink flex min-h-screen items-center justify-center">
-        <p className="text-muted text-[14px] leading-[1.43]">Loading…</p>
+        <p className="text-muted text-sm leading-[1.43]">Loading…</p>
       </div>
     );
   }

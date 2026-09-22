@@ -49,8 +49,8 @@ function Row({
 }) {
   return (
     <section className="border-hairline-soft border-t py-7">
-      <h2 className="text-[16px] font-semibold leading-[1.38]">{title}</h2>
-      <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
+      <h2 className="text-base font-semibold leading-[1.38]">{title}</h2>
+      <p className="text-muted mt-1 text-sm font-light leading-[1.43]">
         {hint}
       </p>
       <div className="mt-4">{children}</div>
@@ -73,7 +73,7 @@ function Segmented<T extends string>({
         <button
           key={o.id}
           onClick={() => onChange(o.id)}
-          className={`rounded-full px-4 py-1.5 text-[14px] font-semibold transition ${
+          className={`rounded-full px-4 py-1.5 text-sm font-semibold transition ${
             value === o.id
               ? "bg-canvas text-ink shadow-sm"
               : "text-muted hover:text-ink"
@@ -112,7 +112,7 @@ function Slider({
         onChange={(e) => onChange(Number(e.target.value))}
         className="accent-ink h-1 flex-1 cursor-pointer"
       />
-      <span className="tnum text-muted w-24 shrink-0 text-right text-[14px]">
+      <span className="tnum text-muted w-24 shrink-0 text-right text-sm">
         {format(value)}
       </span>
     </div>
@@ -292,7 +292,7 @@ export default function Settings({
       <div className="mx-auto w-full max-w-2xl px-5 py-10 md:px-8 md:py-14">
         <Link
           href={`/a/${encodeURIComponent(agentId)}`}
-          className="text-muted hover:text-ink mb-10 inline-flex items-center gap-2 text-[14px] transition"
+          className="text-muted hover:text-ink mb-10 inline-flex items-center gap-2 text-sm transition"
         >
           <ArrowLeft size={16} strokeWidth={1.75} />
           Sessions
@@ -300,11 +300,11 @@ export default function Settings({
 
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-[32px] font-[650] leading-[1.2]">Settings.</h1>
-          <span className="text-faint text-[12px] leading-[1.33]">
+          <span className="text-faint text-xs leading-[1.33]">
             {saving ? "Saving…" : "Saved"}
           </span>
         </div>
-        <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
+        <p className="text-muted mt-1 text-sm font-light leading-[1.43]">
           Configure how this agent replies to messages. To manage its
           capabilities and give it additional tools, go to{" "}
           <Link
@@ -317,13 +317,13 @@ export default function Settings({
         </p>
 
         {error && (
-          <div className="bg-canvas-soft border-hairline-soft mt-8 rounded-[16px] border px-5 py-4 text-[14px] leading-[1.43]">
+          <div className="bg-canvas-soft border-hairline-soft mt-8 rounded-2xl border px-5 py-4 text-sm leading-[1.43]">
             {error}
           </div>
         )}
 
         {!config && !error && (
-          <p className="text-muted py-16 text-[14px] leading-[1.43]">
+          <p className="text-muted py-16 text-sm leading-[1.43]">
             Loading settings…
           </p>
         )}
@@ -346,17 +346,17 @@ export default function Settings({
                     <button
                       key={m.id}
                       onClick={() => set({ model: m.id })}
-                      className={`flex w-full items-center gap-3 rounded-[16px] px-5 py-4 text-left transition ${
+                      className={`flex w-full items-center gap-3 rounded-2xl px-5 py-4 text-left transition ${
                         config.model === m.id
                           ? "bg-canvas-soft"
                           : "hover:bg-canvas-soft/60"
                       }`}
                     >
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[16px] font-semibold leading-[1.38]">
+                        <span className="block truncate text-base font-semibold leading-[1.38]">
                           {m.label}
                         </span>
-                        <span className="text-faint block truncate text-[12px] leading-[1.33]">
+                        <span className="text-faint block truncate text-xs leading-[1.33]">
                           {m.id}
                           {!m.vision ? " · (no image)" : ""}
                         </span>
@@ -381,9 +381,9 @@ export default function Settings({
                   rows={4}
                   maxLength={4000}
                   placeholder="Answer in short paragraphs. Show code before explaining it."
-                  className="bg-field placeholder:text-faint w-full resize-y rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
+                  className="bg-field placeholder:text-faint w-full resize-y rounded-2xl px-5 py-4 text-sm leading-[1.43] outline-none"
                 />
-                <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+                <p className="text-faint mt-2 text-xs leading-[1.33]">
                   {config.system_prompt.length} / 4000 &middot; The agent is
                   always told its name first, whatever this says.
                 </p>
@@ -400,7 +400,7 @@ export default function Settings({
                   value={config.reasoning_effort}
                   onChange={(v) => set({ reasoning_effort: v })}
                 />
-                <p className="text-faint mt-3 text-[12px] leading-[1.33]">
+                <p className="text-faint mt-3 text-xs leading-[1.33]">
                   {
                     REASONING.find((r) => r.id === config.reasoning_effort)
                       ?.hint
@@ -472,7 +472,7 @@ export default function Settings({
                 />
                 {keyCheck && (
                   <p
-                    className={`mt-2 text-[12px] leading-[1.33] ${
+                    className={`mt-2 text-xs leading-[1.33] ${
                       keyCheck.ok ? "text-muted" : "text-ink"
                     }`}
                   >
@@ -482,7 +482,7 @@ export default function Settings({
                   </p>
                 )}
                 {!config.openrouter_api_key && !keyCheck && (
-                  <p className="text-faint mt-2 text-[12px] leading-[1.33]">
+                  <p className="text-faint mt-2 text-xs leading-[1.33]">
                     A valid Openrouter API key is required.
                   </p>
                 )}
@@ -503,7 +503,7 @@ export default function Settings({
                 }}
                 maxLength={60}
                 placeholder="New agent"
-                className="bg-field placeholder:text-faint w-full rounded-[16px] px-5 py-4 text-[14px] leading-[1.43] outline-none"
+                className="bg-field placeholder:text-faint w-full rounded-2xl px-5 py-4 text-sm leading-[1.43] outline-none"
               />
             </Row>
 

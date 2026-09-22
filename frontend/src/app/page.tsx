@@ -129,7 +129,7 @@ export default function Agents() {
             <h1 className="text-[32px] font-[650] leading-[1.2]">
               Cloud Agents.
             </h1>
-            <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
+            <p className="text-muted mt-1 text-sm font-light leading-[1.43]">
               Personal, Always Accessible AI Agents
             </p>
           </div>
@@ -144,7 +144,7 @@ export default function Agents() {
             prerendered page would flash the front door at someone already signed in,
             and localStorage cannot be read on the server at all. */}
         {!isLoaded && (
-          <p className="text-muted py-16 text-[14px] leading-[1.43]">
+          <p className="text-muted py-16 text-sm leading-[1.43]">
             Loading…
           </p>
         )}
@@ -153,12 +153,12 @@ export default function Agents() {
           <div className="mt-8 space-y-2 w-full">
             <button
               onClick={() => setAuthing(true)}
-              className="w-full min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-[16px] px-5 py-4 transition"
+              className="w-full min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-4 transition"
             >
               <Plus size={18} strokeWidth={2} />
               Connect your Account
             </button>
-            <p className="text-faint mt-6 text-[12px] leading-[1.33]">
+            <p className="text-faint mt-6 text-xs leading-[1.33]">
               You can find safety guidelines and best practices for running a
               public facing agent in the{" "}
               <a href="/docs" className="text-primary font-semibold underline">
@@ -183,13 +183,13 @@ export default function Agents() {
         {isLoaded && isSignedIn && (
           <>
             {error && (
-              <div className="bg-canvas-soft border-hairline-soft mt-8 rounded-[16px] border px-5 py-4 text-[14px] leading-[1.43]">
+              <div className="bg-canvas-soft border-hairline-soft mt-8 rounded-2xl border px-5 py-4 text-sm leading-[1.43]">
                 {error}
               </div>
             )}
 
             {agents === null && (
-              <p className="text-muted py-16 text-[14px] leading-[1.43]">
+              <p className="text-muted py-16 text-sm leading-[1.43]">
                 Loading your agents…
               </p>
             )}
@@ -211,10 +211,10 @@ export default function Agents() {
                     .includes(email);
                   const title = (
                     <>
-                      <span className="block truncate text-[16px] font-semibold leading-[1.38]">
+                      <span className="block truncate text-base font-semibold leading-[1.38]">
                         {agent.name}
                       </span>
-                      <span className="text-faint block truncate text-[12px] leading-[1.33]">
+                      <span className="text-faint block truncate text-xs leading-[1.33]">
                         {isUser
                           ? `Last used ${formatDate(agent.updated_at)}`
                           : "You administer this agent"}
@@ -224,7 +224,7 @@ export default function Agents() {
                   return (
                     <div
                       key={agent.id}
-                      className="hover:bg-canvas-soft group flex items-center gap-3 rounded-[16px] px-5 py-4 transition"
+                      className="hover:bg-canvas-soft group flex items-center gap-3 rounded-2xl px-5 py-4 transition"
                     >
                       {isUser ? (
                         <Link
@@ -242,7 +242,7 @@ export default function Agents() {
                       {isAdmin && (
                         <button
                           onClick={() => setMetaFor(agent)}
-                          className="text-muted hover:text-ink shrink-0 text-[14px] transition"
+                          className="text-muted hover:text-ink shrink-0 text-sm transition"
                         >
                           Admin Settings
                         </button>
@@ -261,7 +261,7 @@ export default function Agents() {
                         <button
                           onClick={() => setConfirming(agent)}
                           aria-label={`Delete ${agent.name}`}
-                          className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[16px] leading-none opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
+                          className="text-muted hover:bg-canvas hover:text-ink flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-base leading-none opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
                         >
                           ×
                         </button>
@@ -272,7 +272,7 @@ export default function Agents() {
 
                 <div
                   onClick={() => setCreating(true)}
-                  className="min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-[16px] px-5 py-4 transition"
+                  className="min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-4 transition"
                 >
                   <Plus size={18} strokeWidth={2} />
                   Create a new Agent
@@ -302,10 +302,10 @@ export default function Agents() {
       {confirming && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-5">
           <div className="bg-canvas w-full max-w-sm rounded-[20px] px-6 py-6 shadow-xl">
-            <p className="text-[16px] font-semibold leading-[1.38]">
+            <p className="text-base font-semibold leading-[1.38]">
               Delete {confirming.name}?
             </p>
-            <p className="text-muted mt-2 text-[14px] font-light leading-[1.43]">
+            <p className="text-muted mt-2 text-sm font-light leading-[1.43]">
               Its chats, files, memories, settings and MCP connections all go
               with it, and its Telegram bot stops answering. This cannot be
               undone.
@@ -313,7 +313,7 @@ export default function Agents() {
             <div className="mt-6 flex justify-end gap-2">
               <button
                 onClick={() => setConfirming(null)}
-                className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-[14px] font-semibold transition"
+                className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-sm font-semibold transition"
               >
                 Cancel
               </button>
@@ -323,7 +323,7 @@ export default function Agents() {
                   setConfirming(null);
                   void remove(id);
                 }}
-                className="bg-ink text-on-primary h-10 rounded-full px-5 text-[14px] font-semibold transition hover:opacity-85"
+                className="bg-ink text-on-primary h-10 rounded-full px-5 text-sm font-semibold transition hover:opacity-85"
               >
                 Delete
               </button>
@@ -423,11 +423,11 @@ function NewAgent({
           className="bg-canvas text-ink w-full max-w-lg rounded-[20px] px-6 py-6 shadow-xl"
           onClick={(e) => e.stopPropagation()}
         >
-          <p className="text-faint text-[12px] leading-[1.33]">Step 2 of 2</p>
-          <p className="text-[18px] font-semibold leading-[1.38]">
+          <p className="text-faint text-xs leading-[1.33]">Step 2 of 2</p>
+          <p className="text-lg font-semibold leading-[1.38]">
             Meta settings
           </p>
-          <p className="text-muted mt-1 text-[12px] font-light leading-[1.33]">
+          <p className="text-muted mt-1 text-xs font-light leading-[1.33]">
             Set the defaults for {name.trim() || "this agent"}, and choose what
             its owner can change. A locked setting will not be shown to the
             owner for configuration.
@@ -442,19 +442,19 @@ function NewAgent({
             />
           </div>
 
-          {error && <p className="mt-3 text-[12px] leading-[1.33]">{error}</p>}
+          {error && <p className="mt-3 text-xs leading-[1.33]">{error}</p>}
 
           <div className="border-hairline-soft mt-2 flex justify-end gap-2 border-t pt-5">
             <button
               onClick={() => setStep(1)}
-              className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-[14px] font-semibold transition"
+              className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-sm font-semibold transition"
             >
               Back
             </button>
             <button
               onClick={() => void submit()}
               disabled={busy}
-              className="bg-ink text-on-primary h-10 rounded-full px-5 text-[14px] font-semibold transition hover:opacity-85 disabled:opacity-40"
+              className="bg-ink text-on-primary h-10 rounded-full px-5 text-sm font-semibold transition hover:opacity-85 disabled:opacity-40"
             >
               {busy ? "Creating…" : "Create"}
             </button>
@@ -473,12 +473,12 @@ function NewAgent({
         className="bg-canvas w-full max-w-sm rounded-[20px] px-6 py-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <p className="text-faint text-[12px] leading-[1.33]">Step 1 of 2</p>
-        <p className="text-[18px] font-semibold leading-[1.38]">
+        <p className="text-faint text-xs leading-[1.33]">Step 1 of 2</p>
+        <p className="text-lg font-semibold leading-[1.38]">
           Create a new agent
         </p>
         <label className="mt-5 block">
-          <span className="block text-[14px] font-semibold leading-[1.43]">
+          <span className="block text-sm font-semibold leading-[1.43]">
             Name
           </span>
           <input
@@ -491,17 +491,17 @@ function NewAgent({
             }}
             maxLength={60}
             placeholder="Research assistant"
-            className="bg-field placeholder:text-faint mt-2 w-full rounded-[16px] px-4 py-3 text-[14px] outline-none"
+            className="bg-field placeholder:text-faint mt-2 w-full rounded-2xl px-4 py-3 text-sm outline-none"
           />
         </label>
 
         {/* Not a `label`: the chips are buttons, and a label wrapping several
             controls has nothing to point at. */}
         <div className="mt-4">
-          <span className="block text-[14px] font-semibold leading-[1.43]">
+          <span className="block text-sm font-semibold leading-[1.43]">
             Who can access this agent
           </span>
-          <span className="text-muted block text-[12px] font-light leading-[1.33]">
+          <span className="text-muted block text-xs font-light leading-[1.33]">
             Users who will have complete access to this agent including all chat
             sessions and settings. You administer this agent either way, but you
             only get to open it if your own address is on this list. After
@@ -517,19 +517,19 @@ function NewAgent({
           </div>
         </div>
 
-        {error && <p className="mt-3 text-[12px] leading-[1.33]">{error}</p>}
+        {error && <p className="mt-3 text-xs leading-[1.33]">{error}</p>}
 
         <div className="mt-6 flex justify-end gap-2">
           <button
             onClick={onCancel}
-            className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-[14px] font-semibold transition"
+            className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-sm font-semibold transition"
           >
             Cancel
           </button>
           <button
             onClick={() => setStep(2)}
             disabled={busy || name.trim() === "" || emails.trim() === ""}
-            className="bg-ink text-on-primary h-10 rounded-full px-5 text-[14px] font-semibold transition hover:opacity-85 disabled:opacity-40"
+            className="bg-ink text-on-primary h-10 rounded-full px-5 text-sm font-semibold transition hover:opacity-85 disabled:opacity-40"
           >
             Next
           </button>

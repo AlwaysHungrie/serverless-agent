@@ -83,13 +83,12 @@ function toolLabel(tool: ToolData) {
  * by. The label says so; darkening it from faint to muted is the whole emphasis.
  */
 function ToolLine({ tool }: { tool: ToolData }) {
-  const failed = tool.done && tool.ok === false;
   return <div>{toolLabel(tool)}</div>;
 }
 
 function UsageLine({ usage }: { usage: UsageData }) {
   return (
-    <div className="border-hairline-soft text-faint tnum mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t pt-3 text-[12px] leading-[1.33]">
+    <div className="border-hairline-soft text-faint tnum mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t pt-3 text-xs leading-[1.33]">
       <span>
         {usage.prompt_tokens} + {usage.completion_tokens} tkns
       </span>
@@ -162,16 +161,16 @@ const MARKDOWN_COMPONENTS = (sessionId: string) => ({
     <ol className="my-2 list-decimal space-y-1 pl-5" {...props} />
   ),
   li: (props: React.ComponentProps<"li">) => (
-    <li className="leading-[1.5]" {...props} />
+    <li className="leading-normal" {...props} />
   ),
   h1: (props: React.ComponentProps<"h1">) => (
-    <h1 className="mt-4 mb-2 text-[20px]" {...props} />
+    <h1 className="mt-4 mb-2 text-xl" {...props} />
   ),
   h2: (props: React.ComponentProps<"h2">) => (
-    <h2 className="mt-4 mb-2 text-[18px]" {...props} />
+    <h2 className="mt-4 mb-2 text-lg" {...props} />
   ),
   h3: (props: React.ComponentProps<"h3">) => (
-    <h3 className="mt-3 mb-1 text-[16px]" {...props} />
+    <h3 className="mt-3 mb-1 text-base" {...props} />
   ),
   a: (props: React.ComponentProps<"a">) => (
     <a
@@ -198,19 +197,19 @@ const MARKDOWN_COMPONENTS = (sessionId: string) => ({
       <code className={className} {...props} />
     ) : (
       <code
-        className="bg-canvas-soft rounded px-1.5 py-0.5 text-[14px]"
+        className="bg-canvas-soft rounded px-1.5 py-0.5 text-sm"
         {...props}
       />
     ),
   pre: (props: React.ComponentProps<"pre">) => (
     <pre
-      className="bg-canvas-soft my-2 overflow-x-auto rounded-[16px] px-4 py-3 text-[13px] leading-[1.5]"
+      className="bg-canvas-soft my-2 overflow-x-auto rounded-2xl px-4 py-3 text-[13px] leading-normal"
       {...props}
     />
   ),
   table: (props: React.ComponentProps<"table">) => (
     <div className="my-2 overflow-x-auto">
-      <table className="w-full border-collapse text-[14px]" {...props} />
+      <table className="w-full border-collapse text-sm" {...props} />
     </div>
   ),
   th: (props: React.ComponentProps<"th">) => (
@@ -235,7 +234,7 @@ const MARKDOWN_COMPONENTS = (sessionId: string) => ({
         `/api/sessions/${encodeURIComponent(sessionId)}/files/`,
       )}
       alt={alt ?? ""}
-      className="border-hairline-soft my-2 block max-w-full rounded-[16px] border"
+      className="border-hairline-soft my-2 block max-w-full rounded-2xl border"
     />
   ),
 });
@@ -367,7 +366,7 @@ function VoiceNote({
         </div>
 
         <span
-          className={`tnum shrink-0 text-[12px] leading-[1.33] ${isUser ? "opacity-70" : "text-faint"}`}
+          className={`tnum shrink-0 text-xs leading-[1.33] ${isUser ? "opacity-70" : "text-faint"}`}
         >
           {clock(playing || at > 0 ? total - at : total)}
         </span>
@@ -421,7 +420,7 @@ function AttachmentStrip({
             <img
               src={fileUrl(sessionId, a.id)}
               alt={a.name}
-              className="border-hairline-soft h-16 w-16 rounded-[12px] border object-cover"
+              className="border-hairline-soft h-16 w-16 rounded-xl border object-cover"
             />
             {onRemove && (
               <button
@@ -436,7 +435,7 @@ function AttachmentStrip({
         ) : (
           <span
             key={a.id}
-            className="bg-field text-ink flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[12px] leading-[1.33]"
+            className="bg-field text-ink flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-xs leading-[1.33]"
           >
             {isAudio(a) ? (
               <Mic size={13} strokeWidth={1.75} className="shrink-0" />
@@ -558,7 +557,7 @@ function MessageMedia({
           <img
             src={fileUrl(sessionId, a.id)}
             alt={a.name}
-            className={`block w-full rounded-[16px] bg-black/[0.06] ${
+            className={`block w-full rounded-2xl bg-black/6 ${
               single
                 ? "max-h-[360px] object-contain"
                 : "aspect-square object-cover"
@@ -662,7 +661,7 @@ function MessageActions({
 
   return (
     <div
-      className={`text-faint flex items-center gap-1 px-1 text-[12px] leading-[1.33] ${
+      className={`text-faint flex items-center gap-1 px-1 text-xs leading-[1.33] ${
         isUser ? "justify-end" : "justify-start"
       }`}
     >
@@ -824,7 +823,7 @@ function Bubble({
 
       {hasBubble && (
         <div
-          className={`max-w-full overflow-hidden rounded-[24px] text-[16px] leading-[1.38] md:max-w-2xl ${
+          className={`max-w-full overflow-hidden rounded-3xl text-base leading-[1.38] md:max-w-2xl ${
             isUser
               ? "bg-ink text-on-primary"
               : "bg-canvas border-hairline-soft text-ink border"
@@ -845,7 +844,7 @@ function Bubble({
                 <>
                   {quote.length > 0 && (
                     <div
-                      className={`mb-3 border-l-2 border-current/30 pl-3 text-[14px] leading-[1.35] whitespace-pre-wrap opacity-70 ${
+                      className={`mb-3 border-l-2 border-current/30 pl-3 text-sm leading-[1.35] whitespace-pre-wrap opacity-70 ${
                         text.length === 0 ? "mb-0" : ""
                       }`}
                     >
@@ -862,7 +861,7 @@ function Bubble({
                     step.kind === "tools" ? (
                       <div
                         key={`tools-${i}`}
-                        className="text-faint space-y-1 text-[12px] leading-[1.33]"
+                        className="text-faint space-y-1 text-xs leading-[1.33]"
                       >
                         {step.tools.map((t, j) => (
                           <ToolLine key={t.id ?? j} tool={t.data} />
@@ -1531,13 +1530,13 @@ export function Chat({
         {hasOlder && (
           <div
             ref={olderSentinel}
-            className="text-faint py-2 text-center text-[12px] leading-[1.33]"
+            className="text-faint py-2 text-center text-xs leading-[1.33]"
           >
             {loadingOlder ? "Loading earlier messages…" : ""}
           </div>
         )}
         {messages.length === 0 && (
-          <p className="text-muted mx-auto max-w-md text-center text-[20px] font-light leading-[1.38]">
+          <p className="text-muted mx-auto max-w-md text-center text-xl font-light leading-[1.38]">
             Session Connected. Send a message.
           </p>
         )}
@@ -1572,7 +1571,7 @@ export function Chat({
         {/* The reply has been asked for but the assistant message has not arrived yet. */}
         {streaming && messages[messages.length - 1]?.role === "user" && (
           <div className="flex justify-start">
-            <div className="bg-canvas border-hairline-soft rounded-[24px] border px-6 py-5">
+            <div className="bg-canvas border-hairline-soft rounded-3xl border px-6 py-5">
               <Thinking />
             </div>
           </div>
@@ -1582,8 +1581,8 @@ export function Chat({
       </div>
 
       {continueAt ? (
-        <div className="bg-gradient-to-t from-[#229ED9]/18 to-transparent px-5 py-6 text-center md:px-8 md:py-7">
-          <p className="text-muted text-[14px] leading-[1.43]">
+        <div className="bg-linear-to-t from-[#229ED9]/18 to-transparent px-5 py-6 text-center md:px-8 md:py-7">
+          <p className="text-muted text-sm leading-[1.43]">
             Continue this conversation in{" "}
             <a
               href={continueAt.href}
@@ -1620,7 +1619,7 @@ export function Chat({
                       <img
                         src={g.preview}
                         alt={g.name}
-                        className="border-hairline-soft h-16 w-16 animate-pulse rounded-[12px] border object-cover"
+                        className="border-hairline-soft h-16 w-16 animate-pulse rounded-xl border object-cover"
                       />
                       <button
                         type="button"
@@ -1634,7 +1633,7 @@ export function Chat({
                   ) : (
                     <span
                       key={g.key}
-                      className="bg-field text-muted flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-[12px] leading-[1.33]"
+                      className="bg-field text-muted flex items-center gap-2 rounded-full py-1.5 pr-2 pl-3 text-xs leading-[1.33]"
                     >
                       {/* The label pulses, not the chip: the cancel button must stay solid. */}
                       <FileText
@@ -1658,7 +1657,7 @@ export function Chat({
                 )}
               </div>
               {uploadError && (
-                <p className="text-muted text-[12px]">{uploadError}</p>
+                <p className="text-muted text-xs">{uploadError}</p>
               )}
             </div>
           )}
@@ -1707,9 +1706,9 @@ export function Chat({
             )}
 
             {recording ? (
-              <div className="bg-field flex h-12 min-w-0 flex-1 items-center gap-3 rounded-[16px] px-4">
+              <div className="bg-field flex h-12 min-w-0 flex-1 items-center gap-3 rounded-2xl px-4">
                 <span className="bg-ink h-2.5 w-2.5 shrink-0 animate-pulse rounded-full" />
-                <span className="text-ink tnum text-[16px]">
+                <span className="text-ink tnum text-base">
                   {clock(recordedFor ?? 0)}
                 </span>
                 <span className="text-faint flex-1 text-[13px]">
@@ -1730,7 +1729,7 @@ export function Chat({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder={uploading ? "Uploading…" : "Message the agent…"}
-                className="bg-field placeholder:text-faint text-ink focus:ring-ink h-12 min-w-0 flex-1 rounded-[16px] px-4 text-[16px] outline-none focus:ring-2"
+                className="bg-field placeholder:text-faint text-ink focus:ring-ink h-12 min-w-0 flex-1 rounded-2xl px-4 text-base outline-none focus:ring-2"
               />
             )}
             {recording ? (
@@ -1750,7 +1749,7 @@ export function Chat({
                   stop();
                   onTurnEnd();
                 }}
-                className="border-hairline text-ink hover:bg-canvas-soft h-12 shrink-0 rounded-full border px-6 text-[16px] font-semibold transition"
+                className="border-hairline text-ink hover:bg-canvas-soft h-12 shrink-0 rounded-full border px-6 text-base font-semibold transition"
               >
                 Stop
               </button>
@@ -1762,7 +1761,7 @@ export function Chat({
                   ghosts.length > 0 ||
                   (!input.trim() && attachments.length === 0)
                 }
-                className="bg-ink text-on-primary h-12 min-w-12 shrink-0 rounded-full text-[16px] font-semibold transition hover:opacity-85 disabled:opacity-30"
+                className="bg-ink text-on-primary h-12 min-w-12 shrink-0 rounded-full text-base font-semibold transition hover:opacity-85 disabled:opacity-30"
               >
                 <span className="hidden md:block px-6">Send</span>
                 <span className="md:hidden w-12 -ml-0.5 flex items-center justify-center">

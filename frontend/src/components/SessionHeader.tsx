@@ -16,12 +16,12 @@ function Stat({
 }) {
   return (
     <div className="min-w-0 text-right">
-      <div className="text-faint text-[12px] leading-[1.33]">{label}</div>
-      <div className="text-ink tnum text-[20px] font-[650] leading-[1.3]">
+      <div className="text-faint text-xs leading-[1.33]">{label}</div>
+      <div className="text-ink tnum text-xl font-[650] leading-[1.3]">
         {value}
       </div>
       {hint && (
-        <div className="text-muted tnum text-[12px] leading-[1.33]">{hint}</div>
+        <div className="text-muted tnum text-xs leading-[1.33]">{hint}</div>
       )}
     </div>
   );
@@ -55,10 +55,13 @@ export function SessionHeader({
   const input = useRef<HTMLInputElement>(null);
 
   // A rename elsewhere — or switching sessions — wins over an abandoned edit.
-  useEffect(() => {
+  // Adjust during render instead of an effect, tracking the last title seen.
+  const [prevTitle, setPrevTitle] = useState(title);
+  if (title !== prevTitle) {
+    setPrevTitle(title);
     setEditing(false);
     setValue(title);
-  }, [title]);
+  }
 
   useEffect(() => {
     if (editing) input.current?.select();
@@ -101,7 +104,7 @@ export function SessionHeader({
                 }}
                 onBlur={() => void commit()}
                 aria-label="Session title"
-                className="mr-2 bg-field text-ink focus:ring-ink min-w-0 max-w-64 flex-1 rounded-[12px] px-3 py-1 text-xl font-[650] leading-tight outline-none focus:ring-2 md:text-xl"
+                className="mr-2 bg-field text-ink focus:ring-ink min-w-0 max-w-64 flex-1 rounded-xl px-3 py-1 text-xl font-[650] leading-tight outline-none focus:ring-2 md:text-xl"
               />
               {/* Pressed before blur can fire, so the click still counts. */}
               <button
@@ -142,7 +145,7 @@ export function SessionHeader({
               </button>
             </div>
           )}
-          <div className="text-muted truncate text-[14px] font-light leading-[1.43]">
+          <div className="text-muted truncate text-sm font-light leading-[1.43]">
             {formatDate(createdAt)}
           </div>
         </div>

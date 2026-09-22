@@ -26,14 +26,14 @@ export function Welcome({
         <h1 className="text-[28px] font-[650] leading-[1.2] md:text-[32px]">
           Hi. I&rsquo;m {agentName || "your agent"}.
         </h1>
-        <p className="text-muted mt-2 text-[16px] font-light leading-[1.5]">
+        <p className="text-muted mt-2 text-base font-light leading-normal">
           Your agent in the cloud. Ask a question, hand me a file, or set
           something to run later. Every chat keeps its own memory.
         </p>
 
         <button
           onClick={onCreate}
-          className="bg-ink text-on-primary mt-7 flex h-12 w-full items-center justify-center gap-2 rounded-full text-[16px] font-semibold transition hover:opacity-85"
+          className="bg-ink text-on-primary mt-7 flex h-12 w-full items-center justify-center gap-2 rounded-full text-base font-semibold transition hover:opacity-85"
         >
           <MessageCircle size={18} strokeWidth={1.75} />
           Start a chat
@@ -42,10 +42,10 @@ export function Welcome({
         <div className="border-hairline-soft mt-8 border-t pt-6">
           {botUsername ? (
             <>
-              <p className="text-[14px] font-semibold leading-[1.43]">
+              <p className="text-sm font-semibold leading-[1.43]">
                 Or find me on Telegram
               </p>
-              <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
+              <p className="text-muted mt-1 text-sm font-light leading-[1.43]">
                 Message @{botUsername}, or add me to a group. Every chat shows up
                 here too.
               </p>
@@ -53,7 +53,7 @@ export function Welcome({
                 href={`https://t.me/${botUsername}`}
                 target="_blank"
                 rel="noreferrer"
-                className="border-hairline text-ink hover:bg-canvas-soft mt-4 inline-flex h-11 items-center gap-2 rounded-full border px-5 text-[14px] font-semibold transition"
+                className="border-hairline text-ink hover:bg-canvas-soft mt-4 inline-flex h-11 items-center gap-2 rounded-full border px-5 text-sm font-semibold transition"
               >
                 <Send size={16} strokeWidth={1.75} />
                 Open Telegram
@@ -61,16 +61,16 @@ export function Welcome({
             </>
           ) : (
             <>
-              <p className="text-[14px] font-semibold leading-[1.43]">
+              <p className="text-sm font-semibold leading-[1.43]">
                 Prefer Telegram?
               </p>
-              <p className="text-muted mt-1 text-[14px] font-light leading-[1.43]">
+              <p className="text-muted mt-1 text-sm font-light leading-[1.43]">
                 Connect your bot and you can chat with me from your phone, or from
                 any group you add me to.
               </p>
               <Link
                 href={`/a/${encodeURIComponent(agentId)}/settings`}
-                className="border-hairline text-ink hover:bg-canvas-soft mt-4 inline-flex h-11 items-center gap-2 rounded-full border px-5 text-[14px] font-semibold transition"
+                className="border-hairline text-ink hover:bg-canvas-soft mt-4 inline-flex h-11 items-center gap-2 rounded-full border px-5 text-sm font-semibold transition"
               >
                 <Send size={16} strokeWidth={1.75} />
                 Connect Telegram
