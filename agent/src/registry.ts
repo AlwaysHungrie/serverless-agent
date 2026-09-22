@@ -844,6 +844,15 @@ export class SessionRegistry extends DurableObject {
    * rows when that happens. `id` breaks ties between sessions touched in the same
    * millisecond, and is what makes the cursor a total order.
    */
+  /** How many sessions this agent has. Admin stats only — the hot path pages instead. */
+  sessionCount(): number {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM sessions`).toArray()[0] as
+      | { n: number }
+      | undefined;
+    return row?.n ?? 0;
+  }
+
   list(limit = SESSION_PAGE, cursor = ""): SessionPage {
     this.ensureSchema();
     const size = Math.max(1, Math.min(limit, MAX_PAGE));
@@ -1092,6 +1101,15 @@ export type AgentRow = {
  */
 export const MAX_MEMBERS = 200;
 
+/**
+ * How many agents an ordinary account may administer — itself included.
+ *
+ * Everyone starts here. `account_limits` only ever holds the accounts this default
+ * does not apply to, so raising a business account's ceiling is one row, not a
+ * migration of everyone else's.
+ */
+export const DEFAULT_AGENT_LIMIT = 1;
+
 /** How stale an agent's "last used" date may get before `touch` writes again. */
 const TOUCH_INTERVAL = 5 * 60 * 1000;
 
@@ -1204,6 +1222,17 @@ export class AgentDirectory extends DurableObject {
     );
     this.ctx.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_agents_admin_email ON agents(admin_email)`
+    );
+
+    // Absence is the ordinary case: an account with no row here administers at most
+    // `DEFAULT_AGENT_LIMIT` agent. A row is only ever written by the owner's own
+    // admin route, so this table's whole contents are the deployment's business
+    // accounts.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS account_limits (
+         email TEXT PRIMARY KEY,
+         agent_limit INTEGER NOT NULL
+       )`
     );
 
     this.migrate();
@@ -1424,6 +1453,75 @@ export class AgentDirectory extends DurableObject {
     if (!row) return;
     if (now - row.updated_at < TOUCH_INTERVAL) return;
     this.ctx.storage.sql.exec(`UPDATE agents SET updated_at = ? WHERE id = ?`, now, id);
+  }
+
+  /** How many agents `email` may administer — itself included. `DEFAULT_AGENT_LIMIT` unless the owner has raised it. */
+  getAgentLimit(email: string): number {
+    this.ensureSchema();
+    const wanted = email.trim().toLowerCase();
+    const row = this.ctx.storage.sql
+      .exec(`SELECT agent_limit FROM account_limits WHERE email = ? LIMIT 1`, wanted)
+      .toArray()[0] as { agent_limit: number } | undefined;
+    return row?.agent_limit ?? DEFAULT_AGENT_LIMIT;
+  }
+
+  /**
+   * Set how many agents `email` may administer. This is what "business account" is:
+   * there is no separate flag, only a raised ceiling — a row here at all is the mark
+   * of one. Only ever called from the owner's own admin route.
+   */
+  setAgentLimit(email: string, limit: number) {
+    this.ensureSchema();
+    const wanted = email.trim().toLowerCase();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO account_limits (email, agent_limit) VALUES (?, ?)
+       ON CONFLICT(email) DO UPDATE SET agent_limit = excluded.agent_limit`,
+      wanted,
+      limit
+    );
+  }
+
+  /** How many agents `email` currently administers — the count `getAgentLimit` bounds. */
+  countByAdmin(email: string): number {
+    this.ensureSchema();
+    const wanted = email.trim().toLowerCase();
+    const row = this.ctx.storage.sql
+      .exec(`SELECT COUNT(*) AS n FROM agents WHERE admin_email = ?`, wanted)
+      .toArray()[0] as { n: number } | undefined;
+    return row?.n ?? 0;
+  }
+
+  /** Every address that administers or may open at least one agent. Admin stats only. */
+  distinctUsers(): number {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql
+      .exec(
+        `SELECT COUNT(*) AS n FROM (
+           SELECT admin_email AS email FROM agents WHERE admin_email != ''
+           UNION
+           SELECT email FROM agent_members
+         )`
+      )
+      .toArray()[0] as { n: number } | undefined;
+    return row?.n ?? 0;
+  }
+
+  /** How many accounts have a raised agent limit — the deployment's business accounts. */
+  businessAccounts(): number {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql
+      .exec(`SELECT COUNT(*) AS n FROM account_limits`)
+      .toArray()[0] as { n: number } | undefined;
+    return row?.n ?? 0;
+  }
+
+  /** Every agent's admin's raised limit, keyed by email — for the stats route to join against `list()`. */
+  agentLimits(): Record<string, number> {
+    this.ensureSchema();
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT email, agent_limit FROM account_limits`)
+      .toArray() as unknown as { email: string; agent_limit: number }[];
+    return Object.fromEntries(rows.map((r) => [r.email, r.agent_limit]));
   }
 
   remove(id: string) {

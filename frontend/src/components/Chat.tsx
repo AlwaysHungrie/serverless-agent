@@ -1365,7 +1365,10 @@ export function Chat({
     setUploading(false);
     // Cancels are the only way the Worker ends up holding something the strip does
     // not, so the reconcile is paid for only when one happened.
-    if (aborted) await reconcilePending(accepted);
+    if (aborted) {
+      strayPossible.current = true;
+      await reconcilePending(accepted);
+    }
   };
 
   /** Held for as long as a send is in flight, so a second Return finds the door shut. */
@@ -1376,6 +1379,14 @@ export function Chat({
 
   /** Uploads dropped by the user before the Worker answered. */
   const cancelled = useRef(new Set<string>());
+
+  /**
+   * Set only when a cancel raced a landed upload, so the Worker might be holding a
+   * file the strip does not know about. Reconciling is a network round trip, and
+   * paying it on every send — including plain text with no uploads ever attempted —
+   * is what made the composer feel laggy.
+   */
+  const strayPossible = useRef(false);
 
   /** The request behind each upload in flight, so cancelling can stop it. */
   const controllers = useRef(new Map<string, AbortController>());
@@ -1402,6 +1413,7 @@ export function Chat({
       const payload = (await res.json()) as { attachments?: Attachment[] };
       const keep = new Set([...kept.current, ...accepted]);
       const stray = (payload.attachments ?? []).filter((a) => !keep.has(a.id));
+      strayPossible.current = false;
       await Promise.all(
         stray.map((a) =>
           apiFetch(
@@ -1503,8 +1515,12 @@ export function Chat({
     try {
       // The turn carries every file the session is holding for it, not the ones drawn
       // here, so anything the strip has let go of has to be gone before the message
-      // leaves — otherwise a cancelled upload arrives with it.
-      await reconcilePending(files.map((a) => a.id));
+      // leaves — otherwise a cancelled upload arrives with it. Skipped when no cancel
+      // has ever raced a landed upload in this composer: there is nothing to reconcile,
+      // and the round trip was the visible delay before every send.
+      if (strayPossible.current) {
+        await reconcilePending(files.map((a) => a.id));
+      }
       // The attachments ride along as a data part purely so the sent bubble can draw
       // them at once; the Worker already has them, and takes them from its own table.
       sendMessage({

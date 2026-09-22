@@ -218,7 +218,10 @@ export default function AgentPage({
     );
     const row = await readJson<SessionRow>(res);
     if (!row) return;
-    await loadSessions();
+    // The row the Worker just created is the whole story for the list's new top
+    // entry — reloading the page to get it back is a second round trip for
+    // nothing the response didn't already say.
+    setSessions((current) => [row, ...current]);
     setSelected(row.id);
   };
 

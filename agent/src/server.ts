@@ -22,6 +22,7 @@ import {
   SESSION_PAGE,
   type AgentRow,
   DEFAULT_META,
+  DEFAULT_AGENT_LIMIT,
   type Config,
   type McpCatalogEntry,
   type MetaCapability,
@@ -1337,6 +1338,22 @@ async function handleAgents(
       const newId = AGENT_ID();
       const admin = (await callerEmail(request, env)) || (splitEmails(allowed)[0] ?? "");
 
+      // How many agents this account may administer — itself included, and every one
+      // it sponsors for somebody else. `DEFAULT_AGENT_LIMIT` for everybody except the
+      // business accounts the owner has raised through `/api/admin/business-account`.
+      const limit = await dir.getAgentLimit(admin);
+      const owned = await dir.countByAdmin(admin);
+      if (owned >= limit) {
+        return withCors(
+          Response.json(
+            {
+              error: `this account may administer at most ${limit} agent${limit === 1 ? "" : "s"}`,
+            },
+            { status: 403 }
+          )
+        );
+      }
+
       // The agent's own object first, the index second. The access list is only ever
       // decided by the registry, so writing it there is what brings the agent into
       // existence as far as every gate is concerned; the directory row is what makes
@@ -1931,6 +1948,68 @@ export default {
       return await handleOauthCallback(url, env);
     }
 
+    // The owner's own switch: raise an account's agent ceiling, which is what makes
+    // it a business account — there is no separate flag, only a higher number. Gated
+    // on `API_SECRET` alone, matched before the identity gate below, because the
+    // deployment's owner is the one caller here with no Clerk session of their own.
+    if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "business-account") {
+      if (!trustedCaller(request, env)) {
+        return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
+      }
+      if (request.method !== "POST") {
+        return withCors(Response.json({ error: "method not allowed" }, { status: 405 }));
+      }
+      const body = (await request.json().catch(() => ({}))) as {
+        email?: string;
+        agent_limit?: number;
+      };
+      const email = (body.email ?? "").trim().toLowerCase();
+      const limit = Number(body.agent_limit);
+      if (!email || !Number.isInteger(limit) || limit < 1) {
+        return withCors(
+          Response.json(
+            { error: "email and a positive integer agent_limit are required" },
+            { status: 400 }
+          )
+        );
+      }
+      await directory(env).setAgentLimit(email, limit);
+      return withCors(Response.json({ email, agent_limit: limit }));
+    }
+
+    // The owner's own dashboard feed: deployment-wide counts plus a row per agent.
+    // Same gate as the business-account route, and for the same reason — this is
+    // usage data across every account, not any one caller's own.
+    if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "stats") {
+      if (!trustedCaller(request, env)) {
+        return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
+      }
+      const dir = directory(env);
+      const agents = await dir.list();
+      const limits = await dir.agentLimits();
+      const per_agent = await Promise.all(
+        agents.map(async (a) => ({
+          id: a.id,
+          name: a.name,
+          admin_email: a.admin_email,
+          members: splitEmails(a.allowed_emails).length,
+          sessions: await registry(env, a.id).sessionCount(),
+          agent_limit: limits[a.admin_email] ?? DEFAULT_AGENT_LIMIT,
+          created_at: a.created_at,
+          updated_at: a.updated_at,
+        }))
+      );
+      return withCors(
+        Response.json({
+          agents: agents.length,
+          users: await dir.distinctUsers(),
+          business_accounts: await dir.businessAccounts(),
+          sessions: per_agent.reduce((sum, a) => sum + a.sessions, 0),
+          per_agent,
+        })
+      );
+    }
+
     // Everything past this point has to be somebody. Not "came from the app" — that
     // was the old gate, and a shared secret is a poor answer to a question about
     // identity — but an address this Worker is willing to stand behind: one out of a
@@ -2027,6 +2106,7 @@ export default {
             tasks: "GET /agents/session-agent/:sessionId/tasks, DELETE .../tasks/:taskId",
             metrics: "GET /agents/session-agent/:sessionId/metrics",
             telegram: "POST /telegram/webhook/:agentId",
+            admin: "POST /api/admin/business-account { email, agent_limit }, GET /api/admin/stats  -> owner only, via API_SECRET",
           },
           note: "A session id is `<agentId>~<local>`; every /agents/session-agent route takes that whole id.",
         })

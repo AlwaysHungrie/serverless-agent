@@ -1,0 +1,10 @@
+{
+  "name": "admin-cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CLI dashboard for the salt-agent deployment: agents, users, sessions.",
+  "scripts": {
+    "start": "node index.mjs"
+  }
+}
