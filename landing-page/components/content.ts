@@ -68,10 +68,11 @@ export const LINKS = {
   signIn: null as string | null,
   signUp: null as string | null,
   contact: null as string | null,
-  privacy: null as string | null,
-  terms: null as string | null,
+  privacy: "/privacy",
+  terms: "/terms",
   botFather: "https://t.me/BotFather",
   openRouter: "https://openrouter.ai/settings/keys",
+  docs: "/docs",
 } as const;
 
 /* ----------------------------------------------------------------- Copy -- */
@@ -312,7 +313,7 @@ export const FOOTER = {
     {
       title: "Resources",
       links: [
-        { href: "#mission", label: "The plan" },
+        { href: LINKS.docs, label: "Docs" },
         { href: LINKS.botFather, label: "Get a Telegram token" },
         { href: "#faq", label: "FAQ" },
       ],

@@ -1,3 +1,5 @@
+import { ApiKeysPreview } from "./ApiKeysPreview";
+import { TelegramSettingsPreview } from "./TelegramSettingsPreview";
 import { AppPreview } from "./AppPreview";
 import {
   CAPABILITIES as CAPABILITIES_COPY,
@@ -17,6 +19,7 @@ import { Globe } from "./Globe";
 import { SignupCard } from "./SignupCard";
 import { CountUp, HeroSquircles, Reveal } from "./motion";
 import { Button, Eyebrow, Placeholder, Wrap } from "./ui";
+import type { ReactNode } from "react";
 
 /*
  * Every string on this page comes from ./content.ts. These components only
@@ -202,6 +205,7 @@ function Split({
   body,
   bullets,
   label,
+  visual,
   reverse = false,
 }: {
   eyebrow: string;
@@ -209,6 +213,8 @@ function Split({
   body: string;
   bullets: readonly string[];
   label: string;
+  /** A drawn stand-in, where there is one; otherwise the labelled slot. */
+  visual?: ReactNode;
   reverse?: boolean;
 }) {
   return (
@@ -231,7 +237,7 @@ function Split({
         </ul>
       </Reveal>
       <Reveal delay={0.08}>
-        <Placeholder frame label={label} />
+        {visual ?? <Placeholder frame label={label} />}
       </Reveal>
     </div>
   );
@@ -250,6 +256,7 @@ export function Costs() {
           body={PRICING.body}
           bullets={PRICING.bullets}
           label={PRICING.placeholder}
+          visual={<ApiKeysPreview />}
         />
       </Wrap>
       <Wrap>
@@ -260,6 +267,7 @@ export function Costs() {
           body={OWNERSHIP.body}
           bullets={OWNERSHIP.bullets}
           label={OWNERSHIP.placeholder}
+          visual={<TelegramSettingsPreview />}
         />
       </Wrap>
     </section>

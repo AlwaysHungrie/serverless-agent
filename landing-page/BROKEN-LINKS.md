@@ -12,8 +12,6 @@ plain text. **To fix one, set its value in `LINKS` — nothing else changes.**
 | `signIn` | Header nav (desktop) and mobile menu | `href="#"` | Unbuilt — no sign-in page exists yet |
 | `signUp` | Signup card, step 3 `Create my agent` | `href="#"` | Unbuilt — renders as a button that goes nowhere until set. Hero/header `Get my agent` still scrolls to `#start` |
 | `contact` | Footer → Company | `href="#"` | Unbuilt |
-| `privacy` | Footer → Company | `href="#"` | Unbuilt |
-| `terms` | Footer → Company | `href="#"` | Unbuilt |
 
 ## Links that do work
 
@@ -22,6 +20,8 @@ plain text. **To fix one, set its value in `LINKS` — nothing else changes.**
 | `https://t.me/BotFather` | Footer → Resources, signup card step 2 | External, opens in a new tab |
 | `https://openrouter.ai/settings/keys` | Signup card, step 1 | External, opens in a new tab |
 | `#skills` `#how` `#costs` `#faq` `#mission` `#start` `#top` | Header, hero, footer | All resolve to a section that exists |
+| `/privacy` `/terms` | Footer → Company | Built — `app/privacy` and `app/terms`, copy in `components/legal.ts` |
+| `/docs` | Footer → Resources | Built — `app/docs`, articles in `content/docs/*.md`, rendered by `lib/markdown.tsx` |
 
 ## Also renamed
 
