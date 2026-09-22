@@ -21,7 +21,7 @@ const KEY = /^sk-or-v1-[A-Za-z0-9_-]{20,}$/;
 const TOKEN = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
 
 export function SignupCard() {
-  const [step, setStep] = useState(2);
+  const [step, setStep] = useState(0);
   const [key, setKey] = useState("");
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
