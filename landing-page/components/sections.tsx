@@ -1,3 +1,4 @@
+import { AppPreview } from "./AppPreview";
 import { Globe } from "./Globe";
 import { CountUp, HeroSquircles, Reveal } from "./motion";
 import { TelegramSignup } from "./TelegramSignup";
@@ -7,7 +8,7 @@ import { Button, Eyebrow, Placeholder, Wrap } from "./ui";
 
 export function Hero() {
   return (
-    <section className="relative overflow-hidden pt-36 sm:pt-44">
+    <section className="relative overflow-hidden pt-36 pb-10 sm:pt-44">
       {/* A single faint wash behind the headline; no gradients elsewhere. */}
       <div
         aria-hidden
@@ -33,11 +34,11 @@ export function Hero() {
         <Reveal delay={0.1}>
           <p className="mx-auto mt-6 max-w-[680px] text-xl font-light leading-[1.4] text-muted text-balance">
             Create an agent that never sleeps and runs{" "}
-            <span className="font-medium">free, forever.</span> Use its built-in
-            capabilities or connect it to any external websites or tools you
-            already use, like Gmail or X. Let your agent manage your day, your
-            inbox, your relationships, your spreadsheets, your business &mdash;
-            via web or telegram.
+            <span className="font-medium">free, forever.</span> Chat via web or
+            telegram, use built-in capabilities or connect it to any external
+            websites or tools you use. Manage your day, your inbox, your
+            relationships, your spreadsheets, your business &mdash; it's your
+            agent.
           </p>
           <p className="mx-auto mt-6 max-w-[620px] text-xl font-light leading-[1.4] text-muted text-balance">
             Bring your own API key and run any model that works for you.
@@ -57,11 +58,7 @@ export function Hero() {
         </Reveal>
 
         <Reveal delay={0.2}>
-          <Placeholder
-            frame
-            label="Placeholder — a Telegram chat with your agent answering"
-            className="mt-14 text-left"
-          />
+          <AppPreview className="mt-32" />
         </Reveal>
       </Wrap>
     </section>
@@ -77,9 +74,7 @@ export function Mission() {
         <Reveal>
           <div className="relative overflow-hidden rounded-[32px] bg-ink px-6 py-16 text-center text-white sm:px-12 sm:py-20">
             {/* Cropped by the card edge, so it reads as a world still turning. */}
-            <Globe
-              className="pointer-events-none absolute right-0 top-1/2 hidden h-[520px] w-[520px] -translate-y-1/2 translate-x-[45%] lg:block"
-            />
+            <Globe className="pointer-events-none absolute right-0 top-1/2 hidden h-[520px] w-[520px] -translate-y-1/2 translate-x-[45%] lg:block" />
             <div className="relative">
               <p className="text-xs font-semibold uppercase tracking-[0.08em] text-faint">
                 The plan

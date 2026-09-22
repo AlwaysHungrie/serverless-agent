@@ -63,10 +63,10 @@ export function RevealGroup({
 
 /** How much further the squircles hold on screen once the hero has passed,
  *  in viewport heights of scroll. Raise it to keep them around longer. */
-const HOLD_VH = 1;
+const HOLD_VH = 0.1;
 
 /** How much scroll the exit itself takes, in viewport heights. */
-const EXIT_VH = 1;
+const EXIT_VH = 0.3;
 
 const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
 
@@ -134,7 +134,7 @@ export function HeroSquircles() {
     <motion.div
       aria-hidden
       style={{ y: exitY, opacity: exitOpacity }}
-      className="pointer-events-none fixed inset-0 z-[60] hidden lg:block"
+      className="pointer-events-none fixed inset-0 z-10 hidden lg:block"
     >
       {SQUIRCLES.map((s) => (
         <Squircle key={s.className} {...s} />
