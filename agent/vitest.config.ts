@@ -21,7 +21,13 @@ export default defineConfig({
     // Turn tests drive the real AI SDK client, which retries a 5xx with exponential
     // backoff before giving up. The default 5s expires mid-backoff and reports a
     // timeout rather than the refusal the test is actually about.
-    testTimeout: 30_000,
+    //
+    // Set well above what a turn needs, not close to it. This suite is the deploy
+    // gate, and a gate that fails intermittently under load teaches people to re-run
+    // it until it passes — which is the same as not having one. A slow test costs
+    // seconds; a flaky one costs the gate its authority.
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
   },
   plugins: [
     cloudflareTest({
