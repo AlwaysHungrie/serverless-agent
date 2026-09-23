@@ -1,6 +1,7 @@
 # Project Rules
 
-- No tests unless explicitly required.
+- Tests are expected. `agent/` runs vitest on `@cloudflare/vitest-pool-workers`;
+  new behaviour lands with tests, and `npm run deploy` refuses on a red suite.
 - No unrequested thinking/analysis. Answer what is asked.
 - No extra features or content beyond the ask.
 - Do not use Playwright.

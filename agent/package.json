@@ -4,7 +4,14 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "node scripts/preflight.mjs && wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "deploy": "npm run typecheck && npm test && node scripts/preflight.mjs && wrangler deploy",
+    "deploy:staging": "npm run typecheck && npm test && node scripts/preflight.mjs --env staging && wrangler deploy --env staging",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:staging": "node scripts/smoke.mjs --url https://salt-agent-staging.dhairyashah98.workers.dev",
+    "rollback": "wrangler rollback",
     "types": "wrangler types",
     "chat": "node scripts/chat.mjs"
   },
@@ -18,8 +25,10 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^5.20260908.1",
     "typescript": "^5.9.2",
+    "vitest": "^4.1.11",
     "wrangler": "^4.42.0"
   }
 }

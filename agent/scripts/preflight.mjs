@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Refuse to deploy a Worker that would come up unguarded.
- *   node scripts/preflight.mjs
+ *   node scripts/preflight.mjs [--env <name>]
  *
  * Runs ahead of `wrangler deploy`, because the version that matters is the one that
  * is already live. The Worker itself also refuses to serve without `API_SECRET` — see
@@ -19,10 +19,20 @@ import { dirname, join } from "node:path";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
+/**
+ * Which deployment this is about. Secrets are per-environment on Cloudflare, so
+ * checking production's secrets before a staging deploy would be checking the wrong
+ * Worker — and would pass while staging came up with nothing set.
+ */
+const envIndex = process.argv.indexOf("--env");
+const targetEnv = envIndex === -1 ? null : process.argv[envIndex + 1];
+const envArgs = targetEnv ? ["--env", targetEnv] : [];
+const label = targetEnv ?? "production";
+
 /** Every secret name the deployed Worker has, according to Cloudflare. */
 function deployedSecrets() {
   try {
-    const out = execFileSync("npx", ["wrangler", "secret", "list"], {
+    const out = execFileSync("npx", ["wrangler", "secret", "list", ...envArgs], {
       cwd: root,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -46,11 +56,15 @@ function configuredVars() {
   const raw = readFileSync(join(root, "wrangler.jsonc"), "utf8")
     .replace(/^\s*\/\/.*$/gm, "")
     .replace(/\/\*[\s\S]*?\*\//g, "");
-  return JSON.parse(raw).vars ?? {};
+  const config = JSON.parse(raw);
+  // `vars` are not inherited by a named environment — Wrangler replaces the block
+  // rather than merging it — so an environment's own block is the whole truth about
+  // what it will come up holding.
+  return (targetEnv ? config.env?.[targetEnv]?.vars : config.vars) ?? {};
 }
 
 const fail = (lines) => {
-  console.error(`\n  Refusing to deploy.\n\n${lines.map((l) => `  ${l}`).join("\n")}\n`);
+  console.error(`\n  Refusing to deploy to ${label}.\n\n${lines.map((l) => `  ${l}`).join("\n")}\n`);
   process.exit(1);
 };
 
@@ -60,10 +74,11 @@ if (secrets === null) {
     "Could not read the deployed Worker's secrets, so there is no way to tell",
     "whether API_SECRET is set on it.",
     "",
-    "Check `npx wrangler whoami`, then run `npx wrangler secret list` to see the",
-    "real error. If this Worker has never been deployed, set its secrets first:",
+    `Check \`npx wrangler whoami\`, then run \`npx wrangler secret list${targetEnv ? ` --env ${targetEnv}` : ""}\``,
+    "to see the real error. If this Worker has never been deployed, set its",
+    "secrets first:",
     "",
-    "    npx wrangler secret put API_SECRET",
+    `    npx wrangler secret put API_SECRET${targetEnv ? ` --env ${targetEnv}` : ""}`,
   ]);
 }
 
@@ -88,6 +103,6 @@ if (!vars.CLERK_ISSUER && !secrets.includes("CLERK_ISSUER")) {
 // on the way past, because a live back door is not something to ship unnoticed.
 console.log(
   secrets.includes("API_SECRET")
-    ? "  preflight ok — CLERK_ISSUER configured. API_SECRET is set: the impersonation\n  back door is live on this deployment."
-    : "  preflight ok — CLERK_ISSUER configured. No API_SECRET: no impersonation door."
+    ? `  preflight ok (${label}) — CLERK_ISSUER configured. API_SECRET is set: the\n  impersonation back door is live on this deployment.`
+    : `  preflight ok (${label}) — CLERK_ISSUER configured. No API_SECRET: no\n  impersonation door.`
 );

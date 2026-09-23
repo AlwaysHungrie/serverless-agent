@@ -15,6 +15,7 @@ import {
 } from "./capabilities";
 import { parseCommand, type Command } from "./commands";
 import type { McpServerRow } from "./mcp";
+import { applyMigrations, type Migration } from "./schema";
 import {
   DEFAULT_CONFIG,
   agentIdOf,
@@ -294,6 +295,73 @@ function safeName(name: string): string {
   return cleaned.slice(0, 100) || "file";
 }
 
+
+/**
+ * A session's own tables, in the order they were introduced.
+ *
+ * Step 0 is the baseline: the schema as it stood before this file had a ladder. It is
+ * written idempotently because every existing session already has these tables and
+ * will run it once anyway. Append below it; do not edit it.
+ */
+const SESSION_AGENT_MIGRATIONS: readonly Migration[] = [
+  {
+    name: "baseline",
+    up: (sql) => {
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS attachments (
+           id TEXT PRIMARY KEY,
+           kind TEXT NOT NULL,
+           name TEXT NOT NULL,
+           mime TEXT NOT NULL,
+           text TEXT NOT NULL DEFAULT '',
+           path TEXT NOT NULL DEFAULT '',
+           thumb_path TEXT NOT NULL DEFAULT '',
+           bytes INTEGER NOT NULL DEFAULT 0,
+           ts INTEGER NOT NULL,
+           used INTEGER NOT NULL DEFAULT 0
+         )`
+      );
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS message_files (
+           message_id TEXT NOT NULL,
+           attachment_id TEXT NOT NULL,
+           PRIMARY KEY (message_id, attachment_id)
+         )`
+      );
+      // What the user actually typed. The message Think stores also names the files the
+      // turn carried, and that annotation is for the model, not for the chat bubble.
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS message_text (
+           message_id TEXT PRIMARY KEY,
+           text TEXT NOT NULL
+         )`
+      );
+      // One row per assistant message: what the turn spent, which Think does not track.
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS usage (
+           message_id TEXT PRIMARY KEY,
+           prompt_tokens INTEGER NOT NULL DEFAULT 0,
+           completion_tokens INTEGER NOT NULL DEFAULT 0,
+           cost_usd REAL NOT NULL DEFAULT 0,
+           ms INTEGER NOT NULL DEFAULT 0,
+           ts INTEGER NOT NULL DEFAULT 0
+         )`
+      );
+      // What OpenRouter's file parser made of a PDF, so the same PDF is parsed once per
+      // session instead of once per turn. The parse output itself is a workspace file:
+      // it carries the document's text and a base64 image per page, which is far too
+      // large to want in a SQLite row.
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS file_cache (
+           attachment_id TEXT PRIMARY KEY,
+           path TEXT NOT NULL,
+           ts INTEGER NOT NULL
+         )`
+      );
+    },
+  },
+];
+
 export class SessionAgent extends Think<Env> {
   /**
    * Attachment bytes, and anything the model writes, live in one workspace, with R2
@@ -457,60 +525,14 @@ export class SessionAgent extends Think<Env> {
   /**
    * Think owns the transcript, so these tables hold only what it has no opinion
    * about: what an attachment is, which message carried it, and what a turn cost.
+   *
+   * The ladder is in `SESSION_AGENT_MIGRATIONS`; see schema.ts for why it is a ladder
+   * and not a list of tolerated failures. Every session object runs it lazily, so a
+   * new step reaches a session the first time that session is touched after deploy.
    */
   private ensureSchema() {
     if (this.schemaReady) return;
-    this.exec(
-      `CREATE TABLE IF NOT EXISTS attachments (
-         id TEXT PRIMARY KEY,
-         kind TEXT NOT NULL,
-         name TEXT NOT NULL,
-         mime TEXT NOT NULL,
-         text TEXT NOT NULL DEFAULT '',
-         path TEXT NOT NULL DEFAULT '',
-         thumb_path TEXT NOT NULL DEFAULT '',
-         bytes INTEGER NOT NULL DEFAULT 0,
-         ts INTEGER NOT NULL,
-         used INTEGER NOT NULL DEFAULT 0
-       )`
-    );
-    this.exec(
-      `CREATE TABLE IF NOT EXISTS message_files (
-         message_id TEXT NOT NULL,
-         attachment_id TEXT NOT NULL,
-         PRIMARY KEY (message_id, attachment_id)
-       )`
-    );
-    // What the user actually typed. The message Think stores also names the files the
-    // turn carried, and that annotation is for the model, not for the chat bubble.
-    this.exec(
-      `CREATE TABLE IF NOT EXISTS message_text (
-         message_id TEXT PRIMARY KEY,
-         text TEXT NOT NULL
-       )`
-    );
-    // One row per assistant message: what the turn spent, which Think does not track.
-    this.exec(
-      `CREATE TABLE IF NOT EXISTS usage (
-         message_id TEXT PRIMARY KEY,
-         prompt_tokens INTEGER NOT NULL DEFAULT 0,
-         completion_tokens INTEGER NOT NULL DEFAULT 0,
-         cost_usd REAL NOT NULL DEFAULT 0,
-         ms INTEGER NOT NULL DEFAULT 0,
-         ts INTEGER NOT NULL DEFAULT 0
-       )`
-    );
-    // What OpenRouter's file parser made of a PDF, so the same PDF is parsed once per
-    // session instead of once per turn. The parse output itself is a workspace file:
-    // it carries the document's text and a base64 image per page, which is far too
-    // large to want in a SQLite row.
-    this.exec(
-      `CREATE TABLE IF NOT EXISTS file_cache (
-         attachment_id TEXT PRIMARY KEY,
-         path TEXT NOT NULL,
-         ts INTEGER NOT NULL
-       )`
-    );
+    applyMigrations(this.ctx, SESSION_AGENT_MIGRATIONS);
     this.schemaReady = true;
   }
 

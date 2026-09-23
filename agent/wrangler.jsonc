@@ -21,6 +21,53 @@
   "r2_buckets": [
     { "binding": "FILES", "bucket_name": "salt-agent-files" }
   ],
+
+  // A second, entirely separate deployment to try a change on before it is the one
+  // answering. Not a flag on production: a different Worker name, which means its own
+  // Durable Object namespaces and therefore its own agents, sessions and SQLite. A
+  // migration that goes wrong there goes wrong on staging's data and nobody else's.
+  //
+  //     npm run deploy:staging && npm run smoke:staging
+  //
+  // The R2 bucket is separate for the same reason — `wrangler r2 bucket create
+  // salt-agent-files-staging` once, before the first staging deploy. Secrets are
+  // per-environment too, so `wrangler secret put API_SECRET --env staging` (and any
+  // other secret production holds) is also a one-time setup step.
+  //
+  // `vars` are not inherited by an environment, so CLERK_ISSUER, MODEL and MODELS are
+  // repeated here rather than referenced. Point CLERK_ISSUER at a separate Clerk
+  // instance if you have one; the same development instance is fine to start with.
+  "env": {
+    "staging": {
+      "name": "salt-agent-staging",
+      "observability": { "enabled": true },
+      "durable_objects": {
+        "bindings": [
+          { "name": "SessionAgent", "class_name": "SessionAgent" },
+          { "name": "SessionRegistry", "class_name": "SessionRegistry" },
+          { "name": "AgentDirectory", "class_name": "AgentDirectory" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["SessionAgent"] },
+        { "tag": "v2", "new_sqlite_classes": ["SessionRegistry"] },
+        { "tag": "v3", "new_sqlite_classes": ["AgentDirectory"] }
+      ],
+      "r2_buckets": [
+        { "binding": "FILES", "bucket_name": "salt-agent-files-staging" }
+      ],
+      "vars": {
+        "CLERK_ISSUER": "https://rich-horse-1284.clerk.accounts.dev",
+        "MODEL": "deepseek/deepseek-v4-flash",
+        "MODELS": [
+          { "id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash", "vision": false },
+          { "id": "anthropic/claude-haiku-4.5", "label": "Claude Haiku 4.5", "vision": true },
+          { "id": "openai/gpt-5-mini", "label": "GPT-5 Mini", "vision": true },
+          { "id": "google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "vision": true }
+        ]
+      }
+    }
+  },
   "vars": {
     // The Clerk instance whose session tokens this Worker verifies, as the exact `iss`
     // those tokens carry. Not a secret — it is a public URL, and the key set under it
