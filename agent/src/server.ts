@@ -16,6 +16,8 @@ import {
   emailAllowed,
   normalizeEmails,
   splitEmails,
+  AGENT_PAGE,
+  MAX_MEMBERS,
   sessionName,
   type AccessRow,
   MAX_PAGE,
@@ -365,7 +367,7 @@ async function checkOpenrouterKey(
       headers: { Authorization: `Bearer ${key}` },
     });
     if (res.status === 401 || res.status === 403) {
-      return { ok: false, error: "OpenRouter rejected that key." };
+      return { ok: false, error: "Key was rejected by OpenRouter" };
     }
     if (!res.ok) return { ok: false, error: `OpenRouter answered ${res.status}.` };
     const json = (await res.json()) as { data?: { label?: string } };
@@ -951,7 +953,29 @@ function validateMeta(
       servers: [],
       user_servers: DEFAULT_META.mcp.user_servers,
     },
+    monthly_spend_limit: DEFAULT_META.monthly_spend_limit,
+    member_limit: DEFAULT_META.member_limit,
   };
+
+  // Two ceilings, both "0 means none". A number that cannot be one is refused
+  // rather than rounded: a spend limit read as 0 by accident is no limit at all,
+  // which is the one way this can fail expensively.
+  if (body.monthly_spend_limit !== undefined) {
+    const usd = Number(body.monthly_spend_limit);
+    if (!Number.isFinite(usd) || usd < 0) {
+      throw new Error("monthly_spend_limit must be a positive number of dollars, or 0 for none");
+    }
+    // Rounded to the cent: the figure it is compared against is money.
+    meta.monthly_spend_limit = Math.round(usd * 100) / 100;
+  }
+
+  if (body.member_limit !== undefined) {
+    const members = Number(body.member_limit);
+    if (!Number.isInteger(members) || members < 0 || members > MAX_MEMBERS) {
+      throw new Error(`member_limit must be a whole number from 0 to ${MAX_MEMBERS}`);
+    }
+    meta.member_limit = members;
+  }
 
   if (body.models !== undefined) {
     if (!Array.isArray(body.models)) throw new Error("models must be an array");
@@ -1242,7 +1266,7 @@ async function deleteAgent(env: Env, origin: string, agentId: string): Promise<v
 
   // Deleting an agent has to reach every session it owns, not just the newest page,
   // so this walks the cursor to the end of the list.
-  for (let cursor = "", more = true; more; ) {
+  for (let cursor = "", more = true; more;) {
     const page = await reg.list(MAX_PAGE, cursor);
     cursor = page.cursor;
     more = page.has_more;
@@ -1261,6 +1285,219 @@ async function deleteAgent(env: Env, origin: string, agentId: string): Promise<v
   await reg.wipe();
 }
 
+/**
+ * Everything under `/api/fleets/:id`: the fleet's own settings, and adding agents
+ * to it. Undefined when the path is not one of these.
+ *
+ * A fleet has settings of its own because it is a thing somebody decided once and
+ * keeps deciding: what every agent in it should be. Its agents each hold their own
+ * copy — that is what makes them separate agents — and this is the document those
+ * copies are written from, at creation and at every apply after it.
+ */
+async function handleFleets(
+  request: Request,
+  env: Env,
+  url: URL,
+  segments: string[]
+): Promise<Response | undefined> {
+  const fleetId = segments[2];
+  if (!fleetId) return undefined;
+  const dir = directory(env);
+
+  // Only the address that administers the fleet. Its agents' users reach their own
+  // agent's pages and nothing here: the fleet is the administrator's instrument.
+  const email = await callerEmail(request, env);
+  const fleet = email ? (await dir.listFleets(email)).find((f) => f.fleet_id === fleetId) : undefined;
+  if (!fleet) return withCors(Response.json({ error: "not allowed" }, { status: 403 }));
+
+  /** The fleet's stored settings, or the factory document when it has none. */
+  const stored = (): Promise<MetaSettings> =>
+    dir.fleetMeta(fleetId).then((json) => {
+      if (!json) return DEFAULT_META;
+      try {
+        return { ...DEFAULT_META, ...(JSON.parse(json) as Partial<MetaSettings>) };
+      } catch {
+        return DEFAULT_META;
+      }
+    });
+
+  if (!segments[3]) {
+    if (request.method === "GET") {
+      return withCors(
+        Response.json({
+          fleet,
+          meta: redactMeta(await stored()),
+          // The catalogues the dialog picks from; it keeps no copy of its own.
+          models: modelCatalog(env),
+          capabilities: CAPABILITIES,
+        })
+      );
+    }
+
+    /**
+     * Save the fleet's settings and write them over its agents, a batch per call.
+     *
+     * This overwrites: every agent in the fleet has its meta document replaced and
+     * the defaults applied over its own settings, including settings its user chose.
+     * That is what a fleet setting is for — one decision that reaches all of them —
+     * and it is why the dialog behind this asks twice before sending it.
+     *
+     * Batched for the same reason deleting a fleet is: each agent is several round
+     * trips and a fleet can hold thousands. The document is stored on the first call
+     * only, so a run that stops halfway can be resumed from the cursor it returned
+     * without the settings changing underneath it.
+     */
+    if (request.method === "PATCH") {
+      const body = (await request.json().catch(() => ({}))) as Partial<MetaSettings> & {
+        /** Where the last batch stopped. Absent starts from the top and saves first. */
+        cursor?: string;
+        limit?: number;
+      };
+      const first = !body.cursor;
+      let meta: MetaSettings;
+      try {
+        meta = first
+          ? validateMeta(body, await stored(), { creation: true })
+          : await stored();
+      } catch (err) {
+        return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
+      }
+      if (first) await dir.setFleetMeta(fleetId, JSON.stringify(meta));
+
+      const size = Math.min(Math.max(1, Number(body.limit) || 10), 25);
+      const page = await dir.listFleetPage(fleetId, size, body.cursor ?? "");
+      for (const row of page.agents) {
+        const reg = registry(env, row.id);
+        await reg.setMeta(meta);
+        const applied = await applyMeta(reg, meta, env, url.origin, row.id);
+        // The bot's webhook follows its token: a fleet that was just given one has
+        // agents that are not yet listening on it.
+        await syncWebhook(applied.config, url.origin, row.id, env.TELEGRAM_API_BASE);
+      }
+
+      return withCors(
+        Response.json({
+          meta: redactMeta(meta),
+          applied: page.agents.length,
+          cursor: page.has_more ? page.cursor : "",
+          done: !page.has_more,
+        })
+      );
+    }
+    return undefined;
+  }
+
+  /**
+   * Add agents to a fleet that already exists: one per address, created holding the
+   * fleet's settings, exactly as the ones made with it were.
+   *
+   * The name is the fleet's own agents' name unless the call says otherwise, so a
+   * fleet stays a fleet of one kind of agent rather than becoming a mixed bag.
+   */
+  if (segments[3] === "agents" && request.method === "POST") {
+    const body = (await request.json().catch(() => ({}))) as {
+      allowed_emails?: string | string[];
+      name?: string;
+    };
+    // Repeats are kept: the same address twice is two agents for that person, which
+    // is the same thing it means in the create dialog.
+    const members = (
+      Array.isArray(body.allowed_emails)
+        ? body.allowed_emails
+        : (body.allowed_emails ?? "").split(/[\n,;]/)
+    )
+      .map((entry) => normalizeEmails([entry]))
+      .filter(Boolean);
+    if (!members.length) {
+      return withCors(Response.json({ error: "at least one email is required" }, { status: 400 }));
+    }
+
+    const limit = await dir.getAgentLimit(email!);
+    const owned = await dir.countByAdmin(email!);
+    if (owned + members.length > limit) {
+      return withCors(
+        Response.json(
+          {
+            error: `this account may administer at most ${limit} agent${limit === 1 ? "" : "s"}`,
+          },
+          { status: 403 }
+        )
+      );
+    }
+
+    const first = await dir.listFleetPage(fleetId, 1, "");
+    const name =
+      (body.name ?? "").trim().slice(0, 60) || first.agents[0]?.name || fleet.fleet_name || "New agent";
+    const meta = await stored();
+    const created: AgentRow[] = [];
+    for (const member of members) {
+      created.push(
+        await provisionAgent(env, url.origin, dir, {
+          id: AGENT_ID(),
+          name,
+          allowed: member,
+          admin: email!,
+          fleet: { id: fleetId, name: fleet.fleet_name },
+          meta,
+        })
+      );
+    }
+    return withCors(Response.json({ agents: created, fleet_id: fleetId }));
+  }
+
+  return undefined;
+}
+
+/**
+ * Bring one agent into existence: its gate, its index row, and the settings it
+ * starts out holding.
+ *
+ * The registry goes first and the directory second — the access list is what every
+ * gate reads, so writing it is what makes the agent real; the directory row is only
+ * what makes it findable. Fail between the two and there is an agent nobody can see
+ * and nobody can open: an orphan, but not a leak.
+ */
+async function provisionAgent(
+  env: Env,
+  origin: string,
+  dir: ReturnType<typeof directory>,
+  agent: {
+    id: string;
+    name: string;
+    /** The whole access list, newline-separated. One address, for a fleet agent. */
+    allowed: string;
+    admin: string;
+    fleet?: { id: string; name: string };
+    meta?: MetaSettings;
+    /** The OpenRouter key, when it came in at the top level rather than in `meta`. */
+    key?: string;
+  }
+): Promise<AgentRow> {
+  await registry(env, agent.id).setAccess({
+    allowed_emails: agent.allowed,
+    admin_email: agent.admin,
+  });
+  const row = await dir.create(agent.id, agent.name, agent.allowed, agent.admin, agent.fleet);
+
+  // Seed the settings row so the agent has a model — and its key — the moment it
+  // exists, which is what lets it answer without a trip through Settings. Telegram is
+  // on from the start, so its whitelists are seeded here for the same reason the
+  // first enable seeds them: empty lists would let all of Telegram talk to the bot
+  // the moment a token is pasted.
+  const reg = registry(env, row.id);
+  await reg.setConfig({ agent_name: row.name, ...TELEGRAM_WHITELIST_DEFAULTS }, env.MODEL);
+  // The defaults are applied straight away: an agent made through the dialog is meant
+  // to open already looking the way the settings step described it.
+  if (agent.meta) {
+    await reg.setMeta(agent.meta);
+    await applyMeta(reg, agent.meta, env, origin, row.id);
+  }
+  // Already written by `applyMeta` when it came from the settings step; this is for
+  // the caller that still sends it at the top level.
+  if (agent.key) await reg.setConfig({ openrouter_api_key: agent.key }, env.MODEL);
+  return row;
+}
+
 /** Everything under `/api/agents`. Undefined when the path is not one of these. */
 async function handleAgents(
   request: Request,
@@ -1276,19 +1513,91 @@ async function handleAgents(
       // Only what the caller may open. An address that names nobody filters to
       // nothing, which is the right answer for a call that proved no identity.
       const email = await callerEmail(request, env);
+      const limit = Number(url.searchParams.get("limit")) || AGENT_PAGE;
+      const cursor = url.searchParams.get("cursor") ?? "";
+      const fleetId = url.searchParams.get("fleet") ?? "";
+
+      // One fleet, opened on the home page. Its agents are asked for separately
+      // from everything else and a page at a time: a fleet is the one list here
+      // that can hold thousands of rows, and nobody reads thousands of rows.
+      //
+      // Only the administrator may ask. Its members each see their own agent on
+      // the list below without ever naming the fleet, so there is nothing a member
+      // could want here except the rest of the fleet, which is not theirs.
+      if (fleetId) {
+        if (!email) return withCors(Response.json({ error: "not allowed" }, { status: 403 }));
+        const fleets = await dir.listFleets(email);
+        if (!fleets.some((f) => f.fleet_id === fleetId)) {
+          return withCors(Response.json({ error: "not allowed" }, { status: 403 }));
+        }
+        return withCors(Response.json(await dir.listFleetPage(fleetId, limit, cursor)));
+      }
+
       // How many more this caller may administer, so the frontend can hide the
       // create button before the account hits the wall rather than after.
-      const limit = email ? await dir.getAgentLimit(email) : 0;
+      const agentLimit = email ? await dir.getAgentLimit(email) : 0;
       const owned = email ? await dir.countByAdmin(email) : 0;
+      // The fleets this caller administers come whole — a name and a count each —
+      // and the page beside them is everything that is not inside one of them.
+      const page = email
+        ? await dir.listPage(email, limit, cursor)
+        : { agents: [], has_more: false, cursor: "" };
       return withCors(
-        Response.json({ agents: await dir.list(email), agent_limit: limit, agents_owned: owned })
+        Response.json({
+          ...page,
+          fleets: email ? await dir.listFleets(email) : [],
+          agent_limit: agentLimit,
+          agents_owned: owned,
+        })
       );
     }
+    // A fleet, taken apart. There is no route that deletes many agents otherwise,
+    // and there should not be: this one is reachable only with a fleet id, and only
+    // by the address that administers it.
+    if (request.method === "DELETE") {
+      const email = await callerEmail(request, env);
+      const fleetId = url.searchParams.get("fleet") ?? "";
+      if (!email || !fleetId) {
+        return withCors(Response.json({ error: "fleet is required" }, { status: 400 }));
+      }
+      const fleets = await dir.listFleets(email);
+      const fleet = fleets.find((f) => f.fleet_id === fleetId);
+      if (!fleet) return withCors(Response.json({ error: "not allowed" }, { status: 403 }));
+
+      // A batch, not the whole fleet.
+      //
+      // Deleting one agent is several round trips — its registry, its bot's webhook,
+      // one per session it ever held — and a fleet can hold thousands. One request
+      // that tried to do all of it would run out of subrequests or time partway and
+      // leave the rest standing, with nothing to say how far it got. So a call takes
+      // a bite and reports what is left, and the caller keeps asking until there is
+      // nothing left. Every bite is complete in itself: an interrupted teardown
+      // leaves whole agents gone and whole agents untouched, never half of one.
+      const batch = Math.min(Math.max(1, Number(url.searchParams.get("limit")) || 10), 25);
+      const page = await dir.listFleetPage(fleetId, batch, "");
+      for (const row of page.agents) await deleteAgent(env, url.origin, row.id);
+
+      const left = await dir.listFleets(email);
+      const remaining = left.find((f) => f.fleet_id === fleetId)?.agents ?? 0;
+      // The fleet is gone once its last agent is; its settings have nothing left to
+      // describe, and an id is never reused.
+      if (remaining === 0) await dir.removeFleetMeta(fleetId);
+      return withCors(
+        Response.json({ deleted: page.agents.length, remaining, done: remaining === 0 })
+      );
+    }
+
     if (request.method === "POST") {
       const body = (await request.json().catch(() => ({}))) as {
         name?: string;
         openrouter_api_key?: string;
         allowed_emails?: string | string[];
+        /**
+         * Non-empty when this call is making a fleet: one agent per address on
+         * `allowed_emails`, each agent holding exactly that one address, all of
+         * them created from these settings and carrying this fleet name.
+         */
+        fleet_name?: string;
         /** The agent's defaults, chosen in the second step of the create dialog. */
         meta?: Partial<MetaSettings>;
       };
@@ -1358,7 +1667,24 @@ async function handleAgents(
       // business accounts the owner has raised through `/api/admin/business-account`.
       const limit = await dir.getAgentLimit(admin);
       const owned = await dir.countByAdmin(admin);
-      if (owned >= limit) {
+
+      // A fleet is one call that makes several agents: one per address, each on an
+      // access list of exactly itself. The whole fleet is charged against the limit
+      // at once — half a fleet is not what was asked for.
+      const fleetName = (body.fleet_name ?? "").trim().slice(0, 60);
+      // Read from what was sent rather than from `allowed`, which is deduplicated:
+      // the same address twice in a fleet means two agents for that person, which is
+      // an ordinary thing to want and not a typo to collapse. Each entry is
+      // normalized on its own, so anything that is not an address still drops out.
+      const fleetMembers = (
+        Array.isArray(body.allowed_emails)
+          ? body.allowed_emails
+          : (body.allowed_emails ?? "").split(/[\n,;]/)
+      )
+        .map((entry) => normalizeEmails([entry]))
+        .filter(Boolean);
+      const members = fleetName ? fleetMembers : [allowed];
+      if (owned + members.length > limit) {
         return withCors(
           Response.json(
             {
@@ -1374,33 +1700,39 @@ async function handleAgents(
       // existence as far as every gate is concerned; the directory row is what makes
       // it findable. Fail between the two and there is an agent nobody can see and
       // nobody can open — an orphan, but not a leak.
-      await registry(env, newId).setAccess({ allowed_emails: allowed, admin_email: admin });
-      const row = await dir.create(
-        newId,
-        (body.name ?? "").trim().slice(0, 60) || "New agent",
-        allowed,
-        admin
-      );
-      // Seed the settings row so the agent has a model — and its key — the moment
-      // it exists, which is what lets it answer without a trip through Settings.
-      // Telegram is on from the start, so its whitelists are seeded here for the same
-      // reason the first enable seeds them below: empty lists would let all of
-      // Telegram talk to the bot the moment a token is pasted.
-      const reg = registry(env, row.id);
-      await reg.setConfig(
-        { agent_name: row.name, ...TELEGRAM_WHITELIST_DEFAULTS },
-        env.MODEL
-      );
-      // The defaults are applied straight away: an agent made through the dialog is
-      // meant to open already looking the way the second step described it.
-      if (meta) {
-        await reg.setMeta(meta);
-        await applyMeta(reg, meta, env, url.origin, row.id);
+      const name = (body.name ?? "").trim().slice(0, 60) || "New agent";
+      const fleet = fleetName ? { id: AGENT_ID(), name: fleetName } : undefined;
+      // The fleet keeps the settings it was created with, whole. They are what an
+      // agent added to it later is created holding, and what the fleet's own
+      // settings dialog edits — see `PATCH /api/fleets/:id`.
+      if (fleet) await dir.setFleetMeta(fleet.id, JSON.stringify(meta ?? DEFAULT_META));
+      const created: AgentRow[] = [];
+      for (const member of members) {
+        // The id resolved above is the first agent's, so a lone agent is made
+        // exactly as it always was.
+        const id = created.length === 0 ? newId : AGENT_ID();
+        created.push(
+          await provisionAgent(env, url.origin, dir, {
+            id,
+            name,
+            allowed: member,
+            admin,
+            fleet,
+            meta,
+            key,
+          })
+        );
       }
-      // Already written by `applyMeta` when it came from the settings step; this is
-      // for the caller that still sends it at the top level.
-      if (key) await reg.setConfig({ openrouter_api_key: key }, env.MODEL);
-      return withCors(Response.json({ ...row, ...(openrouter ? { openrouter } : {}) }));
+
+      // One agent answers as itself, the way this call always has. A fleet answers
+      // as the list it made.
+      return withCors(
+        Response.json(
+          fleet
+            ? { agents: created, fleet_id: fleet.id, ...(openrouter ? { openrouter } : {}) }
+            : { ...created[0], ...(openrouter ? { openrouter } : {}) }
+        )
+      );
     }
     return undefined;
   }
@@ -1503,6 +1835,21 @@ async function handleAgents(
         if (!allowed) {
           return withCors(
             Response.json({ error: "at least one email is required" }, { status: 400 })
+          );
+        }
+        // The administrator's ceiling on how far this list may grow. Checked here
+        // and not in the browser, because the browser is the agent's user and this
+        // is the one thing on their own settings page that is not theirs to set.
+        // 0 is no ceiling, which is every agent that was never given one.
+        const memberLimit = (await reg.meta()).member_limit;
+        if (memberLimit > 0 && splitEmails(allowed).length > memberLimit) {
+          return withCors(
+            Response.json(
+              {
+                error: `this agent may have at most ${memberLimit} member${memberLimit === 1 ? "" : "s"}`,
+              },
+              { status: 403 }
+            )
           );
         }
         // The gate first, the index second, and never the other way round.
@@ -1636,6 +1983,9 @@ async function handleAgents(
           // what models exist or what a capability's fields are.
           models: modelCatalog(env),
           capabilities: CAPABILITIES,
+          // What the agent has spent this month, so the ceiling beside it is set
+          // against a number rather than a guess.
+          spend: await reg.spendState(),
         })
       );
     }
@@ -2106,6 +2456,11 @@ export default {
     }
 
     // An agent and everything that belongs to it: settings, MCP servers, sessions.
+    if (segments[0] === "api" && segments[1] === "fleets") {
+      const handled = await handleFleets(request, env, url, segments);
+      if (handled) return handled;
+    }
+
     if (segments[0] === "api" && segments[1] === "agents") {
       const handled = await handleAgents(request, env, url, segments);
       if (handled) return handled;
@@ -2153,10 +2508,13 @@ export default {
       return withCors(
         Response.json({
           routes: {
-            agents: "GET|POST /api/agents, GET|PATCH|DELETE /api/agents/:agentId",
+            agents:
+              "GET|POST /api/agents (GET: ?limit&cursor&fleet; DELETE: ?fleet&limit -> one batch), GET|PATCH|DELETE /api/agents/:agentId",
             config: "GET|PATCH /api/agents/:agentId/config",
             meta: "GET|PATCH /api/agents/:agentId/meta, POST .../meta (apply defaults)",
             catalog: "GET /api/agents/catalog  -> models and capabilities",
+            fleets:
+              "GET|PATCH /api/fleets/:fleetId (PATCH: one batch, ?cursor to continue), POST /api/fleets/:fleetId/agents",
             mcp: "GET|POST /api/agents/:agentId/mcp, PATCH|DELETE .../mcp/:id, POST .../mcp/:id/{connect,disconnect,refresh}",
             sessions: "GET|POST /api/agents/:agentId/sessions  (GET: ?limit&cursor)",
             session: "PATCH|DELETE /api/sessions/:sessionId",

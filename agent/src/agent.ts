@@ -1034,6 +1034,13 @@ export class SessionAgent extends Think<Env> {
       Date.now()
     );
 
+    // What the turn cost goes to the agent's registry as well as to this session's
+    // own usage table. The registry is where the monthly ceiling is measured, and
+    // it cannot be measured from here: the next turn may well be in a different
+    // session object, which knows nothing about this one's spending.
+    const spent = this.turnCost();
+    if (spent > 0) this.ctx.waitUntil(this.registry().addSpend(spent));
+
     const messages = await this.getMessages();
     const questions = messages.filter((m) => m.role === "user");
     if (questions.length === 1 && result.status === "completed") {
@@ -1574,6 +1581,25 @@ export class SessionAgent extends Think<Env> {
     return attachments;
   }
 
+  /**
+   * The sentence to answer with instead of running a turn, when the agent has spent
+   * its month. Empty when it may go ahead.
+   *
+   * Checked before the turn rather than during it: a reply cut off halfway through
+   * costs what a whole one costs and is worth less than nothing. Going over by the
+   * price of one turn is the deliberate trade — the cost is only known once the turn
+   * has happened, so the ceiling is the point where it stops starting new ones.
+   */
+  private async spendBlocked(): Promise<string> {
+    const { usd, limit } = await this.registry().spendState();
+    if (limit <= 0 || usd < limit) return "";
+    return (
+      `This agent has reached its spending limit for this month ` +
+      `($${usd.toFixed(2)} of $${limit.toFixed(2)}). ` +
+      `It will answer again next month, or when its administrator raises the limit.`
+    );
+  }
+
   /** A whole turn, without streaming. */
   private async runChat(message: string, retry = false) {
     const command = parseCommand(message);
@@ -1582,6 +1608,8 @@ export class SessionAgent extends Think<Env> {
       if (command === "delete") this.ctx.waitUntil(this.finishDelete());
       return { body: { reply }, turn: { cost_usd: 0, llm_ms: 0 } };
     }
+    const blocked = await this.spendBlocked();
+    if (blocked) return { body: { reply: blocked }, turn: { cost_usd: 0, llm_ms: 0 } };
     const userMessage = await this.openTurn(message, retry);
     const result = await this.runTurn({ input: [userMessage] });
     const reply =
@@ -1608,6 +1636,10 @@ export class SessionAgent extends Think<Env> {
   private async streamChat(message: string, retry = false): Promise<Response> {
     const command = parseCommand(message);
     if (command) return await this.streamCommand(command);
+    // Said as the agent would say it, down the same stream: the chat has no other
+    // way to show why nothing is coming back.
+    const blocked = await this.spendBlocked();
+    if (blocked) return this.streamSentence(blocked);
     const userMessage = await this.openTurn(message, retry);
     // Tool events name the call by id; the name arrives once, when it starts.
     const toolNames = new Map<string, string>();
@@ -1677,6 +1709,11 @@ export class SessionAgent extends Think<Env> {
   private async streamCommand(command: Command): Promise<Response> {
     const text = await this.runCommand(command);
     if (command === "delete") this.ctx.waitUntil(this.finishDelete());
+    return this.streamSentence(text);
+  }
+
+  /** One line of text, in the SSE shape the chat client already reads. */
+  private streamSentence(text: string): Response {
     const encoder = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -1729,6 +1766,12 @@ export class SessionAgent extends Think<Env> {
       if (command) {
         await bot.send(chatId, await this.runCommand(command), message.message_id, thread);
         if (command === "delete") await this.finishDelete();
+        return { ok: true };
+      }
+
+      const blocked = await this.spendBlocked();
+      if (blocked) {
+        await bot.send(chatId, blocked, message.message_id, thread);
         return { ok: true };
       }
 
@@ -2264,6 +2307,14 @@ export class SessionAgent extends Think<Env> {
   async runScheduledTask(payload: { prompt: string }) {
     this.ensureSchema();
     await this.loadConfig();
+    // A task that comes due over the ceiling is dropped, not queued: it was meant to
+    // run at a time that has passed, and running it next month is not what was asked
+    // for. Logged, because nobody is watching a scheduled task fail.
+    const blocked = await this.spendBlocked();
+    if (blocked) {
+      console.warn(`scheduled task skipped in session ${this.name}: ${blocked}`);
+      return;
+    }
     await this.runTurn({
       mode: "submit",
       input: [

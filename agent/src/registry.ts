@@ -182,6 +182,25 @@ export type MetaSettings = {
      */
     user_servers: boolean;
   };
+  /**
+   * What this agent may spend on model calls in a calendar month, in US dollars.
+   * `0` is no ceiling at all, which is what every agent had before this existed.
+   *
+   * Counted against what the agent's own turns cost — the numbers OpenRouter hands
+   * back per turn, summed into `spend` by month. A month that has already gone over
+   * refuses new turns rather than truncating one mid-answer: a half-written reply
+   * costs the same as a whole one and is worth less.
+   */
+  monthly_spend_limit: number;
+  /**
+   * How many addresses this agent's own access list may grow to. `0` is no ceiling
+   * beyond `MAX_MEMBERS`.
+   *
+   * A fleet agent is created with one member and its user may add more — that is
+   * deliberate, they own the agent. This is the administrator's say in how far that
+   * goes, for an agent they are paying for.
+   */
+  member_limit: number;
 };
 
 /**
@@ -246,6 +265,8 @@ export const DEFAULT_META: MetaSettings = {
   capabilities: {},
   field_options: {},
   mcp: { templates: [], catalog: [], servers: [], user_servers: true },
+  monthly_spend_limit: 0,
+  member_limit: 0,
 };
 
 /** The config columns, in the order they are written, excluding the primary key. */
@@ -496,6 +517,19 @@ export class SessionRegistry extends DurableObject {
       `CREATE TABLE IF NOT EXISTS meta (
          id INTEGER PRIMARY KEY CHECK (id = 1),
          json TEXT NOT NULL DEFAULT ''
+       )`
+    );
+    // What the agent's turns have cost, one row per calendar month, in US dollars.
+    //
+    // A running total rather than a sum over the sessions: usage rows live in each
+    // session's own object, so answering "what has this agent spent this month"
+    // from them would mean opening every session the agent has ever had, on every
+    // turn. The sessions report what they spend here instead, which makes the
+    // question one read of one row.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS spend (
+         month TEXT PRIMARY KEY,
+         usd REAL NOT NULL DEFAULT 0
        )`
     );
     // Who may open this agent, and who administers it. Deliberately its own table
@@ -765,6 +799,50 @@ export class SessionRegistry extends DurableObject {
       admin
     );
     return { allowed_emails: allowedEmails, admin_email: admin, seeded: 1 };
+  }
+
+  /* --------------------------------------------------------------- spend -- */
+
+  /**
+   * Bank what a turn cost against this month.
+   *
+   * Called by the session that spent it, after the turn is over — the cost is only
+   * known once OpenRouter has answered, and a turn that failed still spent whatever
+   * tokens it generated.
+   */
+  addSpend(usd: number): void {
+    this.ensureSchema();
+    if (!Number.isFinite(usd) || usd <= 0) return;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO spend (month, usd) VALUES (?, ?)
+       ON CONFLICT(month) DO UPDATE SET usd = usd + excluded.usd`,
+      thisMonth(),
+      usd
+    );
+  }
+
+  /** What this agent has spent in the current calendar month, in US dollars. */
+  spendThisMonth(): number {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql
+      .exec(`SELECT usd FROM spend WHERE month = ? LIMIT 1`, thisMonth())
+      .toArray()[0] as { usd: number } | undefined;
+    return row?.usd ?? 0;
+  }
+
+  /**
+   * This month's spend and the ceiling it is measured against, in one read.
+   *
+   * One call because both halves are wanted at the same moments and by the same
+   * callers: the gate in front of every turn, and the dialog that shows where the
+   * agent stands. `limit` of 0 means there is no ceiling.
+   */
+  spendState(): { usd: number; limit: number; month: string } {
+    return {
+      usd: this.spendThisMonth(),
+      limit: this.meta().monthly_spend_limit,
+      month: thisMonth(),
+    };
   }
 
   /* ------------------------------------------------------- meta settings -- */
@@ -1088,7 +1166,59 @@ export type AgentRow = {
    * deliberate act, the same as adding anybody else.
    */
   admin_email: string;
+  /**
+   * The fleet this agent belongs to, or '' when it stands alone.
+   *
+   * A fleet is one create call that made several agents at once — one per address —
+   * all of them holding the same settings. The id is what groups them on the home
+   * page; it is shared by every agent that call made and by nothing else.
+   */
+  fleet_id: string;
+  /** What that fleet is called. '' for an agent that is not in one. */
+  fleet_name: string;
 };
+
+/** One page of agents, with the cursor that asks for the page after it. */
+export type AgentPage = {
+  agents: AgentRow[];
+  has_more: boolean;
+  /** Opaque; handed back untouched. Empty once the list is exhausted. */
+  cursor: string;
+};
+
+/** A fleet as the home page lists it: a name, and how many agents are inside. */
+export type FleetRow = {
+  fleet_id: string;
+  fleet_name: string;
+  agents: number;
+  created_at: number;
+};
+
+/** How many agents one page holds when the caller does not say. */
+export const AGENT_PAGE = 30;
+
+/** The largest page a caller may ask for. */
+export const MAX_AGENT_PAGE = 100;
+
+/**
+ * Where a page stopped: the sort key of its last row, `<created_at>:<id>`.
+ *
+ * A keyset rather than an offset. The lists this pages are appended to while they
+ * are being read — an offset would skip or repeat a row every time an agent is
+ * created mid-scroll, and a fleet of thousands is read over minutes, not seconds.
+ */
+function encodeCursor(row: AgentRow): string {
+  return `${row.created_at}:${row.id}`;
+}
+
+function decodeCursor(cursor: string): { created_at: number; id: string } | null {
+  const cut = cursor.indexOf(":");
+  if (cut === -1) return null;
+  const created = Number(cursor.slice(0, cut));
+  const id = cursor.slice(cut + 1);
+  if (!Number.isFinite(created) || !id) return null;
+  return { created_at: created, id };
+}
 
 /**
  * How many addresses one agent's access list may hold.
@@ -1112,6 +1242,17 @@ export const DEFAULT_AGENT_LIMIT = 1;
 
 /** How stale an agent's "last used" date may get before `touch` writes again. */
 const TOUCH_INTERVAL = 5 * 60 * 1000;
+
+/**
+ * The calendar month a spend row is keyed by, as `YYYY-MM` in UTC.
+ *
+ * UTC rather than anybody's local month: the agent, its administrator and its user
+ * can each be somewhere different, and a ceiling that resets at a different hour for
+ * each of them is one nobody can reason about.
+ */
+export function thisMonth(at = Date.now()): string {
+  return new Date(at).toISOString().slice(0, 7);
+}
 
 /** The addresses in a stored access list: lowercased, trimmed, blanks dropped. */
 export function splitEmails(stored: string): string[] {
@@ -1193,6 +1334,10 @@ export class AgentDirectory extends DurableObject {
       // "never measured" — the rows that existed before this column did — and the
       // stats route fills those in once, by asking each session registry directly.
       `session_count INTEGER NOT NULL DEFAULT -1`,
+      // The fleet an agent was created into. Empty on every agent made before
+      // fleets existed, which is exactly what "stands alone" means.
+      `fleet_id TEXT NOT NULL DEFAULT ''`,
+      `fleet_name TEXT NOT NULL DEFAULT ''`,
     ]) {
       try {
         this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN ${col}`);
@@ -1228,6 +1373,12 @@ export class AgentDirectory extends DurableObject {
     this.ctx.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_agents_admin_email ON agents(admin_email)`
     );
+    // One fleet's agents, in page order. A fleet is the one list here that can run
+    // to thousands of rows, so the index carries the sort key as well as the
+    // grouping key: a page of it is a range scan, never a sort of the whole fleet.
+    this.ctx.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_agents_fleet ON agents(fleet_id, created_at, id)`
+    );
 
     // Absence is the ordinary case: an account with no row here administers at most
     // `DEFAULT_AGENT_LIMIT` agent. A row is only ever written by the owner's own
@@ -1237,6 +1388,22 @@ export class AgentDirectory extends DurableObject {
       `CREATE TABLE IF NOT EXISTS account_limits (
          email TEXT PRIMARY KEY,
          agent_limit INTEGER NOT NULL
+       )`
+    );
+
+    // A fleet's own meta document: the settings every agent in it was created
+    // holding, and the ones an agent added later is created holding.
+    //
+    // Kept here rather than read off any one of the fleet's agents, because an
+    // agent's own meta document drifts — it is overwritten wholesale each time the
+    // fleet's is applied, and between applications its users change what they are
+    // allowed to change. This row is what the fleet *means*, which is a different
+    // question from what any agent currently holds.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS fleet_meta (
+         fleet_id TEXT PRIMARY KEY,
+         json TEXT NOT NULL DEFAULT '',
+         updated_at INTEGER NOT NULL DEFAULT 0
        )`
     );
 
@@ -1351,7 +1518,8 @@ export class AgentDirectory extends DurableObject {
     if (email === undefined) {
       return this.ctx.storage.sql
         .exec(
-          `SELECT id, name, created_at, updated_at, allowed_emails, admin_email FROM agents
+          `SELECT id, name, created_at, updated_at, allowed_emails, admin_email,
+                  fleet_id, fleet_name FROM agents
            ORDER BY created_at`
         )
         .toArray() as unknown as AgentRow[];
@@ -1368,11 +1536,13 @@ export class AgentDirectory extends DurableObject {
     // who is also on the access list from appearing twice.
     return this.ctx.storage.sql
       .exec(
-        `SELECT a.id, a.name, a.created_at, a.updated_at, a.allowed_emails, a.admin_email
+        `SELECT a.id, a.name, a.created_at, a.updated_at, a.allowed_emails, a.admin_email,
+                a.fleet_id, a.fleet_name
            FROM agents a
           WHERE a.admin_email = ?1
           UNION
-         SELECT a.id, a.name, a.created_at, a.updated_at, a.allowed_emails, a.admin_email
+         SELECT a.id, a.name, a.created_at, a.updated_at, a.allowed_emails, a.admin_email,
+                a.fleet_id, a.fleet_name
            FROM agents a
            JOIN agent_members m ON m.agent_id = a.id
           WHERE m.email = ?1
@@ -1382,11 +1552,153 @@ export class AgentDirectory extends DurableObject {
       .toArray() as unknown as AgentRow[];
   }
 
+  /**
+   * One page of the agents `email` sees on the home page, excluding the agents
+   * inside fleets it administers.
+   *
+   * Those are left out because a fleet is read as a fleet: it is listed once, by
+   * name and size, and its agents are only fetched when it is opened. Pouring a
+   * thousand of them into this page would push everything else off the end of a
+   * list that is meant to be a handful of doors.
+   *
+   * A fleet agent belonging to somebody else's fleet is *not* left out. To its one
+   * member it is simply their agent; the fleet is the administrator's way of
+   * holding it, and means nothing to them.
+   */
+  listPage(email: string, limit = AGENT_PAGE, cursor = ""): AgentPage {
+    this.ensureSchema();
+    const wanted = email.trim().toLowerCase();
+    if (!wanted) return { agents: [], has_more: false, cursor: "" };
+    const size = Math.min(Math.max(1, limit), MAX_AGENT_PAGE);
+    const after = decodeCursor(cursor);
+    // One row more than asked for: whether there is another page is then a fact
+    // about this query rather than a second count over the whole list.
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT * FROM (
+           SELECT a.id, a.name, a.created_at, a.updated_at, a.allowed_emails,
+                  a.admin_email, a.fleet_id, a.fleet_name
+             FROM agents a
+            WHERE a.admin_email = ?1 AND a.fleet_id = ''
+            UNION
+           SELECT a.id, a.name, a.created_at, a.updated_at, a.allowed_emails,
+                  a.admin_email, a.fleet_id, a.fleet_name
+             FROM agents a
+             JOIN agent_members m ON m.agent_id = a.id
+            WHERE m.email = ?1 AND (a.fleet_id = '' OR a.admin_email <> ?1)
+         )
+         WHERE (?2 = 0 AND ?3 = '')
+            OR created_at > ?2
+            OR (created_at = ?2 AND id > ?3)
+         ORDER BY created_at, id
+         LIMIT ?4`,
+        wanted,
+        after?.created_at ?? 0,
+        after?.id ?? "",
+        size + 1
+      )
+      .toArray() as unknown as AgentRow[];
+    return this.page(rows, size);
+  }
+
+  /**
+   * The fleets `email` administers, each with the number of agents in it.
+   *
+   * Not paged. A fleet is one create call, so this is a list of decisions somebody
+   * made by hand — tens of rows where the agents under them are thousands — and it
+   * is the counts, not the agents, that this page is built from.
+   */
+  listFleets(email: string): FleetRow[] {
+    this.ensureSchema();
+    const wanted = email.trim().toLowerCase();
+    if (!wanted) return [];
+    return this.ctx.storage.sql
+      .exec(
+        `SELECT fleet_id, MIN(fleet_name) AS fleet_name, COUNT(*) AS agents,
+                MIN(created_at) AS created_at
+           FROM agents
+          WHERE admin_email = ? AND fleet_id <> ''
+          GROUP BY fleet_id
+          ORDER BY created_at`,
+        wanted
+      )
+      .toArray() as unknown as FleetRow[];
+  }
+
+  /** One page of the agents inside a fleet, oldest first — the order they were made in. */
+  listFleetPage(fleetId: string, limit = AGENT_PAGE, cursor = ""): AgentPage {
+    this.ensureSchema();
+    if (!fleetId) return { agents: [], has_more: false, cursor: "" };
+    const size = Math.min(Math.max(1, limit), MAX_AGENT_PAGE);
+    const after = decodeCursor(cursor);
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT id, name, created_at, updated_at, allowed_emails, admin_email,
+                fleet_id, fleet_name
+           FROM agents
+          WHERE fleet_id = ?1
+            AND ((?2 = 0 AND ?3 = '')
+                 OR created_at > ?2
+                 OR (created_at = ?2 AND id > ?3))
+          ORDER BY created_at, id
+          LIMIT ?4`,
+        fleetId,
+        after?.created_at ?? 0,
+        after?.id ?? "",
+        size + 1
+      )
+      .toArray() as unknown as AgentRow[];
+    return this.page(rows, size);
+  }
+
+  /**
+   * The settings a fleet was created with, and that agents added to it are created
+   * holding. Null when the fleet was never given any.
+   */
+  fleetMeta(fleetId: string): string {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql
+      .exec(`SELECT json FROM fleet_meta WHERE fleet_id = ? LIMIT 1`, fleetId)
+      .toArray()[0] as { json: string } | undefined;
+    return row?.json ?? "";
+  }
+
+  /** Write the fleet's settings. The document is stored whole, as the dialog sends it. */
+  setFleetMeta(fleetId: string, json: string): void {
+    this.ensureSchema();
+    if (!fleetId) return;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO fleet_meta (fleet_id, json, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(fleet_id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
+      fleetId,
+      json,
+      Date.now()
+    );
+  }
+
+  /** Forget a fleet's settings, once the last of its agents is gone. */
+  removeFleetMeta(fleetId: string): void {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(`DELETE FROM fleet_meta WHERE fleet_id = ?`, fleetId);
+  }
+
+  /** Cut the extra row a page query asks for, and turn it into the cursor. */
+  private page(rows: AgentRow[], size: number): AgentPage {
+    const has_more = rows.length > size;
+    const agents = has_more ? rows.slice(0, size) : rows;
+    return {
+      agents,
+      has_more,
+      cursor: has_more && agents.length ? encodeCursor(agents[agents.length - 1]) : "",
+    };
+  }
+
   get(id: string): AgentRow | undefined {
     this.ensureSchema();
     return this.ctx.storage.sql
       .exec(
-        `SELECT id, name, created_at, updated_at, allowed_emails, admin_email FROM agents
+        `SELECT id, name, created_at, updated_at, allowed_emails, admin_email,
+                fleet_id, fleet_name FROM agents
          WHERE id = ? LIMIT 1`,
         id
       )
@@ -1401,19 +1713,30 @@ export class AgentDirectory extends DurableObject {
    * It falls back to the first address on the access list, which is what an unguarded
    * deployment — where there is no signed-in caller to name — has to go on.
    */
-  create(id: string, name: string, allowedEmails: string, adminEmail: string): AgentRow {
+  create(
+    id: string,
+    name: string,
+    allowedEmails: string,
+    adminEmail: string,
+    fleet?: { id: string; name: string }
+  ): AgentRow {
     this.ensureSchema();
     const now = Date.now();
     const admin = adminEmail.trim().toLowerCase() || firstEmail(allowedEmails);
+    const fleetId = fleet?.id ?? "";
+    const fleetName = fleet?.name ?? "";
     this.ctx.storage.sql.exec(
-      `INSERT INTO agents (id, name, created_at, updated_at, allowed_emails, admin_email)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (id, name, created_at, updated_at, allowed_emails, admin_email,
+                           fleet_id, fleet_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       name,
       now,
       now,
       allowedEmails,
-      admin
+      admin,
+      fleetId,
+      fleetName
     );
     // The row is in; this puts the same addresses in `agent_members` beside it.
     this.writeMembers(id, allowedEmails);
@@ -1424,6 +1747,8 @@ export class AgentDirectory extends DurableObject {
       updated_at: now,
       allowed_emails: allowedEmails,
       admin_email: admin,
+      fleet_id: fleetId,
+      fleet_name: fleetName,
     };
   }
 

@@ -14,6 +14,7 @@ import {
   type McpAuth,
   type MetaMcpServer,
   type MetaSettings,
+  type SpendState,
   type MetaTunableKey,
   type ModelChoice,
   type ModelOption,
@@ -336,6 +337,8 @@ export function MetaSettingsForm({
   config,
   onConfigChange,
   agentId,
+  onlyOpenrouter = false,
+  spend,
 }: {
   meta: MetaSettings;
   onChange: (next: MetaSettings) => void;
@@ -349,6 +352,17 @@ export function MetaSettingsForm({
   /** Stage a change to those settings. Ignored while there is no agent. */
   onConfigChange?: (patch: Partial<Config>) => void;
   agentId?: string;
+  /**
+   * Show the OpenRouter key and nothing else.
+   *
+   * An agent created on its own has no meta document worth writing: the person
+   * making it is the only person who will ever open it, so every lock and every
+   * default here would be a decision they are making about themselves. The key is
+   * the one thing the agent cannot answer without.
+   */
+  onlyOpenrouter?: boolean;
+  /** What the agent has spent this month, once there is an agent to have spent it. */
+  spend?: SpendState | null;
 }) {
   /** Whether the settings on screen belong to an agent that exists. */
   const live = !!config && !!onConfigChange;
@@ -477,6 +491,19 @@ export function MetaSettingsForm({
     };
   };
 
+  /* An agent with nobody but its own maker on it is asked for the key and nothing
+     else: the rest of this form is about governing somebody else's agent. */
+  if (onlyOpenrouter)
+    return (
+      // Bare: the dialog around it is already titled with what this box is for, and
+      // the field's own label would be that sentence a second time.
+      <Field
+        field={{ ...OPENROUTER_KEY, label: undefined, hint: undefined }}
+        value={valueOf("openrouter_api_key") ?? ""}
+        onChange={(v) => setValue("openrouter_api_key", v)}
+      />
+    );
+
   return (
     <div>
       <Section
@@ -489,6 +516,58 @@ export function MetaSettingsForm({
           value={valueOf("openrouter_api_key") ?? ""}
           onChange={(v) => setValue("openrouter_api_key", v)}
         />
+      </Section>
+
+      <Section
+        title="Limits"
+        hint="Control agent spending. Especially important when agent's are sharing your OpenRouter key"
+      >
+        <label className="block">
+          <span className="block text-sm font-semibold leading-[1.43]">
+            Monthly spend limit
+          </span>
+          <span className="text-muted block text-xs font-light leading-[1.33]">
+            In US dollars, per calendar month. Leave as 0 for no limit.
+            {spend ? ` Spent so far this month: $${spend.usd.toFixed(2)}.` : ""}
+          </span>
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={meta.monthly_spend_limit || ""}
+            onChange={(e) =>
+              patch({ monthly_spend_limit: Number(e.target.value) || 0 })
+            }
+            placeholder="0"
+            className={`${input} mt-2`}
+          />
+        </label>
+
+        <label className="mt-4 block">
+          <span className="block text-sm font-semibold leading-[1.43]">
+            Member limit
+          </span>
+          <span className="text-muted block text-xs font-light leading-[1.33]">
+            Number of users who can be added as members of this agent. Leave as
+            0 for no limit.
+          </span>
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={meta.member_limit || ""}
+            onChange={(e) =>
+              patch({
+                member_limit: Math.max(
+                  0,
+                  Math.trunc(Number(e.target.value) || 0),
+                ),
+              })
+            }
+            placeholder="0"
+            className={`${input} mt-2`}
+          />
+        </label>
       </Section>
 
       <Section
@@ -801,6 +880,8 @@ export function MetaSettingsDialog({
   const [changed, setChanged] = useState<Partial<Config>>({});
   const [models, setModels] = useState<ModelOption[]>([]);
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
+  /** What the agent has spent this month, shown beside the ceiling it is set against. */
+  const [spend, setSpend] = useState<SpendState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -818,6 +899,7 @@ export function MetaSettingsDialog({
         config: Config;
         models: ModelOption[];
         capabilities: Capability[];
+        spend?: SpendState;
         error?: string;
       } | null;
       if (!metaRes.ok || !payload?.config) {
@@ -828,6 +910,7 @@ export function MetaSettingsDialog({
       setConfig(payload.config);
       setModels(payload.models);
       setCapabilities(payload.capabilities);
+      setSpend(payload.spend ?? null);
     })();
   }, [base]);
 
@@ -920,6 +1003,7 @@ export function MetaSettingsDialog({
               config={config}
               onConfigChange={editConfig}
               agentId={agent.id}
+              spend={spend}
             />
 
             <div className="border-hairline-soft flex items-center justify-between gap-3 border-t pt-5">
@@ -964,10 +1048,7 @@ function McpDefaults({
   return (
     <div className="space-y-3">
       {servers.map((server, i) => (
-        <div
-          key={i}
-          className="bg-canvas-soft space-y-3 rounded-2xl px-4 py-4"
-        >
+        <div key={i} className="bg-canvas-soft space-y-3 rounded-2xl px-4 py-4">
           <div className="flex items-center gap-2">
             <input
               value={server.name}

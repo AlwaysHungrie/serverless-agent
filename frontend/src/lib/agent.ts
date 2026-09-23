@@ -26,7 +26,38 @@ export type AgentRow = {
    * the admin cannot open the agent's pages at all.
    */
   admin_email: string;
+  /**
+   * The fleet this agent was created into, or "" when it stands alone. Agents made
+   * by one fleet create call share this id, which is what groups them on the home
+   * page.
+   */
+  fleet_id?: string;
+  /** What that fleet is called. "" for an agent that is not in one. */
+  fleet_name?: string;
 };
+
+/**
+ * A fleet as the home page lists it: the name it was created under, and how many
+ * agents are inside. The agents themselves are fetched only when it is opened —
+ * a fleet can hold thousands.
+ */
+export type FleetRow = {
+  fleet_id: string;
+  fleet_name: string;
+  agents: number;
+  created_at: number;
+};
+
+/** One page of agents, with the cursor that asks for the page after it. */
+export type AgentPage = {
+  agents: AgentRow[];
+  has_more: boolean;
+  /** Opaque, handed back untouched. Empty once the list is exhausted. */
+  cursor: string;
+};
+
+/** How many agents the home page asks for at a time, in each of its lists. */
+export const AGENT_PAGE = 30;
 
 /**
  * A session id is `<agentId>~<local>`, so a session says which agent owns it. That is
@@ -342,6 +373,18 @@ export type MetaSettings = {
      */
     user_servers: boolean;
   };
+  /**
+   * What the agent may spend on model calls in a calendar month, in US dollars.
+   * 0 is no ceiling. Once a month is over it, the agent says so instead of
+   * answering, until the month turns or the limit is raised.
+   */
+  monthly_spend_limit: number;
+  /**
+   * How many addresses the agent's own access list may grow to. 0 is no ceiling.
+   * The agent's user adds members from its settings page; this is the
+   * administrator's say in how far that goes.
+   */
+  member_limit: number;
 };
 
 /**
@@ -381,7 +424,12 @@ export const EMPTY_META: MetaSettings = {
   capabilities: {},
   field_options: {},
   mcp: { templates: [], catalog: [], servers: [], user_servers: true },
+  monthly_spend_limit: 0,
+  member_limit: 0,
 };
+
+/** What an agent has spent this calendar month, against the ceiling it was given. */
+export type SpendState = { usd: number; limit: number; month: string };
 
 /** A file the user attached, or an image the agent drew, minus the bytes. */
 export type Attachment = {
