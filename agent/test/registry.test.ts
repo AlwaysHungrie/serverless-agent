@@ -20,6 +20,21 @@ function registry() {
   return env.SessionRegistry.get(env.SessionRegistry.idFromName(crypto.randomUUID()));
 }
 
+/**
+ * Block until `Date.now()` moves on.
+ *
+ * Sessions are ordered by `updated_at DESC, id ASC`, so two created inside the same
+ * millisecond tie and fall back to the id — which makes any test that asserts "newest
+ * first" pass or fail on how fast the machine is. Waiting for the clock to tick makes
+ * the ordering a property of the data rather than of the hardware.
+ */
+function nextMs() {
+  const start = Date.now();
+  while (Date.now() === start) {
+    /* spin; a millisecond at most */
+  }
+}
+
 let reg: ReturnType<typeof registry>;
 beforeEach(() => {
   reg = registry();
@@ -219,9 +234,21 @@ describe("sessions", () => {
 
   it("lists newest first", async () => {
     await reg.create("s1", "one", "o1");
+    nextMs();
     await reg.create("s2", "two", "o2");
     const page = await reg.list(10);
     expect(page.sessions.map((s) => s.id)).toEqual(["s2", "s1"]);
+  });
+
+  it("breaks a tie on id so the order is total", async () => {
+    // Two sessions written in the same millisecond must still come back in a fixed
+    // order, or the keyset cursor cannot page them without skipping or repeating.
+    await reg.create("b", "b", "ob");
+    await reg.create("a", "a", "oa");
+    // "a" is written second, so it wins on `updated_at DESC` when the clock moved and
+    // on `id ASC` when it did not. Same answer either way, which is the point: the
+    // order does not depend on timing.
+    expect((await reg.list(10)).sessions.map((s) => s.id)).toEqual(["a", "b"]);
   });
 
   it("pages with a cursor rather than an offset", async () => {

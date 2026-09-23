@@ -6,5 +6,7 @@ out/
 .DS_Store
 *.log
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
 .wrangler/
 .cf.env

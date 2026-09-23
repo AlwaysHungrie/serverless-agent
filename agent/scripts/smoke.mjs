@@ -59,14 +59,30 @@ function apiSecret() {
 
 const failures = [];
 
+/**
+ * Run a check, retrying briefly before calling it a failure.
+ *
+ * A workers.dev route takes a few seconds to answer after a deploy, and this script
+ * runs immediately after one. Without this, the first attempt gets Cloudflare's own
+ * 404 page rather than the Worker, and a healthy deployment reports as broken — which
+ * would teach whoever is on call to ignore this script, the worst outcome available.
+ */
 async function check(name, run) {
-  try {
-    await run();
-    console.log(`  ok    ${name}`);
-  } catch (err) {
-    console.log(`  FAIL  ${name}`);
-    failures.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+  const deadline = Date.now() + 30_000;
+  let last;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await run();
+      console.log(`  ok    ${name}${attempt > 1 ? ` (after ${attempt} attempts)` : ""}`);
+      return;
+    } catch (err) {
+      last = err;
+      if (Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
   }
+  console.log(`  FAIL  ${name}`);
+  failures.push(`${name}: ${last instanceof Error ? last.message : String(last)}`);
 }
 
 /** Fetch with a deadline, so a hung deployment fails the smoke instead of hanging it. */
