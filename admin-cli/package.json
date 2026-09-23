@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "CLI dashboard for the salt-agent deployment: agents, users, sessions.",
+  "description": "Interactive CLI dashboard for the salt-agent deployment: counts, and the limit-increase queue.",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "dev": "node index.mjs --dev"
   }
 }

@@ -1188,6 +1188,11 @@ export class AgentDirectory extends DurableObject {
     for (const col of [
       `allowed_emails TEXT NOT NULL DEFAULT ''`,
       `admin_email TEXT NOT NULL DEFAULT ''`,
+      // A cached count of the agent's sessions, kept here so the admin dashboard is
+      // one query against this object instead of one round trip per agent. `-1` means
+      // "never measured" — the rows that existed before this column did — and the
+      // stats route fills those in once, by asking each session registry directly.
+      `session_count INTEGER NOT NULL DEFAULT -1`,
     ]) {
       try {
         this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN ${col}`);
@@ -1504,6 +1509,51 @@ export class AgentDirectory extends DurableObject {
     return row?.n ?? 0;
   }
 
+  /**
+   * The whole admin dashboard in one query: how many accounts, agents and sessions
+   * the deployment holds. Sessions come from the cached per-agent counter rather
+   * than from the session registries, which is what keeps this to a single read.
+   */
+  counts(): { users: number; agents: number; sessions: number } {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql
+      .exec(
+        `SELECT
+           (SELECT COUNT(*) FROM agents) AS agents,
+           (SELECT COALESCE(SUM(MAX(session_count, 0)), 0) FROM agents) AS sessions,
+           (SELECT COUNT(*) FROM (
+              SELECT admin_email AS email FROM agents WHERE admin_email != ''
+              UNION
+              SELECT email FROM agent_members
+            )) AS users`
+      )
+      .toArray()[0] as { users: number; agents: number; sessions: number } | undefined;
+    return {
+      users: row?.users ?? 0,
+      agents: row?.agents ?? 0,
+      sessions: row?.sessions ?? 0,
+    };
+  }
+
+  /** Agents whose session count has never been measured — the backfill `counts()` needs. */
+  unmeasuredAgents(): string[] {
+    this.ensureSchema();
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT id FROM agents WHERE session_count < 0`)
+      .toArray() as unknown as { id: string }[];
+    return rows.map((r) => r.id);
+  }
+
+  /** Record how many sessions an agent has, after one was created, forked or deleted. */
+  setSessionCount(id: string, count: number) {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      `UPDATE agents SET session_count = ? WHERE id = ?`,
+      Math.max(0, count),
+      id
+    );
+  }
+
   /** Every address that administers or may open at least one agent. Admin stats only. */
   distinctUsers(): number {
     this.ensureSchema();
@@ -1567,13 +1617,50 @@ export class AgentDirectory extends DurableObject {
     return row;
   }
 
-  /** Every open request, oldest first, each carrying the limit it would raise. */
-  listBusinessRequests(): (BusinessRequest & { current_limit: number })[] {
+  /**
+   * One page of open requests, oldest first, each carrying what the owner needs to
+   * decide: the limit it would raise and how many agents that account already runs.
+   *
+   * Paged rather than returned whole because the queue has no ceiling — anyone signed
+   * in can file one. `cursor` is keyset on `created_at`, with `id` breaking ties, so a
+   * request filed mid-scroll cannot make the page skip or repeat a row.
+   */
+  listBusinessRequests(limit = 20, cursor = ""): BusinessRequestPage {
     this.ensureSchema();
-    const rows = this.ctx.storage.sql
-      .exec(`SELECT id, email, requested_increase, created_at FROM business_requests ORDER BY created_at ASC`)
-      .toArray() as unknown as BusinessRequest[];
-    return rows.map((r) => ({ ...r, current_limit: this.getAgentLimit(r.email) }));
+    const size = Math.max(1, Math.min(limit, 100));
+    const [afterTime, afterId] = cursor.split(":");
+    const after = cursor && Number.isFinite(Number(afterTime))
+      ? { created_at: Number(afterTime), id: afterId ?? "" }
+      : undefined;
+    // One row past the page: its existence is all `has_more` needs.
+    const rows = (
+      after
+        ? this.ctx.storage.sql.exec(
+            `SELECT id, email, requested_increase, created_at FROM business_requests
+             WHERE created_at > ? OR (created_at = ? AND id > ?)
+             ORDER BY created_at ASC, id ASC LIMIT ?`,
+            after.created_at,
+            after.created_at,
+            after.id,
+            size + 1
+          )
+        : this.ctx.storage.sql.exec(
+            `SELECT id, email, requested_increase, created_at FROM business_requests
+             ORDER BY created_at ASC, id ASC LIMIT ?`,
+            size + 1
+          )
+    ).toArray() as unknown as BusinessRequest[];
+    const page = rows.slice(0, size).map((r) => ({
+      ...r,
+      current_limit: this.getAgentLimit(r.email),
+      current_agents: this.countByAdmin(r.email),
+    }));
+    const last = page[page.length - 1];
+    return {
+      requests: page,
+      has_more: rows.length > size,
+      cursor: rows.length > size && last ? `${last.created_at}:${last.id}` : "",
+    };
   }
 
   /** Drop a request without acting on it — the owner declined it. */
@@ -1601,6 +1688,13 @@ export class AgentDirectory extends DurableObject {
     return { email: row.email, agent_limit };
   }
 }
+
+/** One page of pending asks, with the cursor that continues it. */
+export type BusinessRequestPage = {
+  requests: (BusinessRequest & { current_limit: number; current_agents: number })[];
+  has_more: boolean;
+  cursor: string;
+};
 
 /** A pending ask to raise one account's agent limit, waiting on the owner. */
 export type BusinessRequest = {

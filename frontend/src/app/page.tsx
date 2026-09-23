@@ -36,8 +36,14 @@ export default function Agents() {
    */
   const { ready: isLoaded, signedIn: isSignedIn, email } = useIdentity();
   const [agents, setAgents] = useState<AgentRow[] | null>(null);
-  /** How many more agents this account may administer, from the last load. */
-  const [atLimit, setAtLimit] = useState(false);
+  /**
+   * The ceiling on this account and how much of it is used, from the last load.
+   * Both numbers, not just "is it full": the business-account screen quotes them
+   * back, so the ask is made against what the account actually has today.
+   */
+  const [quota, setQuota] = useState<{ limit: number; owned: number } | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** The agent the delete dialog is asking about, if it is open. */
@@ -67,10 +73,11 @@ export default function Agents() {
       return;
     }
     setAgents(payload.agents);
-    setAtLimit(
+    setQuota(
       typeof payload.agent_limit === "number" &&
-        typeof payload.agents_owned === "number" &&
-        payload.agents_owned >= payload.agent_limit,
+        typeof payload.agents_owned === "number"
+        ? { limit: payload.agent_limit, owned: payload.agents_owned }
+        : null,
     );
     setError(null);
   }, []);
@@ -127,7 +134,9 @@ export default function Agents() {
 
   const remove = async (id: string) => {
     setBusy(true);
-    await apiFetch(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await apiFetch(`/api/agents/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
     setBusy(false);
     await load();
   };
@@ -155,9 +164,7 @@ export default function Agents() {
             prerendered page would flash the front door at someone already signed in,
             and localStorage cannot be read on the server at all. */}
         {!isLoaded && (
-          <p className="text-muted py-16 text-sm leading-[1.43]">
-            Loading…
-          </p>
+          <p className="text-muted py-16 text-sm leading-[1.43]">Loading…</p>
         )}
 
         {isLoaded && !isSignedIn && (
@@ -271,30 +278,34 @@ export default function Agents() {
                   );
                 })}
 
-                {atLimit ? (
-                  <div
-                    onClick={() => setBusinessAsking(true)}
-                    className="min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-4 transition"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-base font-semibold leading-[1.38]">
-                        Want more agents?
-                      </span>
-                      <span className="text-faint block text-xs leading-[1.33]">
-                        You can sponsor and co-manage more agents for your
-                        group. Click here to learn more.
-                      </span>
-                    </span>
-                  </div>
-                ) : (
-                  <div
+                {quota && (
+                  <button
+                    disabled={Boolean(quota.owned >= quota.limit)}
                     onClick={() => setCreating(true)}
-                    className="min-h-17 bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-4 transition"
+                    className="min-h-17 w-full bg-canvas-soft hover:bg-canvas-soft/60 group flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-4 transition"
                   >
                     <Plus size={18} strokeWidth={2} />
                     Create a new Agent
-                  </div>
+                  </button>
                 )}
+
+                <div
+                  onClick={() => setBusinessAsking(true)}
+                  // Tinted rather than grey: this is the one row on the list that
+                  // opens a commercial decision, and the wash is the same accent
+                  // the screen behind it opens with.
+                  className="min-h-17 from-accent/12 group flex cursor-pointer items-center gap-3 rounded-2xl bg-linear-to-r to-transparent px-5 py-4 transition hover:to-accent/5"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-base font-semibold leading-[1.38]">
+                      Need more agents?
+                    </span>
+                    <span className="text-muted block text-xs leading-[1.33]">
+                      You can co-manage and sponsor hundreds of agents for you
+                      and your gang. Click here to learn more.
+                    </span>
+                  </span>
+                </div>
               </div>
             )}
           </>
@@ -310,7 +321,11 @@ export default function Agents() {
       )}
 
       {businessAsking && (
-        <BusinessRequestDialog onClose={() => setBusinessAsking(false)} />
+        <BusinessRequestDialog
+          email={email}
+          quota={quota}
+          onClose={() => setBusinessAsking(false)}
+        />
       )}
 
       {creating && (
@@ -425,9 +440,7 @@ function NewAgent({
           onClick={(e) => e.stopPropagation()}
         >
           <p className="text-faint text-xs leading-[1.33]">Step 2 of 2</p>
-          <p className="text-lg font-semibold leading-[1.38]">
-            Meta settings
-          </p>
+          <p className="text-lg font-semibold leading-[1.38]">Meta settings</p>
           <p className="text-muted mt-1 text-xs font-light leading-[1.33]">
             Set the defaults for {name.trim() || "this agent"}, and choose what
             its owner can change. A locked setting will not be shown to the
@@ -570,14 +583,13 @@ function DeleteAgentDialog({
           Delete {agent.name}?
         </p>
         <p className="text-muted mt-2 text-sm font-light leading-[1.43]">
-          Its chats, files, memories, settings and MCP connections all go
-          with it, and its Telegram bot stops answering. This cannot be
-          undone.
+          Its chats, files, memories, settings and MCP connections all go with
+          it, and its Telegram bot stops answering. This cannot be undone.
         </p>
         <label className="mt-4 block">
           <span className="text-muted block text-xs leading-[1.33]">
-            Type <span className="text-ink font-semibold">{agent.name}</span>{" "}
-            to confirm
+            Type <span className="text-ink font-semibold">{agent.name}</span> to
+            confirm
           </span>
           <input
             ref={field}
@@ -611,22 +623,55 @@ function DeleteAgentDialog({
 }
 
 /**
- * A business account is nothing but a raised ceiling on this same limit — one row
- * the owner writes by hand once they've heard the ask. This dialog is that ask: it
- * explains the arrangement, then files a request for a specific increase rather than
- * granting anything itself. The owner reviews every one from the admin CLI, so what
- * reaches the account is always a number they chose, not one a caller typed in.
+ * The ask for a higher agent limit, as a screen rather than a dialog.
+ *
+ * A raised limit is one row the owner writes by hand once they have heard the ask,
+ * and this screen is the only way to make it. So it gets the whole viewport: the
+ * page underneath is a list the account has already filled, and nothing on it is
+ * worth glancing back at mid-decision.
+ *
+ * It grants nothing itself. It files a request for a number, which the owner reviews
+ * from the admin CLI — so what reaches the account is always a number they chose.
+ * The copy says that plainly; a form that looks like a checkout and behaves like a
+ * queue is the one thing this screen must not be.
  */
-function BusinessRequestDialog({ onClose }: { onClose: () => void }) {
+function BusinessRequestDialog({
+  email,
+  quota,
+  onClose,
+}: {
+  email: string;
+  quota: { limit: number; owned: number } | null;
+  onClose: () => void;
+}) {
   const [increase, setIncrease] = useState("5");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState<number | null>(null);
+
+  // Escape closes, and the list underneath is frozen while this is up. Without the
+  // lock the page behind keeps its own scroll position — and a fixed overlay that
+  // scrolls its parent is exactly what makes this read as part of the page instead
+  // of on top of it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previous;
+    };
+  }, [onClose]);
+
+  const parsed = Number(increase);
+  const valid = Number.isInteger(parsed) && parsed > 1 && parsed <= 1000;
 
   const submit = async () => {
-    const n = Number(increase);
-    if (!Number.isInteger(n) || n < 1) {
-      setError("Enter a whole number of at least 1.");
+    if (!valid) {
+      setError("Cannot be more than 1000");
       return;
     }
     setBusy(true);
@@ -634,89 +679,186 @@ function BusinessRequestDialog({ onClose }: { onClose: () => void }) {
     const res = await apiFetch("/api/business-requests", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ increase: n }),
+      body: JSON.stringify({ increase: parsed }),
     });
     setBusy(false);
     if (!res.ok) {
-      const payload = (await res.json().catch(() => null)) as { error?: string } | null;
-      setError(payload?.error ?? "Couldn't send that request. Try again.");
+      const payload = (await res.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      setError(
+        payload?.error ??
+          "That didn't send. Check your connection and try again.",
+      );
       return;
     }
-    setSent(true);
+    setSent(parsed);
   };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-5"
-      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Need more agents"
+      className="bg-canvas fixed inset-0 z-50 overflow-y-auto overscroll-contain"
     >
-      <div
-        className="bg-canvas w-full max-w-sm rounded-[20px] px-6 py-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {sent ? (
-          <>
-            <p className="text-base font-semibold leading-[1.38]">
+      {/* The one place the accent blue is allowed: a commercial decision, washed down
+          from the top the way a tinted capability card washes down its section. */}
+      <div className="from-accent/12 pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-linear-to-b to-transparent" />
+
+      <div className="relative mx-auto w-full max-w-2xl px-5 pt-8 pb-20 sm:px-8 sm:pt-12">
+        <div className="flex justify-end">
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="text-muted hover:bg-white hover:text-ink flex h-9 w-9 items-center justify-center rounded-full text-lg leading-none transition"
+          >
+            ×
+          </button>
+        </div>
+
+        {sent !== null ? (
+          <div className="pt-6 sm:pt-10">
+            <span className="bg-white text-muted inline-flex items-center rounded-[10px] px-3 py-1.5 text-xs font-semibold leading-[1.33]">
               Request sent
+            </span>
+            <h1 className="mt-5 text-[clamp(30px,4.5vw,44px)] leading-[1.08] tracking-[-0.025em]">
+              We&apos;ve received your request.
+            </h1>
+            <p className="text-muted mt-4 max-w-lg text-base font-light leading-[1.4] sm:text-xl">
+              You asked for {sent} more {sent === 1 ? "agent" : "agents"} on{" "}
+              <span className="text-ink font-medium">{email}</span>. We will get
+              back to you shortly.
             </p>
-            <p className="text-muted mt-2 text-sm font-light leading-[1.43]">
-              We&apos;ll review it and raise your limit once it&apos;s
-              approved.
-            </p>
-            <div className="mt-6 flex justify-end">
+
+            <div className="ring-hairline-soft mt-10 rounded-[24px] p-7 ring-1">
+              <h2 className="text-xl font-semibold tracking-[-0.01em]">
+                Once approved
+              </h2>
+              <p className="text-muted mt-2 text-sm leading-relaxed">
+                You will be able to launch agents for multiple users as a fleet.
+                Manage each agent on its own, or all of them from one place. Set
+                one shared OpenRouter API key, with per-agent usage limits, to
+                get every agent to work out of the box.
+              </p>
+            </div>
+
+            <div className="mt-10">
               <button
                 onClick={onClose}
-                className="bg-ink text-on-primary h-10 rounded-full px-5 text-sm font-semibold transition hover:opacity-85"
+                className="bg-ink text-on-primary h-12 rounded-full px-6 text-sm font-semibold transition hover:opacity-85"
               >
-                Done
+                Back to my agents
               </button>
             </div>
-          </>
+          </div>
         ) : (
-          <>
-            <p className="text-base font-semibold leading-[1.38]">
-              Business accounts
+          <div className="pt-6 sm:pt-10">
+            <span className="bg-white text-muted inline-flex items-center rounded-[10px] px-3 py-1.5 text-xs font-semibold leading-[1.33]">
+              Business Account
+            </span>
+            <h1 className="mt-5 text-[clamp(30px,4.5vw,44px)] leading-[1.08] tracking-[-0.025em]">
+              Sponsor agents for everyone you work with.
+            </h1>
+            <p className="text-muted mt-4 max-w-lg text-base font-light leading-[1.4] sm:text-xl">
+              Deploy and co-manage agents for your friends and customers, one
+              for each user. Agents you manage can share your OpenRouter API key
+              and have individual usage limits.
             </p>
-            <p className="text-muted mt-2 text-sm font-light leading-[1.43]">
-              A business account can sponsor and co-manage agents on behalf of
-              its customers — administering more agents than a personal
-              account, all from one place. Tell us how many more you need and
-              we&apos;ll review your request.
-            </p>
-            <label className="mt-4 block">
-              <span className="block text-sm font-semibold leading-[1.43]">
-                Increase agent limit by
-              </span>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                value={increase}
-                onChange={(e) => setIncrease(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void submit();
-                  if (e.key === "Escape") onClose();
-                }}
-                className="bg-field placeholder:text-faint mt-2 w-full rounded-2xl px-4 py-3 text-sm outline-none"
-              />
-            </label>
-            {error && <p className="mt-3 text-xs leading-[1.33]">{error}</p>}
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                onClick={onClose}
-                className="border-hairline text-ink hover:bg-canvas-soft h-10 rounded-full border px-5 text-sm font-semibold transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => void submit()}
-                disabled={busy}
-                className="bg-ink text-on-primary h-10 rounded-full px-5 text-sm font-semibold transition hover:opacity-85 disabled:opacity-40"
-              >
-                {busy ? "Sending…" : "Send request"}
-              </button>
+
+            {/* Three plain statements, not a feature grid. What is being asked for is
+                a bigger number; dressing it up as anything else would be a lie. */}
+            <div className="mt-10 grid gap-3 sm:grid-cols-3">
+              {[
+                [
+                  "Agents stay apart",
+                  "Every agent still keeps its own chats, memories, keys and bot. All agents run in isolation.",
+                ],
+                [
+                  "You are in control",
+                  "You and the user that has access to the agent can still customize the agent and make it their own.",
+                ],
+                [
+                  "Manage your fleet",
+                  "Gain additional settings to get control over how much your agents can be customized.",
+                ],
+              ].map(([title, body]) => (
+                <div key={title} className="rounded-[24px] py-6">
+                  <h2 className="text-base font-semibold tracking-[-0.01em]">
+                    {title}
+                  </h2>
+                  <p className="text-muted mt-2 text-sm leading-relaxed">
+                    {body}
+                  </p>
+                </div>
+              ))}
             </div>
-          </>
+
+            <div className="bg-canvas-soft mt-8 rounded-[24px] px-6 py-7 sm:px-8">
+              <h2 className="text-xl font-semibold tracking-[-0.01em]">
+                Request Access.
+              </h2>
+              <p className="text-muted mt-2 text-sm leading-relaxed">
+                For a limited time period we are allowing free upgrades to
+                business accounts. All requests are approved on a case to case
+                basis.
+              </p>
+
+              <div className="mt-6 space-y-5">
+                <label className="block">
+                  <span className="text-muted block text-xs leading-[1.33]">
+                    Your email
+                  </span>
+                  <div className="bg-canvas ring-hairline-soft mt-2 flex h-12 w-full items-center rounded-2xl px-4 text-sm ring-1">
+                    <span className="truncate">{email}</span>
+                  </div>
+                </label>
+
+                <label className="block">
+                  <span className="text-muted block text-xs leading-[1.33]">
+                    Request agents
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={increase}
+                    onChange={(e) => setIncrease(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void submit();
+                    }}
+                    className="bg-canvas ring-hairline-soft placeholder:text-faint mt-2 h-12 w-full rounded-2xl px-4 text-sm ring-1 outline-none"
+                  />
+                  {quota && (
+                    <span className="text-faint mt-2 block text-xs leading-[1.33]">
+                      <span className="text-ink/50">
+                        {quota.limit - quota.owned}
+                      </span>{" "}
+                      agents remaining (Current limit: {quota.limit})
+                    </span>
+                  )}
+                </label>
+              </div>
+
+              {error && <p className="mt-4 text-xs leading-[1.33]">{error}</p>}
+
+              <div className="mt-7 flex flex-wrap items-center gap-3">
+                <button
+                  onClick={() => void submit()}
+                  disabled={busy}
+                  className="bg-ink text-on-primary h-12 rounded-full px-6 text-sm font-semibold transition hover:opacity-85 disabled:opacity-40"
+                >
+                  {busy ? "Sending…" : "Send request"}
+                </button>
+                <button
+                  onClick={onClose}
+                  className="text-muted hover:text-ink h-12 rounded-full px-4 text-sm font-semibold transition"
+                >
+                  Not now
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

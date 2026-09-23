@@ -22,7 +22,6 @@ import {
   SESSION_PAGE,
   type AgentRow,
   DEFAULT_META,
-  DEFAULT_AGENT_LIMIT,
   type Config,
   type McpCatalogEntry,
   type MetaCapability,
@@ -93,6 +92,16 @@ function registry(env: Env, agentId: string) {
 /** The index of which agents exist. A DO namespace cannot be enumerated. */
 function directory(env: Env) {
   return env.AgentDirectory.get(env.AgentDirectory.idFromName("root"));
+}
+
+/**
+ * Push an agent's session count back into the directory, so the admin dashboard can
+ * read every total out of one object. Called after a session is created or deleted —
+ * both rare next to a turn — and never on the hot path.
+ */
+async function syncSessionCount(env: Env, agentId: string) {
+  const count = await registry(env, agentId).sessionCount();
+  await directory(env).setSessionCount(agentId, count);
 }
 
 /**
@@ -1713,9 +1722,9 @@ async function handleAgents(
       // analytics back to a session. See docs/cloudflare-durable-object-costs.md.
       const objectId = env.SessionAgent.idFromName(sessionId).toString();
       await dir.touch(agentId);
-      return withCors(
-        Response.json(await reg.create(sessionId, title ?? "New session", objectId))
-      );
+      const created = await reg.create(sessionId, title ?? "New session", objectId);
+      await syncSessionCount(env, agentId);
+      return withCors(Response.json(created));
     }
     return undefined;
   }
@@ -1789,6 +1798,7 @@ async function handleSession(
     const objectId = env.SessionAgent.idFromName(forkId).toString();
     const source = await reg.get(id);
     const row = await reg.create(forkId, title ?? `${source?.title ?? "Session"} (fork)`, objectId);
+    await syncSessionCount(env, agentId);
     const imported = await routeAgentRequest(
       new Request(`${url.origin}/agents/session-agent/${encodeURIComponent(forkId)}/import`, {
         method: "POST",
@@ -1799,6 +1809,7 @@ async function handleSession(
     );
     if (!imported?.ok) {
       await reg.remove(forkId);
+      await syncSessionCount(env, agentId);
       return withCors(Response.json({ error: "could not seed the fork" }, { status: 502 }));
     }
     return withCors(Response.json(row));
@@ -1826,6 +1837,7 @@ async function handleSession(
 
   if (request.method === "DELETE") {
     await reg.remove(id);
+    await syncSessionCount(env, agentId);
     // Destroy the object itself, not just its rows: a Durable Object is billed
     // for the bytes it stores, so a cleared-but-living session still costs.
     await routeAgentRequest(
@@ -1906,6 +1918,7 @@ async function handleWebhook(
       chat_username: message.chat.type === "private" ? "" : (message.chat.username ?? ""),
       chat_thread_id: threadId,
     });
+    await syncSessionCount(env, agentId);
   }
   await reg.touch(sessionId);
 
@@ -2018,7 +2031,15 @@ export default {
         if (request.method !== "GET") {
           return withCors(Response.json({ error: "method not allowed" }, { status: 405 }));
         }
-        return withCors(Response.json({ requests: await dir.listBusinessRequests() }));
+        const limit = Number(url.searchParams.get("limit") ?? 20);
+        return withCors(
+          Response.json(
+            await dir.listBusinessRequests(
+              Number.isFinite(limit) ? limit : 20,
+              url.searchParams.get("cursor") ?? ""
+            )
+          )
+        );
       }
       if (segments[4] === "approve" && request.method === "POST") {
         const result = await dir.approveBusinessRequest(id);
@@ -2034,37 +2055,23 @@ export default {
       return withCors(Response.json({ error: "method not allowed" }, { status: 405 }));
     }
 
-    // The owner's own dashboard feed: deployment-wide counts plus a row per agent.
+    // The owner's own dashboard feed: three deployment-wide counts, and nothing else.
     // Same gate as the business-account route, and for the same reason — this is
     // usage data across every account, not any one caller's own.
+    //
+    // It is one query against the directory. Session counts live in per-agent objects,
+    // so they are cached in the directory as they change; the only fan-out left is the
+    // first read after this cache was introduced, which fills in the agents that
+    // predate it and then never runs again.
     if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "stats") {
       if (!trustedCaller(request, env)) {
         return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
       }
       const dir = directory(env);
-      const agents = await dir.list();
-      const limits = await dir.agentLimits();
-      const per_agent = await Promise.all(
-        agents.map(async (a) => ({
-          id: a.id,
-          name: a.name,
-          admin_email: a.admin_email,
-          members: splitEmails(a.allowed_emails).length,
-          sessions: await registry(env, a.id).sessionCount(),
-          agent_limit: limits[a.admin_email] ?? DEFAULT_AGENT_LIMIT,
-          created_at: a.created_at,
-          updated_at: a.updated_at,
-        }))
-      );
-      return withCors(
-        Response.json({
-          agents: agents.length,
-          users: await dir.distinctUsers(),
-          business_accounts: await dir.businessAccounts(),
-          sessions: per_agent.reduce((sum, a) => sum + a.sessions, 0),
-          per_agent,
-        })
-      );
+      for (const id of await dir.unmeasuredAgents()) {
+        await syncSessionCount(env, id);
+      }
+      return withCors(Response.json(await dir.counts()));
     }
 
     // Everything past this point has to be somebody. Not "came from the app" — that

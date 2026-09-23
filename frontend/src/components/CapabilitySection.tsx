@@ -230,7 +230,6 @@ export function Field({
         value={value}
         onChange={onChange}
         bordered={bordered}
-        suggestionHint="Default options"
       />
     );
 
@@ -370,9 +369,7 @@ export function CapabilitySection({
       </div>
 
       {blocked && blockedNote && (
-        <p className="text-muted mt-4 text-xs leading-[1.33]">
-          {blockedNote}
-        </p>
+        <p className="text-muted mt-4 text-xs leading-[1.33]">{blockedNote}</p>
       )}
 
       {on && !blocked && (
@@ -403,7 +400,7 @@ export function CapabilitySection({
                 tint ? "bg-canvas border-hairline border" : "bg-canvas-soft"
               }`}
             >
-              Fill in the fields above to start using this.
+              Fill in the fields above to start using this feature.
             </p>
           )}
         </div>
