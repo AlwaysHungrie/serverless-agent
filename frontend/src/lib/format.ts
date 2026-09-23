@@ -40,3 +40,36 @@ export function formatDate(ms: number | null | undefined): string {
     minute: "2-digit",
   });
 }
+
+/**
+ * Money as a person reads it, for a figure that sits in a fixed-width slot: two
+ * decimals, thousands separated, and anything above zero but below a cent shown as
+ * `<$0.01` rather than rounded down to nothing.
+ *
+ * Different from `formatUsd`, which is for a single turn's cost and shows six
+ * decimals because a turn really can cost $0.000004. A running total wants to line
+ * up in a column instead, and "$0.000004" in a header is four characters of noise
+ * and one of information.
+ */
+export function formatUsdShort(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "$0.00";
+  if (n <= 0) return "$0.00";
+  // Under a cent, two decimals would read as nothing spent at all. Four is still a
+  // fixed width, and it is the difference between "free" and "cheap".
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/**
+ * A count that has to fit whatever it is given: exact up to four figures, then
+ * abbreviated, so a long-running session cannot widen the header it sits in.
+ */
+export function formatCountShort(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "0";
+  if (n < 10_000) return n.toLocaleString("en-US");
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 100_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}m`;
+}

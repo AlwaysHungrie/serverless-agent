@@ -68,7 +68,16 @@ export default function AgentPage({
     text: string;
   } | null>(null);
   /** Whether the sidebar drawer is showing. Only used below the md breakpoint. */
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  /**
+   * Whether the drawer is showing. Only means anything below the md breakpoint,
+   * where the sidebar is a drawer over the page rather than a column beside it.
+   *
+   * Open to begin with: this page opens on the welcome screen with no session
+   * selected, and the sessions are what there is to do here. Landing on a phone with
+   * the list hidden behind a button makes an agent that has been used for months
+   * look like one that has never been used at all.
+   */
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   /** Reads a proxy response, surfacing the Worker-unreachable message as an error. */
   const readJson = useCallback(async <T,>(res: Response): Promise<T | null> => {
@@ -278,6 +287,7 @@ export default function AgentPage({
       <Sidebar
         agentId={agentId}
         agentName={agent?.name ?? ""}
+        fleetName={agent?.fleet_name ?? ""}
         sessions={sessions}
         hasMore={sessionCursor.more}
         onLoadMore={loadMoreSessions}

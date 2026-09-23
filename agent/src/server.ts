@@ -18,6 +18,8 @@ import {
   splitEmails,
   AGENT_PAGE,
   MAX_MEMBERS,
+  MAX_SESSIONS,
+  SESSION_LIMIT_MESSAGE,
   sessionName,
   type AccessRow,
   MAX_PAGE,
@@ -1449,6 +1451,24 @@ async function handleFleets(
 }
 
 /**
+ * An agent row as a given caller may see it.
+ *
+ * The administrator's address is struck out for everybody who is not that
+ * administrator. To the user of a fleet agent, whoever provides it is a fact about
+ * their own tool, and that address is a personal one: a fleet of a thousand agents
+ * would otherwise hand one person's inbox to a thousand strangers, every one of whom
+ * can read it out of a page source. The user is told there is an administrator —
+ * that is what the fleet name on their sidebar says — and not who.
+ *
+ * The blank is not a lie the rest of the code has to work around: every gate reads
+ * the access list from the agent's own object, never from a row that has been
+ * through here, and "is this me" comes out the same either way.
+ */
+function agentFor(row: AgentRow, email: string): AgentRow {
+  return row.admin_email === email ? row : { ...row, admin_email: "" };
+}
+
+/**
  * Bring one agent into existence: its gate, its index row, and the settings it
  * starts out holding.
  *
@@ -1530,7 +1550,13 @@ async function handleAgents(
         if (!fleets.some((f) => f.fleet_id === fleetId)) {
           return withCors(Response.json({ error: "not allowed" }, { status: 403 }));
         }
-        return withCors(Response.json(await dir.listFleetPage(fleetId, limit, cursor)));
+        const fleetPage = await dir.listFleetPage(fleetId, limit, cursor);
+        return withCors(
+          Response.json({
+            ...fleetPage,
+            agents: fleetPage.agents.map((row) => agentFor(row, email)),
+          })
+        );
       }
 
       // How many more this caller may administer, so the frontend can hide the
@@ -1545,6 +1571,7 @@ async function handleAgents(
       return withCors(
         Response.json({
           ...page,
+          agents: page.agents.map((row) => agentFor(row, email)),
           fleets: email ? await dir.listFleets(email) : [],
           agent_limit: agentLimit,
           agents_owned: owned,
@@ -1793,7 +1820,7 @@ async function handleAgents(
     // The row itself — name, access list, who administers it — is readable by both:
     // it is what the admin dialog puts in its header, and it says nothing an admin
     // does not already know about the agent they made.
-    if (request.method === "GET") return withCors(Response.json(agent));
+    if (request.method === "GET") return withCors(Response.json(agentFor(agent, email)));
     if (request.method === "PATCH") {
       // Renaming the agent and editing its access list are settings-page edits, so
       // they belong to its users. An admin who is not one does not get them.
@@ -1867,7 +1894,7 @@ async function handleAgents(
         next = { ...next, allowed_emails: allowed };
       }
 
-      return withCors(Response.json(next));
+      return withCors(Response.json(agentFor(next, email)));
     }
     if (request.method === "DELETE") {
       // Deleting is the admin's, not the users'. The agent exists because they made
@@ -1894,8 +1921,18 @@ async function handleAgents(
       const meta = await reg.meta();
       return withCors(
         Response.json({
-          agent,
+          agent: agentFor(agent, email),
           config: redact(await reg.config(env.MODEL)),
+          // What the agent has spent this month against the ceiling its
+          // administrator set. Read-only here: the settings page is the user's, and
+          // this is the one number on it that is not theirs to move. Sent to
+          // everyone, because an agent with no ceiling reports a limit of 0 and the
+          // page shows nothing at all.
+          spend: await reg.spendState(),
+          // The ceiling on the access list below it, from the same document. The
+          // page shows it beside the list; the Worker is what actually refuses a
+          // list that goes over.
+          member_limit: meta.member_limit,
           models: modelOptions(meta.models, modelCatalog(env)),
           capabilities: capabilitiesFor(meta),
           // What the agent's own pages may not show or change. They are decided in
@@ -2072,7 +2109,14 @@ async function handleAgents(
       // analytics back to a session. See docs/cloudflare-durable-object-costs.md.
       const objectId = env.SessionAgent.idFromName(sessionId).toString();
       await dir.touch(agentId);
-      const created = await reg.create(sessionId, title ?? "New session", objectId);
+      // The cap lives in `create`, so this is where its refusal is turned into an
+      // answer the page can show rather than a 500 it cannot.
+      let created;
+      try {
+        created = await reg.create(sessionId, title ?? "New session", objectId);
+      } catch (err) {
+        return withCors(Response.json({ error: (err as Error).message }, { status: 409 }));
+      }
       await syncSessionCount(env, agentId);
       return withCors(Response.json(created));
     }
@@ -2131,6 +2175,11 @@ async function handleSession(
       count?: number;
       title?: string;
     };
+    // Checked before the source is read: exporting a long conversation is real work
+    // to throw away, and the answer would be the same after it.
+    if ((await reg.countSessions()) >= MAX_SESSIONS) {
+      return withCors(Response.json({ error: SESSION_LIMIT_MESSAGE }, { status: 409 }));
+    }
     const exported = await routeAgentRequest(
       new Request(
         `${url.origin}/agents/session-agent/${encodeURIComponent(id)}/export?count=${Number(count ?? 0)}`
@@ -2147,7 +2196,12 @@ async function handleSession(
     const forkId = sessionName(agentId, crypto.randomUUID().slice(0, 8));
     const objectId = env.SessionAgent.idFromName(forkId).toString();
     const source = await reg.get(id);
-    const row = await reg.create(forkId, title ?? `${source?.title ?? "Session"} (fork)`, objectId);
+    let row;
+    try {
+      row = await reg.create(forkId, title ?? `${source?.title ?? "Session"} (fork)`, objectId);
+    } catch (err) {
+      return withCors(Response.json({ error: (err as Error).message }, { status: 409 }));
+    }
     await syncSessionCount(env, agentId);
     const imported = await routeAgentRequest(
       new Request(`${url.origin}/agents/session-agent/${encodeURIComponent(forkId)}/import`, {
@@ -2160,7 +2214,18 @@ async function handleSession(
     if (!imported?.ok) {
       await reg.remove(forkId);
       await syncSessionCount(env, agentId);
-      return withCors(Response.json({ error: "could not seed the fork" }, { status: 502 }));
+      // The session object says why when it is a reason the person can act on — no
+      // room left for the files this fork would copy. Anything else is a failure
+      // they can only retry.
+      const reason = (await imported
+        ?.json()
+        .catch(() => null)) as { error?: string } | null;
+      return withCors(
+        Response.json(
+          { error: reason?.error ?? "could not seed the fork" },
+          { status: imported?.status === 413 ? 413 : 502 }
+        )
+      );
     }
     return withCors(Response.json(row));
   }
@@ -2260,6 +2325,20 @@ async function handleWebhook(
   const existing = await reg.forChat(chatId, threadId);
   const sessionId = existing?.id ?? (await reg.freeChatSessionId(agentId, chatId, threadId));
   if (!existing) {
+    // A chat the agent has never spoken to needs a session of its own, and a full
+    // agent has none to give. Said in the chat rather than swallowed: to whoever is
+    // typing, an agent that answers nothing is a broken one.
+    if ((await reg.countSessions()) >= MAX_SESSIONS) {
+      const config = await reg.config(env.MODEL);
+      if (config.telegram_bot_token) {
+        await new Telegram(config.telegram_bot_token, env.TELEGRAM_API_BASE)
+          .send(chatId, SESSION_LIMIT_MESSAGE, message.message_id, Number(threadId) || undefined)
+          .catch(() => {
+            // Nothing to do about a chat that cannot be reached.
+          });
+      }
+      return new Response("ok");
+    }
     await reg.create(sessionId, chatTitle(message), env.SessionAgent.idFromName(sessionId).toString(), {
       source: "telegram",
       chat_id: chatId,

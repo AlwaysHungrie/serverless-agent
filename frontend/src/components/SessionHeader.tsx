@@ -3,20 +3,20 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Menu, Pencil, X } from "lucide-react";
 import type { Summary } from "@/lib/agent";
-import { formatCount, formatDate } from "@/lib/format";
+import { formatCountShort, formatDate, formatUsdShort } from "@/lib/format";
 
 function Stat({
   label,
   value,
   hint,
 }: {
-  label: string;
+  label?: string;
   value: string;
   hint?: string;
 }) {
   return (
     <div className="min-w-0 text-right">
-      <div className="text-faint text-xs leading-[1.33]">{label}</div>
+      {label && <div className="text-faint text-xs leading-[1.33]">{label}</div>}
       <div className="text-ink tnum text-xl font-[650] leading-[1.3]">
         {value}
       </div>
@@ -150,8 +150,14 @@ export function SessionHeader({
           </div>
         </div>
 
-        <div className="hidden md:block">
-          <Stat label="Messages" value={formatCount(summary?.messages ?? 0)} />
+        {/* What this session has cost, over how many messages it took. Both are
+            formatted to a fixed shape — two decimals, counts abbreviated past four
+            figures — so a long session cannot widen the header it sits in. */}
+        <div className="hidden shrink-0 md:block">
+          <Stat
+            value={formatUsdShort(summary?.llm.cost_usd)}
+            hint={`${formatCountShort(summary?.messages ?? 0)} msgs`}
+          />
         </div>
       </div>
     </header>

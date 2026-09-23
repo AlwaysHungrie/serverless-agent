@@ -2,13 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import {
-  ChevronDown,
-  ChevronRight,
-  Plus,
-  PlusIcon,
-  Settings,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Settings } from "lucide-react";
 import { AuthModal } from "@/components/auth/AuthModal";
 import { apiFetch, useIdentity } from "@/lib/identity";
 import { UserMenu } from "@/components/auth/UserMenu";
@@ -338,8 +332,9 @@ export default function Agents() {
                       Need more agents?
                     </span>
                     <span className="text-muted block text-xs leading-[1.33]">
-                      You can co-manage and sponsor hundreds of agents for you
-                      and your gang. Click here to learn more.
+                      You can create and manage hundreds of agents for your
+                      friends and customers. <br />
+                      Click here to learn more.
                     </span>
                   </span>
                 </div>
@@ -615,21 +610,39 @@ function AgentListRow({
     .split("\n")
     .map((e) => e.trim().toLowerCase())
     .includes(email);
-  // Who is on the agent, rather than when it was last opened. Inside a fleet the
-  // address is the only thing that tells one agent from the next; on a lone agent
-  // it is still the more useful line.
   const members = agent.allowed_emails
     .split("\n")
     .map((e) => e.trim())
-    .filter(Boolean)
-    .join(", ");
+    .filter(Boolean);
+  /**
+   * The line under the name, and it answers a different question depending on who
+   * is reading it.
+   *
+   * To a member, their own address is not information — they know it — so the line
+   * says what the agent *is* instead: the fleet it belongs to, or that it is their
+   * own. Anyone else on it is still named, because that is the part they do not
+   * already know.
+   *
+   * To an administrator looking down a fleet, the addresses are the whole point:
+   * every agent in a fleet has the same name, and the member is the only thing that
+   * tells one from the next.
+   */
+  const others = members.filter((e) => e.toLowerCase() !== email);
+  const subtitle = isUser
+    ? [
+        agent.fleet_name || "Personal agent",
+        others.length ? `shared with ${others.join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : members.join(", ") || "No members";
   const title = (
     <>
       <span className="block truncate text-base font-semibold leading-[1.38]">
         {agent.name}
       </span>
       <span className="text-faint block truncate text-xs leading-[1.33]">
-        {members || "No members"}
+        {subtitle}
       </span>
     </>
   );
@@ -1330,10 +1343,13 @@ function DeleteFleetDialog({
       <div className="bg-canvas w-full max-w-sm rounded-[20px] px-6 py-6 shadow-xl">
         <p className="text-base font-semibold leading-[1.38]">Delete {name}?</p>
         <p className="text-muted mt-2 text-sm font-light leading-[1.43]">
-          All {fleet.agents} agent{fleet.agents === 1 ? "" : "s"} in this fleet
-          go with it — their chats, files, memories, settings and MCP
-          connections, and their Telegram bots stop answering. Their users lose
-          them without notice. This cannot be undone.
+          You are about to delete {fleet.agents} agent
+          {fleet.agents === 1 ? "" : "s"}. This will delete all chats, files,
+          memories, settings, MCP connections and Telegram bots will stop
+          answering.
+          <br />
+          <br />
+          This action cannot be undone. Proceed with caution.
         </p>
         <label className="mt-4 block">
           <span className="text-muted block text-xs leading-[1.33]">
@@ -1413,8 +1429,11 @@ function DeleteAgentDialog({
           Delete {agent.name}?
         </p>
         <p className="text-muted mt-2 text-sm font-light leading-[1.43]">
-          Its chats, files, memories, settings and MCP connections all go with
-          it, and its Telegram bot stops answering. This cannot be undone.
+          All chats, files, memories, settings and MCP connections will also be
+          deleted and the Telegram bot will stop answering.
+          <br />
+          <br />
+          This action cannot be undone. Proceed with caution.
         </p>
         <label className="mt-4 block">
           <span className="text-muted block text-xs leading-[1.33]">

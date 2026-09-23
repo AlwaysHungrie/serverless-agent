@@ -15,7 +15,9 @@ import type {
   Config,
   ModelOption,
   ReasoningEffort,
+  SpendState,
 } from "@/lib/agent";
+import { formatUsdShort } from "@/lib/format";
 import { apiFetch, useIdentity } from "@/lib/identity";
 
 /**
@@ -37,6 +39,19 @@ const REASONING: { id: ReasoningEffort; label: string; hint: string }[] = [
   { id: "medium", label: "Medium", hint: "Good for multi-step questions." },
   { id: "high", label: "High", hint: "Thinks hardest. Slowest and priciest." },
 ];
+
+/**
+ * How much of the month's ceiling is left, as a whole number from 0 to 100.
+ *
+ * Whole numbers because a percentage with decimals in it invites reading it as an
+ * exact figure; the dollars underneath are the exact figure. Rounded down, so a
+ * nearly-spent agent never reads as having 1% left when it has 0.4%.
+ */
+function remainingPercent(spend: SpendState): number {
+  if (spend.limit <= 0) return 100;
+  const left = Math.max(0, spend.limit - spend.usd);
+  return Math.max(0, Math.min(100, Math.floor((left / spend.limit) * 100)));
+}
 
 function Row({
   title,
@@ -140,6 +155,18 @@ export default function Settings({
    * edit that silently does nothing.
    */
   const [locked, setLocked] = useState<Set<string>>(new Set());
+  /**
+   * What the agent has spent this month, and the ceiling its administrator set.
+   * Shown, never edited: this page is the agent's user's, and the ceiling is the
+   * one thing on it that belongs to whoever provides the agent.
+   */
+  const [spend, setSpend] = useState<SpendState | null>(null);
+  /**
+   * How many addresses this agent's access list may hold, or 0 for no ceiling.
+   * Set by whoever administers the agent; shown here so a list that is about to be
+   * refused says so before it is saved rather than after.
+   */
+  const [memberLimit, setMemberLimit] = useState(0);
   /** Connecting the bot is setup rather than a tool, so it is shown here, first. */
   const [telegram, setTelegram] = useState<Capability | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -163,6 +190,8 @@ export default function Settings({
         models: ModelOption[];
         capabilities: Capability[];
         locked?: string[];
+        spend?: SpendState;
+        member_limit?: number;
         error?: string;
       } | null;
       if (!res.ok || !payload) {
@@ -175,6 +204,8 @@ export default function Settings({
       setModels(payload.models);
       setConfig(payload.config);
       setLocked(new Set(payload.locked ?? []));
+      setSpend(payload.spend ?? null);
+      setMemberLimit(payload.member_limit ?? 0);
       setAgent(payload.agent ?? null);
       setName(payload.agent?.name ?? "");
       setEmails(payload.agent?.allowed_emails ?? "");
@@ -277,6 +308,12 @@ export default function Settings({
     .filter((e) => e !== "" && e.toLowerCase() !== ownEmail)
     .join("\n");
 
+  /** Everyone on the list, your own address included — what the ceiling counts. */
+  const memberCount = emails
+    .split("\n")
+    .map((e) => e.trim())
+    .filter(Boolean).length;
+
   const set = (patch: Partial<Config>, wait = 0) => {
     setConfig((c) => (c ? { ...c, ...patch } : c));
     if (debounce.current) clearTimeout(debounce.current);
@@ -330,6 +367,51 @@ export default function Settings({
 
         {config && (
           <div className="mt-8">
+            {/* Only a fleet agent, and only one that was given a ceiling. An agent
+                somebody made for themselves is spending their own money against no
+                limit, and a row that always reads "100% remaining" is furniture. */}
+            {spend && agent?.fleet_id && (
+              <Row
+                title={
+                  spend.limit > 0 ? "Monthly spend limit" : "This month's usage"
+                }
+                hint="Set by agent admin. Resets every calendar month."
+              >
+                <div className="bg-canvas-soft rounded-2xl px-5 py-4">
+                  <div className="tnum text-xl font-[650] leading-[1.3]">
+                    {spend.limit > 0 ? (
+                      <>
+                        {remainingPercent(spend)}% remaining{" "}
+                        <span className="text-muted text-xs font-light">
+                          {formatUsdShort(spend.usd)} of{" "}
+                          {formatUsdShort(spend.limit)} spent
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        {formatUsdShort(spend.usd)}{" "}
+                        <span className="text-muted text-sm font-light">
+                          spent this month (limit not set)
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  {spend.limit > 0 && (
+                    <>
+                      {/* The bar is the same number again, for the glance that does
+                          not stop to read it. */}
+                      <div className="bg-canvas mt-3 h-1.5 overflow-hidden rounded-full">
+                        <div
+                          className="bg-ink h-full rounded-full"
+                          style={{ width: `${100 - remainingPercent(spend)}%` }}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </Row>
+            )}
+
             {telegram && !locked.has("telegram") && (
               <CapabilitySection
                 capability={telegram}
@@ -516,8 +598,15 @@ export default function Settings({
                 onChange={(v) => void saveEmails(v)}
                 placeholder="teammate@example.com"
                 locked={ownEmail ? [ownEmail] : []}
-                emptyNote="Best to keep this list empty."
               />
+              {/* Only when there is one. A ceiling of "none" is not a fact worth a
+                  line of its own, and every agent outside a fleet has none. */}
+              {memberLimit > 0 && (
+                <p className="text-faint tnum mt-2 text-xs leading-[1.33]">
+                  {memberLimit - memberCount} member
+                  {memberLimit === 1 ? "" : "s"} remaining (set by agent admin)
+                </p>
+              )}
             </Row>
           </div>
         )}

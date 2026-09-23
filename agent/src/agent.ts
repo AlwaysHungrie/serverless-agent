@@ -21,6 +21,10 @@ import {
   type AgentDirectory,
   type Config,
   type Memory,
+  MAX_AGENT_BYTES,
+  MAX_SESSIONS,
+  SESSION_LIMIT_MESSAGE,
+  storageFullMessage,
   type SessionRegistry,
   type SessionRow,
 } from "./registry";
@@ -1210,8 +1214,15 @@ export class SessionAgent extends Think<Env> {
       } else if (request.method === "GET" && path === "export") {
         body = await this.exportTurns(Number(url.searchParams.get("count") ?? "0"));
       } else if (request.method === "POST" && path === "import") {
-        await this.importTurns((await request.json()) as Snapshot);
-        body = { ok: true };
+        // A refused import is the fork's answer, not a crash: the route that asked
+        // for it deletes the empty fork and passes this sentence back.
+        try {
+          await this.importTurns((await request.json()) as Snapshot);
+          body = { ok: true };
+        } catch (err) {
+          body = { error: (err as Error).message };
+          status = 413;
+        }
       } else if (request.method === "GET" && path === "summary") {
         body = await this.summary();
       } else if (request.method === "POST" && path === "unstick") {
@@ -1225,6 +1236,10 @@ export class SessionAgent extends Think<Env> {
         // The bucket is swept before the reply, because `destroy()` aborts the
         // isolate: work left running behind it may never finish. Dropping the
         // object's own storage is what waits, and the runtime completes that.
+        //
+        // The agent's byte total is given back first, for the same reason: after
+        // `destroy()` there is nobody left to report it.
+        await this.registry().addStorageBytes(-this.storedBytes());
         await this.sweepBucket();
         this.ctx.waitUntil(this.destroy());
         body = { ok: true };
@@ -1254,8 +1269,14 @@ export class SessionAgent extends Think<Env> {
     return this.exec<Attachment>(`SELECT * FROM attachments WHERE used = 0 ORDER BY ts ASC`);
   }
 
+  /**
+   * Every file this session writes goes through here, so this is where the agent's
+   * byte total is moved. Reported rather than awaited: the file is already written,
+   * and a count that lands a moment later is better than an upload that waits on it.
+   */
   private insertAttachment(row: Omit<Attachment, "ts" | "used">): Attachment {
     const full: Attachment = { ...row, ts: Date.now(), used: 0 };
+    if (full.bytes > 0) this.ctx.waitUntil(this.registry().addStorageBytes(full.bytes));
     this.exec(
       `INSERT INTO attachments (id, kind, name, mime, text, path, thumb_path, bytes, ts, used)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
@@ -1272,11 +1293,38 @@ export class SessionAgent extends Think<Env> {
     return full;
   }
 
+  /** What this session's files come to, in bytes. */
+  private storedBytes(): number {
+    try {
+      const row = this.exec<{ total: number }>(
+        `SELECT COALESCE(SUM(bytes), 0) AS total FROM attachments`
+      )[0];
+      return Math.max(0, Number(row?.total ?? 0));
+    } catch {
+      // A session that never got as far as its schema holds no files either.
+      return 0;
+    }
+  }
+
+  /**
+   * Hand this session's bytes back to the agent's total.
+   *
+   * Called before the rows are deleted, never after — and before the object destroys
+   * itself, because a destroyed object cannot report anything. A session whose
+   * isolate dies mid-teardown leaves its bytes counted against the agent; the total
+   * is a ceiling, not an invoice, so the cost of that is headroom.
+   */
+  private releaseStorage(): void {
+    const held = this.storedBytes();
+    if (held > 0) this.ctx.waitUntil(this.registry().addStorageBytes(-held));
+  }
+
   /** Only an unsent attachment can be dropped; a sent one belongs to its message. */
   private async removeAttachment(id: string) {
     const row = this.attachment(id);
     if (!row || row.used === 1) return;
     this.exec(`DELETE FROM attachments WHERE id = ? AND used = 0`, id);
+    if (row.bytes > 0) this.ctx.waitUntil(this.registry().addStorageBytes(-row.bytes));
     if (row.path) await this.workspace.rm(`uploads/${id}`, { recursive: true, force: true });
     // The parse outlives nothing: the file it describes is gone.
     this.exec(`DELETE FROM file_cache WHERE attachment_id = ?`, id);
@@ -1340,6 +1388,14 @@ export class SessionAgent extends Think<Env> {
         },
         status: 413,
       };
+    }
+
+    // The agent-wide ceiling, on top of the per-kind one. Asked before the bytes are
+    // read off the request: a file that cannot be kept should not be uploaded first.
+    const room = await this.registry().storageRoom();
+    if (file.size > room) {
+      const { bytes } = await this.registry().storageState();
+      return { body: { error: storageFullMessage(bytes, file.size) }, status: 413 };
     }
 
     if (isPdf(mime, file.name)) {
@@ -1829,6 +1885,15 @@ export class SessionAgent extends Think<Env> {
       if (!allowed) continue;
 
       const bytes = await bot.download(file.file_id);
+      // The agent's ceiling applies to what arrives over Telegram too. The file is
+      // dropped and the turn goes on with the text: the alternative is an agent that
+      // stops answering because somebody sent it a video.
+      if (bytes.byteLength > (await this.registry().storageRoom())) {
+        console.warn(
+          `file dropped in session ${this.name}: agent is at its ${MAX_AGENT_BYTES} byte storage limit`
+        );
+        continue;
+      }
       const id = crypto.randomUUID().slice(0, 12);
       const path = uploadPath(id, file.name);
       await this.workspace.writeFileBytes(path, bytes, file.mime);
@@ -2006,6 +2071,15 @@ export class SessionAgent extends Think<Env> {
     // Copied unsent (used = 0), so they show as chips and ride the next turn.
     const pending = (snapshot.pending ?? []).map((a) => [a, 0] as const);
 
+    // A fork copies the bytes rather than sharing them — either session can be
+    // deleted without taking the other's files — so it is charged for them like any
+    // other upload, and refused the same way when there is no room.
+    const incoming = [...carried, ...pending].reduce((sum, [a]) => sum + (a.bytes ?? 0), 0);
+    if (incoming > 0 && incoming > (await this.registry().storageRoom())) {
+      const { bytes } = await this.registry().storageState();
+      throw new Error(storageFullMessage(bytes, incoming));
+    }
+
     for (const [a, used] of [...carried, ...pending]) {
       let path = "";
       if (a.data) {
@@ -2019,6 +2093,7 @@ export class SessionAgent extends Think<Env> {
         thumb = `uploads/${a.id}/thumb.png`;
         await this.workspace.writeFileBytes(thumb, base64ToBytes(a.thumb), "image/png");
       }
+      if ((a.bytes ?? 0) > 0) this.ctx.waitUntil(this.registry().addStorageBytes(a.bytes));
       this.exec(
         `INSERT OR REPLACE INTO attachments (id, kind, name, mime, text, path, thumb_path, bytes, ts, used)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2139,6 +2214,12 @@ export class SessionAgent extends Think<Env> {
    * working session; only the tasks stay behind, and the reply says so.
    */
   private async startOver(row: SessionRow): Promise<string> {
+    // Asked before the chat is detached. A successor that cannot be created would
+    // otherwise leave the chat belonging to nothing, and the next message would only
+    // meet the same ceiling with the conversation already cut loose.
+    if ((await this.registry().countSessions()) >= MAX_SESSIONS) {
+      return SESSION_LIMIT_MESSAGE;
+    }
     const tasks = this.taskHandover();
     const next = await this.registry().freeChatSessionId(
       this.agentId(),
@@ -2146,18 +2227,25 @@ export class SessionAgent extends Think<Env> {
       row.chat_thread_id
     );
     await this.registry().detachChat(this.name);
-    await this.registry().create(
-      next,
-      "New session",
-      this.env.SessionAgent.idFromName(next).toString(),
-      {
-        source: row.source,
-        chat_id: row.chat_id,
-        chat_type: row.chat_type,
-        chat_username: row.chat_username,
-        chat_thread_id: row.chat_thread_id,
-      }
-    );
+    try {
+      await this.registry().create(
+        next,
+        "New session",
+        this.env.SessionAgent.idFromName(next).toString(),
+        {
+          source: row.source,
+          chat_id: row.chat_id,
+          chat_type: row.chat_type,
+          chat_username: row.chat_username,
+          chat_thread_id: row.chat_thread_id,
+        }
+      );
+    } catch (err) {
+      // Only reachable if the agent filled up between the check above and here. The
+      // chat is already detached, so say what state it is in rather than pretending
+      // the handover worked.
+      return `${(err as Error).message} This conversation has been closed; delete a session and send a message to start a new one.`;
+    }
 
     const kept =
       "Starting fresh. This conversation is kept and still readable in the browser; anything said here from now on goes to a new session.";
@@ -2186,6 +2274,7 @@ export class SessionAgent extends Think<Env> {
    * which ends the isolate running this code.
    */
   private async finishDelete(): Promise<void> {
+    this.releaseStorage();
     await this.sweepBucket();
     this.ctx.waitUntil(this.destroy());
   }
@@ -2208,6 +2297,8 @@ export class SessionAgent extends Think<Env> {
 
   private async reset(): Promise<void> {
     await this.session.clearMessages();
+    // Counted before the rows go: after the delete there is nothing left to total.
+    this.releaseStorage();
     this.exec(`DELETE FROM usage`);
     this.exec(`DELETE FROM message_files`);
     this.exec(`DELETE FROM message_text`);

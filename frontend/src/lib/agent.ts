@@ -26,6 +26,11 @@ export type AgentRow = {
    * the admin cannot open the agent's pages at all.
    */
   admin_email: string;
+  /*
+   * Blank unless the address reading it is the administrator: whoever provides a
+   * fleet agent is never named to the people it was provided to. `admin_email ===
+   * email` still answers "am I the admin", which is all this field is used for.
+   */
   /**
    * The fleet this agent was created into, or "" when it stands alone. Agents made
    * by one fleet create call share this id, which is what groups them on the home

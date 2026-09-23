@@ -52,3 +52,38 @@ h1, h2, h3, h4 {
 .tnum {
   font-variant-numeric: tabular-nums;
 }
+
+/*
+ * The band at the top of a fleet agent's sidebar: one line of text, walking left.
+ *
+ * Two copies of the line sit side by side and the pair is slid by exactly half its
+ * width, so the second copy arrives where the first began and the loop has no seam.
+ * Reduced motion stops it dead rather than slowing it: the line is short and reads
+ * fine standing still, so there is nothing lost by not moving it.
+ */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.marquee {
+  animation: marquee 18s linear infinite;
+  /* Still until asked. Text that crawls on its own is the part of a banner people
+     learn to look away from; moving it only when somebody points at it makes the
+     movement an answer rather than noise. */
+  animation-play-state: paused;
+}
+
+.marquee-run {
+  animation-play-state: running;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee {
+    animation: none;
+  }
+}

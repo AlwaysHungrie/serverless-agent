@@ -19,6 +19,7 @@ const SEARCH_DEBOUNCE_MS = 200;
 export function Sidebar({
   agentId,
   agentName,
+  fleetName = "",
   sessions,
   hasMore,
   onLoadMore,
@@ -33,6 +34,12 @@ export function Sidebar({
   /** The agent these sessions belong to. Every link out of here is scoped to it. */
   agentId: string;
   agentName: string;
+  /**
+   * The fleet this agent belongs to, or "" when it stands alone. Shown under the
+   * name, in place of the address of whoever is reading it: they know their own
+   * address, and what they may not know is whose fleet this agent came from.
+   */
+  fleetName?: string;
   sessions: SessionRow[];
   /** Whether older sessions remain unread behind the ones drawn. */
   hasMore: boolean;
@@ -49,6 +56,10 @@ export function Sidebar({
   onHome: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  /** Whether the pointer is over the fleet band. Nothing on a touch screen. */
+  const [bandHover, setBandHover] = useState(false);
+  /** Whether a tap has left the band scrolling. The touch answer to hovering. */
+  const [bandTapped, setBandTapped] = useState(false);
   /** A page request in flight, so a fast scroll asks for the next page once. */
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinel = useRef<HTMLDivElement>(null);
@@ -113,6 +124,40 @@ export function Sidebar({
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
+        {/* A fleet agent is somebody else's: they pay for it, they decide what it
+            can do, and they can take it away. That is worth saying on every screen
+            it appears on rather than once at handover — so it is a band, in the one
+            accent this design has, and it moves. */}
+        {fleetName && (
+          /* Still by default, and moving only while it is pointed at — or, where
+             there is no pointer, while it is left switched on by a tap. The line
+             is readable either way; the scroll is for reading past its end. */
+          <div
+            onMouseEnter={() => setBandHover(true)}
+            onMouseLeave={() => setBandHover(false)}
+            onClick={() => setBandTapped((on) => !on)}
+            className="bg-accent text-on-primary shrink-0 overflow-hidden py-1.5"
+          >
+            <div
+              className={`marquee flex w-max whitespace-nowrap will-change-transform ${
+                bandHover || bandTapped ? "marquee-run" : ""
+              }`}
+            >
+              {/* Two copies, so the loop has no seam to jump. The second is hidden
+                  from a screen reader, which would otherwise read the line twice. */}
+              {[false, true].map((copy) => (
+                <span
+                  key={String(copy)}
+                  aria-hidden={copy || undefined}
+                  className="px-6 text-[11px] font-medium leading-[1.33]"
+                >
+                  This agent is part of and managed by {fleetName}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center justify-between gap-3 px-6 pt-6 pb-4">
           <div className="flex min-w-0 items-center gap-3">
             {/* The way out of this agent entirely. First thing in the corner,
@@ -137,7 +182,7 @@ export function Sidebar({
                 {agentName || "Agent"}
               </div>
               <div className="text-muted text-sm font-light leading-[1.43]">
-                Cloud agent
+                {fleetName || "Personal agent"}
               </div>
             </button>
           </div>
