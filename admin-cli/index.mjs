@@ -35,23 +35,29 @@ const fileEnv = {
 };
 const conf = (key) => process.env[key] ?? fileEnv[key];
 
-// `--dev` swaps every lookup to its dev twin: a different deployment, and usually a
-// different secret with it.
-const DEV = process.argv.slice(2).some((a) => a === "--dev" || a === "-d");
-const pick = (key) => (DEV ? conf(`${key}_DEV`) ?? conf(`DEV_${key}`) : conf(key));
+// `--dev` and `--staging` each swap every lookup to that deployment's twin: a
+// different Worker, and usually a different secret with it. No flag means production.
+const argv = process.argv.slice(2);
+const TARGET = argv.some((a) => a === "--dev" || a === "-d")
+  ? "DEV"
+  : argv.some((a) => a === "--staging" || a === "-s")
+    ? "STAGING"
+    : "";
+const pick = (key) =>
+  TARGET ? conf(`${key}_${TARGET}`) ?? conf(`${TARGET}_${key}`) : conf(key);
 
 const BASE_URL = (pick("AGENT_URL") ?? "").replace(/\/+$/, "");
 const API_SECRET = pick("API_SECRET");
 
 if (!BASE_URL) {
   console.error(
-    `No ${DEV ? "AGENT_URL_DEV" : "AGENT_URL"} set. Put it in admin-cli/.env (see .env.example) or in the environment.`
+    `No ${TARGET ? `AGENT_URL_${TARGET}` : "AGENT_URL"} set. Put it in admin-cli/.env (see .env.example) or in the environment.`
   );
   process.exit(1);
 }
 if (!API_SECRET) {
   console.error(
-    `No ${DEV ? "API_SECRET_DEV" : "API_SECRET"} found. Put it in admin-cli/.env, or run from a checkout with agent/.dev.vars present.`
+    `No ${TARGET ? `API_SECRET_${TARGET}` : "API_SECRET"} found. Put it in admin-cli/.env, or run from a checkout with agent/.dev.vars present.`
   );
   process.exit(1);
 }
@@ -120,7 +126,7 @@ function viewport() {
 
 function render() {
   const out = [];
-  out.push(`${BOLD}salt-agent${OFF} ${DIM}${BASE_URL}${DEV ? "  [dev]" : ""}${OFF}`);
+  out.push(`${BOLD}salt-agent${OFF} ${DIM}${BASE_URL}${TARGET ? `  [${TARGET.toLowerCase()}]` : ""}${OFF}`);
   out.push("");
   const c = state.counts;
   out.push(
