@@ -82,13 +82,16 @@ export type SessionRow = {
   created_at: number;
   updated_at: number;
   object_id: string;
-  /** "web", or "telegram" for a chat the bot is in. */
+  /** "web", "telegram" for a chat the bot is in, or "whatsapp". */
   source?: string;
-  /** The Telegram chat id behind a telegram session. */
+  /** The Telegram chat id, or `wa:<number>` for a WhatsApp conversation. */
   chat_id?: string;
   /** private, group, supergroup or channel. */
   chat_type?: string;
-  /** A public chat's @handle, without the @. */
+  /**
+   * A public Telegram chat's @handle, without the @. On a WhatsApp session it holds
+   * the business number the conversation runs through, since WhatsApp has no handles.
+   */
   chat_username?: string;
   /** The forum topic inside that chat, when the session is one topic of a group. */
   chat_thread_id?: string;
@@ -215,6 +218,7 @@ export type Config = {
   cap_scheduled_tasks: number;
   cap_memory: number;
   cap_telegram: number;
+  cap_whatsapp: number;
   cap_mcp: number;
 
   /**
@@ -229,6 +233,12 @@ export type Config = {
   telegram_bot_username: string;
   telegram_user_whitelist: string;
   telegram_group_whitelist: string;
+  whatsapp_phone_number_id: string;
+  whatsapp_access_token: string;
+  whatsapp_app_secret: string;
+  whatsapp_verify_token: string;
+  /** The one number the agent answers on WhatsApp. Not a list: one agent, one person. */
+  whatsapp_number: string;
   image_model: string;
   transcription_model: string;
 };
@@ -257,6 +267,8 @@ export type Capability = {
   label: string;
   summary: string;
   note: string;
+  /** A page explaining how to get this capability's credentials, opened in a new tab. */
+  guide?: { label: string; href: string };
   tools: string[];
   fields: CapabilityField[];
 };
@@ -271,6 +283,17 @@ export function capabilityReady(
   return capability.fields.every(
     (f) => !f.required || String(config[f.key] ?? "").trim() !== "",
   );
+}
+
+/**
+ * Where "Continue on WhatsApp" points. Unlike Telegram there is one shape only: a
+ * `wa.me` link to the business number, which opens the existing conversation on
+ * whichever device WhatsApp is signed in on. Empty when the session predates the
+ * number being recorded, in which case no link is offered rather than a broken one.
+ */
+export function whatsappLink(session: SessionRow): string {
+  const number = (session.chat_username ?? "").replace(/\D/g, "");
+  return number ? `https://wa.me/${number}` : "";
 }
 
 /* --------------------------------------------------------- mcp servers -- */

@@ -44,15 +44,17 @@ export default function Capabilities({
         return;
       }
       setConfig(payload.config);
-      // Telegram is connection setup, not a tool the agent calls: it lives in
-      // Settings. MCP goes first: it is the one capability the user builds out
+      // Telegram and WhatsApp are connection setup, not tools the agent calls: both
+      // live in Settings. MCP goes first: it is the one capability the user builds out
       // themselves, so it is what they come back to this page for.
       // A locked capability is decided in meta settings and nowhere else, so it is
       // not drawn here at all — a switch this page cannot save is worse than none.
       const locked = new Set(payload.locked ?? []);
       setCapabilities(
         payload.capabilities
-          .filter((c) => c.id !== "telegram" && !locked.has(c.id))
+          .filter(
+            (c) => c.id !== "telegram" && c.id !== "whatsapp" && !locked.has(c.id),
+          )
           .sort((a, b) => Number(b.id === "mcp") - Number(a.id === "mcp")),
       );
       setModels(payload.models);
@@ -137,6 +139,7 @@ export default function Capabilities({
               <CapabilitySection
                 key={capability.id}
                 capability={capability}
+                agentId={agentId}
                 config={config}
                 set={set}
                 // Images only reach a model that can see them, so the switch is dead

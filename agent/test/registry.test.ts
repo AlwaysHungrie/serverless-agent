@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_CONFIG,
@@ -435,5 +435,52 @@ describe("mcp servers", () => {
     await reg.addMcpServer(row("m1"));
     await reg.removeMcpServer("m1");
     expect(await reg.mcpServers()).toEqual([]);
+  });
+});
+
+describe("schema ladder", () => {
+  /** The columns WhatsApp added, which an agent made before it does not have. */
+  const whatsappColumns = [
+    "cap_whatsapp",
+    "whatsapp_phone_number_id",
+    "whatsapp_access_token",
+    "whatsapp_app_secret",
+    "whatsapp_verify_token",
+    "whatsapp_number",
+  ];
+
+  it("adds the WhatsApp config columns to an agent that predates them", async () => {
+    // An agent created before WhatsApp shipped: its baseline ran without those
+    // columns, and it will never run the baseline again. Reproduced by winding a
+    // finished database back to where such an agent actually stands — the columns
+    // gone, the recorded version one rung short of the end.
+    await reg.config("vendor/default");
+    await runInDurableObject(reg, (instance, ctx) => {
+      for (const col of whatsappColumns) {
+        ctx.storage.sql.exec(`ALTER TABLE config DROP COLUMN ${col}`);
+      }
+      ctx.storage.sql.exec(`UPDATE schema_migrations SET version = 2 WHERE id = 1`);
+      // The object caches "schema is current" in memory; a real agent in this state
+      // is one that has just been woken by the new code.
+      (instance as unknown as { ready: boolean }).ready = false;
+    });
+
+    // Every read of the settings names every column, so this is the call that was
+    // throwing `no such column: cap_whatsapp` — including from deleting the agent.
+    const config = await reg.config("vendor/default");
+    expect(config.cap_whatsapp).toBe(0);
+    expect(config.whatsapp_number).toBe("");
+  });
+
+  it("leaves an agent that already has the columns alone", async () => {
+    // The deploy that first shipped WhatsApp put these columns in the baseline, so
+    // agents created under it have them and still have the new rung to run.
+    await reg.config("vendor/default");
+    await runInDurableObject(reg, (instance, ctx) => {
+      ctx.storage.sql.exec(`UPDATE schema_migrations SET version = 2 WHERE id = 1`);
+      (instance as unknown as { ready: boolean }).ready = false;
+    });
+    await reg.setConfig({ whatsapp_number: "+15550001111" }, "vendor/default");
+    expect((await reg.config("vendor/default")).whatsapp_number).toBe("+15550001111");
   });
 });

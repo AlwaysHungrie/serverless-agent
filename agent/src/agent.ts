@@ -38,6 +38,7 @@ import {
   topicId,
   type TelegramMessage,
 } from "./telegram";
+import { OUTSIDE_WINDOW, WhatsApp, WhatsappError, type WhatsappInbound } from "./whatsapp";
 
 export type Env = {
   SessionAgent: DurableObjectNamespace<SessionAgent>;
@@ -88,6 +89,9 @@ export type Env = {
   CLERK_ISSUER?: string;
   /** Telegram's API host. Only set to stand a local Bot API server in its place. */
   TELEGRAM_API_BASE?: string;
+
+  /** Graph's host. Only set to point the channel at a stand-in. */
+  WHATSAPP_API_BASE?: string;
 };
 
 /**
@@ -1092,6 +1096,11 @@ export class SessionAgent extends Think<Env> {
     const row = await this.registry().get(this.name);
     // A browser session, or one cut loose from its chat by `!new`, has nowhere to post.
     if (!row?.chat_id) return;
+    // A WhatsApp session has a chat id too, and it is not a Telegram one: sending it
+    // there would post the conversation into whichever chat that number happens to
+    // name. Scheduled delivery over WhatsApp waits on the 24-hour window question,
+    // which Phase 2 settles — see docs/whatsapp-handover.md.
+    if (row.source === "whatsapp") return;
 
     const bot = new Telegram(config.telegram_bot_token, this.env.TELEGRAM_API_BASE);
     // The topic is stored as text; a chat without topics keeps it empty.
@@ -1254,6 +1263,8 @@ export class SessionAgent extends Think<Env> {
         body = { ok: true };
       } else if (request.method === "POST" && path === "telegram") {
         body = await this.telegramTurn((await request.json()) as TelegramMessage);
+      } else if (request.method === "POST" && path === "whatsapp") {
+        body = await this.whatsappTurn((await request.json()) as WhatsappInbound);
       } else if (request.method === "POST" && path === "destroy") {
         // The bucket is swept before the reply, because `destroy()` aborts the
         // isolate: work left running behind it may never finish. Dropping the
@@ -1948,6 +1959,79 @@ export class SessionAgent extends Think<Env> {
       const bytes = await this.workspace.readFileBytes(image.path);
       if (!bytes) continue;
       await bot.sendPhoto(chatId, toArrayBuffer(bytes), image.name, image.text, threadId);
+    }
+  }
+
+  /* --------------------------------------------------------------- whatsapp -- */
+
+  /**
+   * One message from WhatsApp, answered. The chat is a session like any other, so the
+   * turn is the same turn the browser runs: the same settings, tools, memory and
+   * transcript.
+   *
+   * Deliberately thinner than `telegramTurn`. No file ingest — inbound media is two
+   * more round trips through Graph — and no drawn images out, which need an upload
+   * before they can be sent.
+   *
+   * The number is not rechecked here. The webhook refuses anyone but the configured
+   * owner before a session exists, and this route is only reachable from it.
+   */
+  private async whatsappTurn(inbound: WhatsappInbound): Promise<{ ok: boolean; skipped?: string }> {
+    const config = this.config();
+    if (!enabled(config, "whatsapp")) return { ok: false, skipped: "whatsapp is off" };
+
+    const chat = new WhatsApp(
+      config.whatsapp_access_token,
+      config.whatsapp_phone_number_id,
+      this.env.WHATSAPP_API_BASE
+    );
+    const to = inbound.from;
+    const replyTo = inbound.message.id;
+    await chat.typing(replyTo);
+
+    try {
+      // A command is answered by the session itself, without a turn: the model has no
+      // say in whether it gets reset, and a wedged session could not run one anyway.
+      const command = parseCommand(inbound.text);
+      if (command) {
+        await chat.send(to, await this.runCommand(command), replyTo);
+        if (command === "delete") await this.finishDelete();
+        return { ok: true };
+      }
+
+      const blocked = await this.spendBlocked();
+      if (blocked) {
+        await chat.send(to, blocked, replyTo);
+        return { ok: true };
+      }
+
+      const result = await this.runTurn({ input: [await this.openTurn(inbound.text || "(no text)", false)] });
+      if (result.status !== "completed") {
+        console.error(
+          `whatsapp turn ${result.status} in session ${this.name}: ${result.error ?? "no reason given"}`
+        );
+      }
+      const reply =
+        result.status === "completed"
+          ? textOf(result.message as unknown as UIMessage)
+          : turnFailure(result.status, result.error);
+
+      await chat.send(to, reply || "(no reply)", replyTo);
+      return { ok: true };
+    } catch (err) {
+      // 131047 is the 24-hour window having closed, which no retry and no apology can
+      // fix — the send that would carry the apology is the send that is refused. The
+      // answer is already in the transcript; the browser can still read it.
+      if (err instanceof WhatsappError && err.code === OUTSIDE_WINDOW) {
+        console.warn(`whatsapp window closed for session ${this.name}; reply not delivered`);
+        return { ok: false, skipped: "outside the 24-hour window" };
+      }
+      await chat
+        .send(to, `Something went wrong: ${err instanceof Error ? err.message : String(err)}`)
+        .catch(() => {
+          // The chat is unreachable; the error is already the answer to the request.
+        });
+      return { ok: false };
     }
   }
 

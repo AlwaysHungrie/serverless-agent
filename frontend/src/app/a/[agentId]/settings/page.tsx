@@ -169,6 +169,8 @@ export default function Settings({
   const [memberLimit, setMemberLimit] = useState(0);
   /** Connecting the bot is setup rather than a tool, so it is shown here, first. */
   const [telegram, setTelegram] = useState<Capability | null>(null);
+  /** Same reasoning as Telegram: connecting a number is setup, not a tool. */
+  const [whatsapp, setWhatsapp] = useState<Capability | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   /** What OpenRouter said about the key that was last pasted. Cleared on the next save. */
@@ -211,6 +213,9 @@ export default function Settings({
       setEmails(payload.agent?.allowed_emails ?? "");
       setTelegram(
         payload.capabilities.find((c) => c.id === "telegram") ?? null,
+      );
+      setWhatsapp(
+        payload.capabilities.find((c) => c.id === "whatsapp") ?? null,
       );
     })();
   }, [agentId]);
@@ -280,6 +285,8 @@ export default function Settings({
     const payload = (await res.json().catch(() => null)) as {
       config: Config;
       openrouter?: { ok: boolean; error?: string; label?: string };
+      /** The WhatsApp account subscription the Worker makes on every save. */
+      whatsapp?: { ok: boolean; error?: string };
       error?: string;
     } | null;
     if (!res.ok || !payload) {
@@ -293,6 +300,16 @@ export default function Settings({
     setConfig(payload.config);
     // Only a save that carried a new key gets a verdict; the rest leave it alone.
     if (payload.openrouter) setKeyCheck(payload.openrouter);
+    // The settings saved either way, but without the subscription no message is ever
+    // delivered — so a refusal is said here rather than discovered as silence.
+    if (payload.whatsapp && !payload.whatsapp.ok) {
+      setError(
+        `Saved, but WhatsApp would not subscribe this account: ${
+          payload.whatsapp.error ?? "Meta refused the request."
+        } Check the business account ID and the access token.`,
+      );
+      return;
+    }
     setError(null);
   };
 
@@ -415,9 +432,20 @@ export default function Settings({
             {telegram && !locked.has("telegram") && (
               <CapabilitySection
                 capability={telegram}
+                agentId={agentId}
                 config={config}
                 set={set}
                 tint="#229ED9"
+              />
+            )}
+
+            {whatsapp && !locked.has("whatsapp") && (
+              <CapabilitySection
+                capability={whatsapp}
+                agentId={agentId}
+                config={config}
+                set={set}
+                tint="#25D366"
               />
             )}
 

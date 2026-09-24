@@ -44,6 +44,7 @@ export type Config = {
   cap_scheduled_tasks: number;
   cap_memory: number;
   cap_telegram: number;
+  cap_whatsapp: number;
   cap_mcp: number;
 
   /**
@@ -77,6 +78,28 @@ export type Config = {
    * for one forum topic, or `/regex/` entries. Empty means any group.
    */
   telegram_group_whitelist: string;
+  /** The test or business number's id from Meta's API Setup panel, not the number. */
+  whatsapp_phone_number_id: string;
+  /**
+   * The WhatsApp Business Account the number belongs to. Not used to send: it is the
+   * account whose webhooks this agent's Meta app has to be subscribed to, which the
+   * Worker does itself whenever the settings are saved.
+   */
+  whatsapp_waba_id: string;
+  /** System-user token with `whatsapp_business_messaging`. Sends every reply. */
+  whatsapp_access_token: string;
+  /** The Meta app's secret. Every inbound delivery's signature is checked against it. */
+  whatsapp_app_secret: string;
+  /** Chosen by the owner, pasted into Meta's callback settings. Must match exactly. */
+  whatsapp_verify_token: string;
+  /**
+   * The one number this agent answers, in international form.
+   *
+   * Not a whitelist. An agent on WhatsApp serves one person, and a required single
+   * value says that in a way a list cannot: there is no empty state that quietly means
+   * "everyone", and no second entry to add by accident.
+   */
+  whatsapp_number: string;
 };
 
 export const DEFAULT_CONFIG: Omit<Config, "model"> = {
@@ -98,6 +121,10 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   // On from the start: Telegram is how most agents are actually talked to, and the
   // switch does nothing until a bot token is pasted anyway.
   cap_telegram: 1,
+  // Off from the start, unlike Telegram: WhatsApp needs a Meta app, a business
+  // portfolio and a system-user token before it can do anything, so an agent that
+  // arrives with the switch on would show a section nobody asked for.
+  cap_whatsapp: 0,
   // On from the start: an MCP server is only reachable once it has been added and
   // connected, so the switch guards nothing the servers do not already guard.
   cap_mcp: 1,
@@ -112,6 +139,12 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   telegram_bot_username: "",
   telegram_user_whitelist: "",
   telegram_group_whitelist: "",
+  whatsapp_phone_number_id: "",
+  whatsapp_waba_id: "",
+  whatsapp_access_token: "",
+  whatsapp_app_secret: "",
+  whatsapp_verify_token: "",
+  whatsapp_number: "",
 };
 
 /**
@@ -303,6 +336,26 @@ const CONFIG_MIGRATIONS = [
   `openrouter_api_key TEXT NOT NULL DEFAULT ''`,
 ];
 
+/**
+ * The `config` columns WhatsApp added, as `ALTER TABLE` fragments.
+ *
+ * A rung of their own rather than more entries in `CONFIG_MIGRATIONS`, because that
+ * list is only ever run by the baseline step — and the baseline runs once per object,
+ * before the ladder existed or on the object's first touch. An object that already
+ * passed it never sees an entry appended to the list, so it goes on without the
+ * column until the first statement that names one fails: `no such column:
+ * cap_whatsapp`, from every read of the settings, including the one that deletes the
+ * agent. Columns added from here on go in a new step below, never in that list.
+ */
+const WHATSAPP_CONFIG_COLUMNS = [
+  `cap_whatsapp INTEGER NOT NULL DEFAULT 0`,
+  `whatsapp_phone_number_id TEXT NOT NULL DEFAULT ''`,
+  `whatsapp_access_token TEXT NOT NULL DEFAULT ''`,
+  `whatsapp_app_secret TEXT NOT NULL DEFAULT ''`,
+  `whatsapp_verify_token TEXT NOT NULL DEFAULT ''`,
+  `whatsapp_number TEXT NOT NULL DEFAULT ''`,
+];
+
 /** The `mcp_servers` columns, in write order, excluding the primary key. */
 const MCP_COLUMNS = [
   "name",
@@ -418,13 +471,23 @@ export function agentIdOf(sessionId: string): string {
 }
 
 /**
- * The session a Telegram conversation maps to. A DM is one chat, a group is another,
- * and a forum topic is its own conversation inside a group — so this is what gives
- * each of them its own session, and keeps giving it the same one. Two agents are two
+ * The session a chat conversation maps to. A DM is one chat, a group is another, and
+ * a forum topic is its own conversation inside a group — so this is what gives each
+ * of them its own session, and keeps giving it the same one. Two agents are two
  * different bots, so the same chat under each of them is two separate sessions.
+ *
+ * `channel` prefixes the id so a WhatsApp number and a Telegram chat that happen to
+ * be the same digits cannot land on the same Durable Object. It defaults to `tg`
+ * because every session created before WhatsApp existed is named that way, and those
+ * ids are stored: changing the default would orphan every live chat.
  */
-export function sessionIdForChat(agentId: string, chatId: string, threadId = ""): string {
-  const base = `tg-${chatId.replace("-", "n")}`;
+export function sessionIdForChat(
+  agentId: string,
+  chatId: string,
+  threadId = "",
+  channel: "tg" | "wa" = "tg"
+): string {
+  const base = `${channel}-${chatId.replace("-", "n")}`;
   return sessionName(agentId, threadId ? `${base}-t${threadId}` : base);
 }
 
@@ -622,7 +685,51 @@ const SESSION_REGISTRY_MIGRATIONS: readonly Migration[] = [
       for (const col of [`disabled_tools TEXT NOT NULL DEFAULT ''`]) addColumnIfMissing(sql, "mcp_servers", col);
     },
   },
+  {
+    name: "whatsapp delivery dedupe",
+    up: (sql) => {
+      // Meta re-delivers a webhook until it gets a fast 200, and a slow turn is
+      // exactly what produces a retry — so the same `wamid` arrives two or three
+      // times and, without this, is answered two or three times.
+      //
+      // It lives in the registry rather than in the session because the check has to
+      // happen at the webhook, before a session has been resolved or created: two
+      // concurrent deliveries of a first message would otherwise race to create two
+      // sessions for one conversation.
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS whatsapp_events (
+           id TEXT PRIMARY KEY,
+           seen_at INTEGER NOT NULL
+         )`
+      );
+    },
+  },
+  {
+    name: "whatsapp config columns",
+    up: (sql) => {
+      // `addColumnIfMissing` rather than a bare `ALTER`, which a step after the
+      // baseline would normally use: the deploy that first shipped WhatsApp added
+      // these columns to `CONFIG_MIGRATIONS`, so every object created while that code
+      // was live already has them and would fail this rung on a duplicate column.
+      for (const col of WHATSAPP_CONFIG_COLUMNS) addColumnIfMissing(sql, "config", col);
+    },
+  },
+  {
+    name: "whatsapp waba id",
+    up: (sql) => {
+      // The account id the app has to be subscribed to. Added after the columns
+      // above, so agents configured before it have it blank and are asked for it the
+      // next time their settings are opened.
+      addColumnIfMissing(sql, "config", `whatsapp_waba_id TEXT NOT NULL DEFAULT ''`);
+    },
+  },
 ];
+
+/**
+ * How many delivered message ids to remember. Retries arrive within minutes, so this
+ * only has to outlast a burst — it is a dedupe window, not a history.
+ */
+const WHATSAPP_EVENTS_KEPT = 500;
 
 export class SessionRegistry extends DurableObject {
   private ready = false;
@@ -1141,9 +1248,14 @@ export class SessionRegistry extends DurableObject {
    * the session it hands its scheduled tasks to has to be the one the next message
    * lands in.
    */
-  freeChatSessionId(agentId: string, chatId: string, threadId = ""): string {
+  freeChatSessionId(
+    agentId: string,
+    chatId: string,
+    threadId = "",
+    channel: "tg" | "wa" = "tg"
+  ): string {
     this.ensureSchema();
-    const base = sessionIdForChat(agentId, chatId, threadId);
+    const base = sessionIdForChat(agentId, chatId, threadId, channel);
     if (!this.get(base)) return base;
     for (let n = 2; n < 1000; n++) {
       const candidate = `${base}-g${n}`;
@@ -1151,6 +1263,36 @@ export class SessionRegistry extends DurableObject {
     }
     // A thousand fresh starts in one chat is not a thing; fall back to a unique name.
     return `${base}-g${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  /**
+   * Claim one WhatsApp delivery, returning true the first time and false for every
+   * repeat of the same `wamid`.
+   *
+   * A Durable Object handles one request at a time, so the read and the write cannot
+   * interleave: two simultaneous deliveries of the same message are serialised here,
+   * and exactly one of them is told to go on. That is the whole reason the check is
+   * in the registry and not in the webhook's own code.
+   */
+  claimWhatsappEvent(id: string): boolean {
+    this.ensureSchema();
+    if (!id) return false;
+    const seen = this.ctx.storage.sql
+      .exec(`SELECT id FROM whatsapp_events WHERE id = ? LIMIT 1`, id)
+      .toArray();
+    if (seen.length > 0) return false;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO whatsapp_events (id, seen_at) VALUES (?, ?)`,
+      id,
+      Date.now()
+    );
+    this.ctx.storage.sql.exec(
+      `DELETE FROM whatsapp_events WHERE id NOT IN (
+         SELECT id FROM whatsapp_events ORDER BY seen_at DESC LIMIT ?
+       )`,
+      WHATSAPP_EVENTS_KEPT
+    );
+    return true;
   }
 
   /** One session by id, or nothing. */

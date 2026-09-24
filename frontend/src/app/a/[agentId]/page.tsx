@@ -10,6 +10,7 @@ import {
   MESSAGE_PAGE,
   SESSION_PAGE,
   telegramLink,
+  whatsappLink,
   type AgentRow,
   type SessionPage,
   type SessionRow,
@@ -332,15 +333,18 @@ export default function AgentPage({
                 onFork={(count, text) =>
                   void forkSession(selected, count, text)
                 }
-                // A Telegram chat is read here and answered there: the composer would
-                // send into a conversation the other people in it cannot see.
+                // A chat that lives on another platform is read here and answered
+                // there: the composer would send into a conversation this page is not
+                // the right end of.
                 continueAt={
                   current?.source === "telegram"
                     ? {
                         label: "Telegram",
                         href: telegramLink(current, botUsername),
                       }
-                    : null
+                    : current?.source === "whatsapp" && whatsappLink(current)
+                      ? { label: "WhatsApp", href: whatsappLink(current) }
+                      : null
                 }
               />
             )}

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { ExternalLink } from "lucide-react";
 import {
   capabilityReady,
   SECRET_MASK,
@@ -303,6 +304,7 @@ export function Field({
  */
 export function CapabilitySection({
   capability,
+  agentId,
   config,
   set,
   blocked = false,
@@ -311,6 +313,12 @@ export function CapabilitySection({
   children,
 }: {
   capability: Capability;
+  /**
+   * Which agent is being configured. A guide that explains a callback URL has to
+   * name the agent it belongs to, or the reader pastes another agent's route into
+   * someone else's dashboard and the handshake is refused.
+   */
+  agentId?: string;
   config: Config;
   set: (patch: Partial<Config>, wait?: number) => void;
   /** The switch is dead: something else has to change before this can be used. */
@@ -374,6 +382,28 @@ export function CapabilitySection({
 
       {on && !blocked && (
         <div className="mt-5 space-y-5">
+          {capability.guide && (
+            // A new tab, not this one: the credentials being collected are pasted
+            // into the fields below, and navigating away would lose what is typed.
+            <a
+              href={
+                agentId
+                  ? `${capability.guide.href}?agent=${encodeURIComponent(agentId)}`
+                  : capability.guide.href
+              }
+              target="_blank"
+              rel="noreferrer"
+              className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold leading-[1.33] transition ${
+                tint
+                  ? "bg-canvas border-hairline hover:bg-canvas-soft border"
+                  : "bg-canvas-soft hover:bg-field"
+              }`}
+            >
+              {capability.guide.label}
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+            </a>
+          )}
+
           {capability.fields.map((field) => (
             <Field
               key={String(field.key)}

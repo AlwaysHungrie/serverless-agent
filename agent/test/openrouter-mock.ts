@@ -29,6 +29,95 @@
  * exercised rather than assumed.
  */
 
+/* ------------------------------------------------------------------- graph -- */
+
+/**
+ * What the Graph stand-in has been asked to send, oldest first.
+ *
+ * It lives in Node, beside the mock, and the tests run inside workerd — so a test
+ * cannot read this array directly. It reads it over the wire instead: a `fetch` from
+ * a test goes through this same `outboundService`, so `GET
+ * https://graph.facebook.com/__sent` is answered here rather than by Meta. That is
+ * also why each test uses a recipient number of its own: the log is shared.
+ */
+const graphSent: { to: string; body: string; replyTo?: string }[] = [];
+
+/**
+ * A recipient whose sends are refused with 131047, so the closed-window path can be
+ * exercised without waiting a day.
+ */
+export const WINDOW_CLOSED_WA_ID = "10000000001";
+
+/** Which WhatsApp Business Accounts the Worker asked to subscribe, oldest first. */
+const graphSubscribed: string[] = [];
+
+/** A WABA id Graph refuses to subscribe, so the reported failure can be tested. */
+export const UNSUBSCRIBABLE_WABA_ID = "999999999999999";
+
+/**
+ * Meta's Graph API, enough of it to answer a message: send text, mark read, and tell
+ * a test what it was asked to send.
+ */
+async function graphMock(request: Request, url: URL): Promise<Response> {
+  if (url.pathname === "/__sent") {
+    const to = url.searchParams.get("to");
+    return json(to ? graphSent.filter((s) => s.to === to) : graphSent);
+  }
+
+  if (url.pathname === "/__subscribed") {
+    return json(graphSubscribed);
+  }
+
+  // The account-level subscription, which is what makes Meta deliver anything.
+  if (url.pathname.endsWith("/subscribed_apps")) {
+    const waba = url.pathname.split("/").at(-2) ?? "";
+    if (waba === UNSUBSCRIBABLE_WABA_ID) {
+      return json(
+        { error: { message: "Unsupported post request on this account", code: 100 } },
+        400
+      );
+    }
+    graphSubscribed.push(waba);
+    return json({ success: true });
+  }
+
+  if (!url.pathname.endsWith("/messages")) {
+    return json({ error: { message: `unmocked graph path ${url.pathname}`, code: 100 } }, 404);
+  }
+
+  const body = (await request.json().catch(() => ({}))) as {
+    to?: string;
+    status?: string;
+    text?: { body?: string };
+    context?: { message_id?: string };
+  };
+  // A read receipt names no recipient and sends nothing.
+  if (body.status === "read") return json({ success: true });
+
+  if (body.to === WINDOW_CLOSED_WA_ID) {
+    return json(
+      {
+        error: {
+          message: "Message failed to send because more than 24 hours have passed",
+          code: 131047,
+        },
+      },
+      400
+    );
+  }
+
+  graphSent.push({
+    to: body.to ?? "",
+    body: body.text?.body ?? "",
+    replyTo: body.context?.message_id,
+  });
+  return json({
+    messaging_product: "whatsapp",
+    contacts: [{ input: body.to, wa_id: body.to }],
+    messages: [{ id: `wamid.mock${graphSent.length}` }],
+  });
+}
+
 /** What a mocked turn reports spending, in US dollars. */
 export const COST_PER_TURN = 0.0025;
 
@@ -163,6 +252,7 @@ function streamedToolCall(name: string, args: Record<string, unknown>) {
  */
 export async function openrouterMock(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  if (url.hostname === "graph.facebook.com") return graphMock(request, url);
   if (url.hostname !== "openrouter.ai") {
     return new Response(`blocked outbound request to ${url.hostname}`, { status: 503 });
   }

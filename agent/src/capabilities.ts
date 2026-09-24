@@ -33,6 +33,7 @@ export type CapabilityId =
   | "scheduled_tasks"
   | "memory"
   | "telegram"
+  | "whatsapp"
   | "mcp";
 
 /** A credential or endpoint the user fills in on the capabilities page. */
@@ -71,6 +72,12 @@ export type Capability = {
   summary: string;
   /** What it costs or risks, shown under the toggle. */
   note?: string;
+  /**
+   * A page explaining how to get the credentials this capability asks for, opened in
+   * a new tab so the setup being worked through is not lost. Telegram needs no such
+   * page: one message to @BotFather is the whole of it, and the hint says so.
+   */
+  guide?: { label: string; href: string };
   tools: string[];
   fields: CapabilityField[];
 };
@@ -248,6 +255,62 @@ export const CAPABILITIES: Capability[] = [
         list: true,
         required: false,
         placeholder: "-1001234567890 or -1001234567890:42",
+      },
+    ],
+  },
+  {
+    id: "whatsapp",
+    flag: "cap_whatsapp",
+    label: "WhatsApp",
+    summary: "Talk to the agent on WhatsApp, please refer to setup guide below.",
+    note:
+      "Meta only allows a reply within 24 hours of your last message. Send anything to the number to reopen the window.",
+    guide: { label: "Whatsapp setup guide", href: "/guides/whatsapp" },
+    tools: [],
+    fields: [
+      {
+        key: "whatsapp_number",
+        label: "Your WhatsApp number",
+        hint: "Using a number that you do not own violates Meta's and Our Terms of Service and will result in permanent account suspension.",
+        secret: false,
+        required: true,
+        placeholder: "+91 98765 43210",
+      },
+      {
+        key: "whatsapp_phone_number_id",
+        label: "Phone number ID",
+        secret: false,
+        required: true,
+        placeholder: "123456789012345",
+      },
+      {
+        key: "whatsapp_waba_id",
+        label: "WhatsApp Business account ID",
+        hint: "Shown beside the phone number ID. Saving it subscribes your app to the account's messages, which is what makes replies arrive.",
+        secret: false,
+        required: true,
+        placeholder: "123456789012345",
+      },
+      {
+        key: "whatsapp_access_token",
+        label: "Access token",
+        secret: true,
+        required: true,
+        placeholder: "EAA…",
+      },
+      {
+        key: "whatsapp_app_secret",
+        label: "App secret",
+        secret: true,
+        required: true,
+        placeholder: "32 hex characters",
+      },
+      {
+        key: "whatsapp_verify_token",
+        label: "Verify token",
+        secret: false,
+        required: true,
+        placeholder: "a phrase only you know",
       },
     ],
   },

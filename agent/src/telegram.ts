@@ -175,8 +175,14 @@ export class Telegram {
   }
 }
 
-/** Split on paragraph, then line, then hard, so a reply breaks where it reads. */
-function split(text: string): string[] {
+/**
+ * Split on paragraph, then line, then hard, so a reply breaks where it reads.
+ *
+ * Exported because WhatsApp has the same 4096-character ceiling and wants the same
+ * breaks. It belongs in a module neither channel owns; it stays here until there is
+ * a second thing to move with it.
+ */
+export function split(text: string): string[] {
   if (text.length <= MESSAGE_LIMIT) return [text || "…"];
   const chunks: string[] = [];
   let rest = text;

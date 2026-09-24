@@ -2,10 +2,20 @@ import { routeAgentRequest } from "agents";
 import { modelCatalog, type Env, type ModelOption } from "./agent";
 import { Telegram, allowedBy, chatTitle, topicId, type TelegramUpdate } from "./telegram";
 import {
+  WhatsApp,
+  chatTitle as whatsappChatTitle,
+  inboundOf,
+  isOwnNumber,
+  subscribeApp,
+  verifySignature,
+  type WhatsappPayload,
+} from "./whatsapp";
+import {
   CAPABILITIES,
   CAPABILITY_BY_ID,
   SECRET_MASK,
   TELEGRAM_WHITELIST_DEFAULTS,
+  enabled,
   type Capability,
   type CapabilityField,
   type CapabilityId,
@@ -409,6 +419,32 @@ async function syncWebhook(
   }
 }
 
+
+/**
+ * Subscribe this agent's Meta app to its WhatsApp Business Account, so deliveries
+ * reach the callback URL at all.
+ *
+ * Meta has no API for setting the callback URL — that is pasted in by hand — but the
+ * account-level subscription behind it does have one, and it is the step that costs
+ * people an evening: everything looks configured and no webhook ever arrives. So it
+ * happens on every save, like Telegram's `setWebhook`, rather than in a curl the
+ * setup guide has to teach.
+ *
+ * Best effort, and reported rather than thrown: the settings are already saved.
+ */
+async function syncWhatsappSubscription(
+  config: Config,
+  api?: string
+): Promise<{ ok: boolean; error?: string } | undefined> {
+  if (!config.cap_whatsapp) return undefined;
+  if (!config.whatsapp_waba_id || !config.whatsapp_access_token) return undefined;
+  try {
+    await subscribeApp(config.whatsapp_access_token, config.whatsapp_waba_id, api);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 /* ------------------------------------------------------------ mcp servers -- */
 
@@ -1987,6 +2023,9 @@ async function handleAgents(
       // Saving the token is the whole setup: the bot is pointed at this Worker here
       // rather than through a curl the user has to run by hand.
       const telegram = await syncWebhook(config, url.origin, agentId, env.TELEGRAM_API_BASE);
+      // The same idea for WhatsApp: saving the credentials is the whole setup, and
+      // the account subscription is the half of it Meta's dashboard does not do.
+      const whatsapp = await syncWhatsappSubscription(config, env.WHATSAPP_API_BASE);
       // Only a key that was just pasted is checked; the mask never reaches here.
       const openrouter = patch.openrouter_api_key
         ? await checkOpenrouterKey(patch.openrouter_api_key)
@@ -1995,6 +2034,7 @@ async function handleAgents(
         Response.json({
           config: redact(config),
           ...(telegram ? { telegram } : {}),
+          ...(whatsapp ? { whatsapp } : {}),
           ...(openrouter ? { openrouter } : {}),
         })
       );
@@ -2065,6 +2105,7 @@ async function handleAgents(
         // pages may not touch a setting, and this is the page that decides the lock.
         config = await reg.setConfig(patch, env.MODEL);
         await syncWebhook(config, url.origin, agentId, env.TELEGRAM_API_BASE);
+        await syncWhatsappSubscription(config, env.WHATSAPP_API_BASE);
       }
 
       return withCors(
@@ -2365,6 +2406,140 @@ async function handleWebhook(
   return new Response("ok", { headers: { "x-session": sessionId } });
 }
 
+/* --------------------------------------------------------------- whatsapp -- */
+
+/**
+ * Meta's subscription handshake. Saving the callback URL in the dashboard makes this
+ * exact call, and the field is only subscribed if the challenge comes back verbatim
+ * as plain text.
+ */
+function whatsappVerify(url: URL, verifyToken: string): Response {
+  const mode = url.searchParams.get("hub.mode");
+  const offered = url.searchParams.get("hub.verify_token") ?? "";
+  const challenge = url.searchParams.get("hub.challenge") ?? "";
+  if (mode !== "subscribe" || offered !== verifyToken) {
+    return new Response("forbidden", { status: 403 });
+  }
+  return new Response(challenge, {
+    status: 200,
+    headers: { "content-type": "text/plain" },
+  });
+}
+
+/**
+ * One delivery from WhatsApp, for one agent. The sender's number is resolved to that
+ * agent's session — created on first contact — and the message is handed to the
+ * session's own object, which answers in the chat itself.
+ *
+ * Every agent is a different Meta app with its own number and its own secret, so each
+ * has its own route, exactly as Telegram does. What differs is that Meta has no API
+ * for setting a callback URL: there is no `syncWebhook` here, and the owner pastes
+ * this route into the dashboard by hand. That is what the setup guide is for.
+ *
+ * Meta retries anything that is not a fast 200, so the turn runs after the response
+ * rather than under it — and every delivery is claimed first, or a retry issued while
+ * the first turn is still thinking would be answered twice.
+ */
+async function handleWhatsappWebhook(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  url: URL,
+  agentId: string
+): Promise<Response> {
+  const reg = registry(env, agentId);
+  const config = await reg.config(env.MODEL);
+  // Every field is required, so `enabled` is also the answer to "is this agent's
+  // WhatsApp set up". A half-filled one answers the handshake and then fails to
+  // verify a signature, which looks like Meta's fault.
+  if (!enabled(config, "whatsapp")) return new Response("whatsapp is off", { status: 404 });
+
+  if (request.method === "GET") return whatsappVerify(url, config.whatsapp_verify_token);
+
+  // The body has to be read as text and verified before it is parsed: the signature
+  // covers the bytes Meta sent, and re-serialising the parsed JSON is not those bytes.
+  const raw = await request.text();
+  const signed = await verifySignature(
+    config.whatsapp_app_secret,
+    raw,
+    request.headers.get("x-hub-signature-256")
+  );
+  if (!signed) return new Response("bad signature", { status: 401 });
+
+  const payload = (() => {
+    try {
+      return JSON.parse(raw) as WhatsappPayload;
+    } catch {
+      return null;
+    }
+  })();
+  const inbound = inboundOf(payload);
+  // A status receipt — sent, delivered, read — carries no message. Answering one
+  // would mean answering the agent's own replies.
+  if (!inbound) return new Response("ok");
+
+  // One number, and it is the owner's. Anyone else gets no answer and no session.
+  if (!isOwnNumber(config.whatsapp_number, inbound.from)) return new Response("ok");
+
+  // A retry of a message already taken is not an error and must not be one: Meta
+  // reads a non-200 as a reason to try again.
+  if (!(await reg.claimWhatsappEvent(inbound.message.id))) {
+    return new Response("ok", { headers: { "x-whatsapp": "duplicate" } });
+  }
+
+  // `wa:` keeps a number that happens to match a Telegram chat id out of that chat's
+  // session, since `forChat` matches on the stored id alone.
+  const chatId = `wa:${inbound.from}`;
+  const existing = await reg.forChat(chatId);
+  const sessionId = existing?.id ?? (await reg.freeChatSessionId(agentId, inbound.from, "", "wa"));
+  if (!existing) {
+    if ((await reg.countSessions()) >= MAX_SESSIONS) {
+      // Said in the chat rather than swallowed, for the same reason as Telegram: to
+      // whoever is typing, an agent that answers nothing is a broken one.
+      await new WhatsApp(
+        config.whatsapp_access_token,
+        config.whatsapp_phone_number_id,
+        env.WHATSAPP_API_BASE
+      )
+        .send(inbound.from, SESSION_LIMIT_MESSAGE, inbound.message.id)
+        .catch(() => {
+          // Nothing to do about a chat that cannot be reached.
+        });
+      return new Response("ok");
+    }
+    await reg.create(
+      sessionId,
+      whatsappChatTitle(inbound),
+      env.SessionAgent.idFromName(sessionId).toString(),
+      {
+        source: "whatsapp",
+        chat_id: chatId,
+        chat_type: "private",
+        // WhatsApp has no handles, so this column carries the business number the
+        // message was sent to. It is what "continue on WhatsApp" links at, the same
+        // way a Telegram group's @handle is.
+        chat_username: inbound.businessNumber,
+        // Cloud API group messaging needs an Official Business Account, so every
+        // conversation here is one person.
+        chat_thread_id: "",
+      }
+    );
+    await syncSessionCount(env, agentId);
+  }
+  await reg.touch(sessionId);
+
+  const turn = routeAgentRequest(
+    new Request(`${url.origin}/agents/session-agent/${encodeURIComponent(sessionId)}/whatsapp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(inbound),
+    }),
+    env
+  );
+  ctx.waitUntil(turn);
+  return new Response("ok", { headers: { "x-session": sessionId } });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     // Before anything else, including CORS: a Worker that cannot identify anyone
@@ -2580,6 +2755,17 @@ export default {
       return await handleWebhook(request, env, ctx, segments[2]);
     }
 
+    // WhatsApp posts here, on the callback URL the agent's Meta app was given. GET is
+    // the subscription handshake, POST is a delivery.
+    if (
+      (request.method === "POST" || request.method === "GET") &&
+      segments[0] === "whatsapp" &&
+      segments[1] === "webhook" &&
+      segments[2]
+    ) {
+      return await handleWhatsappWebhook(request, env, ctx, url, segments[2]);
+    }
+
     const routed = await routeAgentRequest(request, env);
     if (routed) return withCors(routed);
 
@@ -2607,6 +2793,7 @@ export default {
             tasks: "GET /agents/session-agent/:sessionId/tasks, DELETE .../tasks/:taskId",
             metrics: "GET /agents/session-agent/:sessionId/metrics",
             telegram: "POST /telegram/webhook/:agentId",
+            whatsapp: "GET|POST /whatsapp/webhook/:agentId  -> GET verifies the subscription, POST delivers a message",
             admin: "POST /api/admin/business-account { email, agent_limit }, GET /api/admin/stats  -> owner only, via API_SECRET",
             business_requests: "POST /api/business-requests { increase } -> signed-in caller; GET /api/admin/business-requests, POST .../:id/approve, DELETE .../:id -> owner only, via API_SECRET",
           },

@@ -342,7 +342,14 @@ function ConfirmDelete({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const telegram = session.source === "telegram";
+  // Both channels keep their own copy of the conversation, so deleting the session
+  // here does not delete anything there.
+  const channel =
+    session.source === "telegram"
+      ? "Telegram"
+      : session.source === "whatsapp"
+        ? "WhatsApp"
+        : "";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-5">
       <button
@@ -366,10 +373,10 @@ function ConfirmDelete({
           Its messages, files, and stored data will be deleted permanently. This
           can’t be undone.
         </p>
-        {telegram && (
+        {channel && (
           <p className="text-muted mt-2 text-sm leading-normal">
-            Messages in the Telegram chat aren’t deleted. The bot starts a new
-            session the next time someone writes there.
+            Messages in the {channel} chat aren’t deleted. A new session starts
+            the next time someone writes there.
           </p>
         )}
         <div className="mt-5 flex justify-end gap-2">
