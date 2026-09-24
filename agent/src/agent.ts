@@ -4,7 +4,8 @@ import { Think, type StepContext, type TurnConfig, type TurnContext } from "@clo
 import type { Schedule } from "agents";
 import { jsonSchema, tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import {
-  CAPABILITIES,
+  capabilityLabels,
+  channelLabels,
   mcpServerReady,
   mcpToolSpecs,
   enabled,
@@ -388,7 +389,7 @@ export class SessionAgent extends Think<Env> {
   private mcpServers: McpServerRow[] = [];
 
   /** Usage accumulated by `onStepFinish` for the turn that is running now. */
-  private turnUsage = { prompt: 0, completion: 0, cost: 0, reported: 0, started: 0 };
+  private turnUsage = { prompt: 0, completion: 0, cached: 0, cost: 0, reported: 0, started: 0 };
 
   /**
    * Whether the turn running now scheduled a task. Read by the WhatsApp channel,
@@ -661,7 +662,7 @@ export class SessionAgent extends Think<Env> {
       apiKey: key,
       baseURL: "https://openrouter.ai/api/v1",
       async fetch(input, init) {
-        const request = withCostReporting(init as RequestInit);
+        const request = prepareOpenRouterRequest(init as RequestInit);
         const res = await fetch(input as RequestInfo, request as RequestInit);
         if (res.ok) {
           return stripUnsupportedAnnotations(
@@ -720,8 +721,19 @@ export class SessionAgent extends Think<Env> {
         `What you remember about this user:\n${this.memories.map((m) => `- ${m.text}`).join("\n")}`
       );
     }
-    const ready = CAPABILITIES.filter((c) => enabled(this.config(), c.id)).map((c) => c.label);
+    const ready = capabilityLabels(this.config());
     if (ready.length > 0) parts.push(`Capabilities available to you: ${ready.join(", ")}.`);
+    // Named apart from the capabilities, and with the limit spelled out. A channel is
+    // how this conversation arrived, not a tool: the reply goes back the way the
+    // message came, and nothing here can open a conversation with anyone else. Listed
+    // among the capabilities it read as an ability, and the agent offered to send a
+    // WhatsApp message to a number it was given — then reached for bash to do it.
+    const channels = channelLabels(this.config());
+    if (channels.length > 0) {
+      parts.push(
+        `You are reachable on ${inWords(channels)}. Your reply goes back to the chat the message came from — you cannot start a conversation, and you cannot message any other number or account.`
+      );
+    }
     // A connected MCP server's tools are named after it, so naming the servers tells
     // the model which prefix belongs to which provider.
     const connected = enabled(this.config(), "mcp") ? this.mcpServers.filter(mcpServerReady) : [];
@@ -747,7 +759,7 @@ export class SessionAgent extends Think<Env> {
     this.ensureSchema();
     await this.loadConfig();
     const config = this.config();
-    this.turnUsage = { prompt: 0, completion: 0, cost: 0, reported: 0, started: Date.now() };
+    this.turnUsage = { prompt: 0, completion: 0, cached: 0, cost: 0, reported: 0, started: Date.now() };
     this.scheduledInTurn = false;
 
     return {
@@ -1071,9 +1083,17 @@ export class SessionAgent extends Think<Env> {
   override onStepFinish(step: StepContext): void {
     const prompt = step.usage?.inputTokens ?? 0;
     const completion = step.usage?.outputTokens ?? 0;
+    const cached = cachedPromptTokens(step);
     this.turnUsage.prompt += prompt;
     this.turnUsage.completion += completion;
+    this.turnUsage.cached += cached;
     this.turnUsage.cost += this.priceOf(prompt, completion, openrouterCost(step));
+    // The one number that says whether the breakpoint is doing anything. A cache that
+    // quietly stopped matching — a tool list that reordered, a memory written mid
+    // conversation — costs full price and looks exactly like a cache that is working.
+    if (prompt > 0) {
+      console.log(`session ${this.name}: prompt ${prompt} tokens, ${cached} from cache`);
+    }
   }
 
   /**
@@ -2638,6 +2658,12 @@ export class SessionAgent extends Think<Env> {
 
 /* ---------------------------------------------------------------------- utils -- */
 
+/** `a`, `a and b`, `a, b and c` — what a sentence needs and `join` does not give. */
+function inWords(items: string[]): string {
+  if (items.length < 2) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
 function isAudioAttachment(a: Attachment): boolean {
   return a.mime.startsWith("audio/") || a.mime.startsWith("video/");
 }
@@ -2711,16 +2737,74 @@ function reportable(error: unknown, session: string): string {
  * price table was the only figure available. The AI SDK has no field for this, so it
  * is set on the wire, next to the other things this wrapper fixes up.
  */
-function withCostReporting(init: RequestInit | undefined): RequestInit | undefined {
+type ContentPart = { type?: string; text?: string; cache_control?: { type: string } };
+
+type ChatRequestBody = {
+  model?: string;
+  usage?: { include?: boolean };
+  messages?: { role?: string; content?: string | ContentPart[] }[];
+};
+
+/** Anthropic's five-minute cache, the only kind a breakpoint here asks for. */
+const CACHE_CONTROL = { type: "ephemeral" } as const;
+
+/**
+ * The two things an OpenRouter request wants that the AI SDK does not send: the usage
+ * block carrying what the call actually cost, and — on Anthropic — the breakpoint
+ * saying where the cacheable prefix ends.
+ */
+export function prepareOpenRouterRequest(init: RequestInit | undefined): RequestInit | undefined {
   if (!init || typeof init.body !== "string") return init;
   try {
-    const body = JSON.parse(init.body) as { usage?: { include?: boolean } };
-    if (body.usage?.include) return init;
+    const body = JSON.parse(init.body) as ChatRequestBody;
+    const reported = body.usage?.include === true;
+    const marked = markCacheablePrefix(body);
+    if (reported && !marked) return init;
     body.usage = { ...body.usage, include: true };
     return { ...init, body: JSON.stringify(body) };
   } catch {
     return init;
   }
+}
+
+/**
+ * Mark where the cacheable prefix ends, for the provider that has to be asked.
+ *
+ * Every model this Worker offers caches prompt prefixes, but only Anthropic's needs
+ * telling: OpenAI, DeepSeek and Gemini all do it on their own, and Anthropic does
+ * nothing without an explicit breakpoint. It is worth asking for because of what sits
+ * in that prefix — a connected MCP server can put tens of thousands of tokens of JSON
+ * Schema in front of every request, and the tools are re-sent on every tool round of
+ * every turn. A cache read costs a tenth of what writing it did.
+ *
+ * The breakpoint goes on the system prompt, the last thing before the conversation
+ * starts. OpenRouter renders `tools` ahead of `system`, so one breakpoint there covers
+ * the tool definitions as well — and because it sits before the messages, a new
+ * message does not move it and cannot force the tools to be written again. That is
+ * why it is not left to OpenRouter's own top-level `cache_control`, which advances
+ * with the conversation and so pays to write the whole prefix afresh every turn.
+ */
+function markCacheablePrefix(body: ChatRequestBody): boolean {
+  if (!(body.model ?? "").startsWith("anthropic/")) return false;
+  const messages = body.messages;
+  if (!Array.isArray(messages)) return false;
+  // The last system message: what precedes it is prefix, what follows it is not.
+  const system = [...messages].reverse().find((m) => m?.role === "system");
+  if (!system) return false;
+
+  if (typeof system.content === "string") {
+    if (!system.content) return false;
+    system.content = [{ type: "text", text: system.content, cache_control: CACHE_CONTROL }];
+    return true;
+  }
+  if (!Array.isArray(system.content)) return false;
+  // A second breakpoint on the same prefix would spend one of the four Anthropic
+  // allows and cache nothing further.
+  if (system.content.some((part) => part?.cache_control)) return false;
+  const last = [...system.content].reverse().find((part) => part?.type === "text");
+  if (!last) return false;
+  last.cache_control = CACHE_CONTROL;
+  return true;
 }
 
 function stripUnsupportedAnnotations(
@@ -2880,6 +2964,17 @@ function stepsOf(message: UIMessage): TurnStep[] {
  * OpenRouter reports the exact dollar cost of a call, and the AI SDK passes the raw
  * usage object through untouched, which is where it lands.
  */
+/**
+ * What of this step's prompt was served from cache, as OpenRouter reports it. Zero
+ * when the provider says nothing, which is also what a miss looks like — the two are
+ * worth separating only against a provider known to be caching.
+ */
+export function cachedPromptTokens(step: StepContext): number {
+  const raw = (step.usage as { raw?: Record<string, unknown> } | undefined)?.raw;
+  const details = raw?.prompt_tokens_details as { cached_tokens?: unknown } | undefined;
+  return typeof details?.cached_tokens === "number" ? details.cached_tokens : 0;
+}
+
 function openrouterCost(step: StepContext): number | undefined {
   const raw = (step.usage as { raw?: Record<string, unknown> } | undefined)?.raw;
   const cost = raw?.cost;

@@ -315,6 +315,18 @@ type ChatBody = {
   messages?: { role: string; content?: unknown }[];
 };
 
+/**
+ * Every chat request the Worker has made, oldest first — read by a test the same way
+ * the Telegram and Graph logs are, over the wire at `GET
+ * https://openrouter.ai/__requests`. It is what lets a test assert on the body the AI
+ * SDK actually produced rather than on a body assembled beside it: whether the system
+ * prompt carries a cache breakpoint is a fact about the real request or it is nothing.
+ *
+ * The log is shared by the whole file, so a test finds its own request by a token it
+ * put in the message it sent: `?contains=<token>`.
+ */
+const chatRequests: ChatBody[] = [];
+
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {
     status,
@@ -486,11 +498,21 @@ export async function openrouterMock(request: Request): Promise<Response> {
     return json({ data: { label: "mock key" } });
   }
 
+  if (url.pathname === "/__requests") {
+    const contains = url.searchParams.get("contains");
+    return json(
+      contains
+        ? chatRequests.filter((b) => JSON.stringify(b).includes(contains))
+        : chatRequests
+    );
+  }
+
   if (url.pathname !== "/api/v1/chat/completions") {
     return json({ error: `unmocked OpenRouter path ${url.pathname}` }, 404);
   }
 
   const body = (await request.json().catch(() => ({}))) as ChatBody;
+  chatRequests.push(body);
   const message = lastUserMessage(body);
 
   if (message.startsWith("!!fail500")) {

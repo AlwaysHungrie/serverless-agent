@@ -403,3 +403,87 @@ describe("the suite's own network seal", () => {
     expect(res.status).toBe(503);
   });
 });
+
+/**
+ * What the turn actually tells the model about itself.
+ *
+ * Asserted on the request that went out rather than on the string the prompt builder
+ * returns, because the bug being guarded against was never in the wording — it was in
+ * which list the wording was built from. With WhatsApp among the capabilities the
+ * agent offered to message a phone number it was given, asked for the number, and ran
+ * bash when no tool appeared.
+ */
+describe("what the agent is told it can reach", () => {
+  /** An agent with WhatsApp switched on and every credential it asks for. */
+  async function whatsappFixture() {
+    const email = someone("member");
+    const agent = (await (
+      await SELF.fetch(
+        `${BASE}/api/agents`,
+        as(email, {
+          method: "POST",
+          body: JSON.stringify({
+            name: "Test Agent",
+            allowed_emails: email,
+            openrouter_api_key: "sk-fake-but-valid",
+          }),
+        })
+      )
+    ).json()) as { id: string };
+
+    await SELF.fetch(
+      `${BASE}/api/agents/${agent.id}/config`,
+      as(email, {
+        method: "PATCH",
+        body: JSON.stringify({
+          cap_whatsapp: 1,
+          whatsapp_number: "919876543210",
+          whatsapp_phone_number_id: "123456789012345",
+          whatsapp_waba_id: "123456789012345",
+          whatsapp_access_token: "EAAtoken",
+          whatsapp_app_secret: "0".repeat(32),
+          whatsapp_verify_token: "a phrase only I know",
+        }),
+      })
+    );
+
+    const session = (await (
+      await SELF.fetch(
+        `${BASE}/api/agents/${agent.id}/sessions`,
+        as(email, { method: "POST", body: JSON.stringify({ title: "Chat" }) })
+      )
+    ).json()) as { id: string };
+
+    return { email, sessionId: session.id };
+  }
+
+  /** The system prompt on the turn's own request, found by the token the message carried. */
+  async function systemPromptFor(token: string): Promise<string> {
+    const all = (await (
+      await fetch(`https://openrouter.ai/__requests?contains=${token}`)
+    ).json()) as { stream?: boolean; messages?: { role: string; content?: unknown }[] }[];
+    const turn = all.find((b) => b.stream);
+    return String(turn?.messages?.find((m) => m.role === "system")?.content ?? "");
+  }
+
+  it("names a configured channel as reach, not as a capability", async () => {
+    const { sessionId, email } = await whatsappFixture();
+    const token = crypto.randomUUID().slice(0, 8);
+    await say(sessionId, email, `hello ${token}`);
+
+    const prompt = await systemPromptFor(token);
+    expect(prompt).toContain("You are reachable on WhatsApp");
+    expect(prompt).toContain("cannot message any other number");
+    // The line that caused it: WhatsApp among the things the model can do.
+    const capabilities = prompt.match(/Capabilities available to you: .*/)?.[0] ?? "";
+    expect(capabilities).not.toContain("WhatsApp");
+  });
+
+  it("says nothing about reach when no channel is configured", async () => {
+    const { sessionId, email } = await chatFixture();
+    const token = crypto.randomUUID().slice(0, 8);
+    await say(sessionId, email, `hello ${token}`);
+
+    expect(await systemPromptFor(token)).not.toContain("You are reachable on");
+  });
+});

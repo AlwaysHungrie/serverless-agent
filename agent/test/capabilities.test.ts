@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   CAPABILITIES,
   CAPABILITY_BY_ID,
+  capabilityLabels,
   capabilityReady,
+  channelLabels,
   enabled,
   runTool,
   toolDefinitions,
@@ -244,5 +246,65 @@ describe("the capability catalogue itself", () => {
       const usable = capabilityReady(capability, config()) && capability.tools.length > 0;
       expect(usable).toBe(false);
     }
+  });
+});
+
+/**
+ * What the model is told it has.
+ *
+ * The bug this guards against is not a crash: with WhatsApp named among the
+ * capabilities, the agent offered to send a message to a phone number it was handed,
+ * asked for the number, and then reached for bash when no tool turned up. A channel is
+ * where a conversation arrived, and the reply goes back the way it came — saying so is
+ * the difference between an agent that knows its own reach and one that invents it.
+ */
+
+/** A config with WhatsApp switched on and every credential it asks for filled in. */
+const withWhatsapp = () =>
+  config({
+    cap_whatsapp: 1,
+    whatsapp_number: "919876543210",
+    whatsapp_phone_number_id: "123456789012345",
+    whatsapp_waba_id: "123456789012345",
+    whatsapp_access_token: "EAAtoken",
+    whatsapp_app_secret: "0".repeat(32),
+    whatsapp_verify_token: "a phrase only I know",
+  });
+
+describe("capabilityLabels", () => {
+  it("leaves a channel out, however completely it is configured", () => {
+    expect(capabilityLabels(withWhatsapp())).not.toContain("WhatsApp");
+  });
+
+  it("keeps a capability that carries no tool but changes what the model is given", () => {
+    // Image input hands the model no tool either — it decides what an attachment may
+    // become, which is worth knowing and is not a claim about reaching anyone.
+    expect(capabilityLabels(config({ cap_vision: 1 }))).toContain("Image input");
+  });
+
+  it("keeps naming the capabilities that do carry tools", () => {
+    expect(capabilityLabels(config({ cap_memory: 1 }))).toContain("Private Memory");
+  });
+});
+
+describe("channelLabels", () => {
+  it("names a channel that is switched on and configured", () => {
+    expect(channelLabels(withWhatsapp())).toEqual(["WhatsApp"]);
+  });
+
+  it("names nothing when the switch is on but the credentials are not there", () => {
+    expect(channelLabels(config({ cap_whatsapp: 1 }))).toEqual([]);
+  });
+
+  it("names nothing when no channel is switched on", () => {
+    expect(channelLabels(config())).toEqual([]);
+  });
+
+  it("describes every channel the same way", () => {
+    // A channel is marked on the capability rather than matched by id, so a third one
+    // added later is described correctly without anyone remembering this file.
+    const channels = CAPABILITIES.filter((c) => c.channel);
+    expect(channels.map((c) => c.id).sort()).toEqual(["telegram", "whatsapp"]);
+    expect(channels.every((c) => c.tools.length === 0)).toBe(true);
   });
 });

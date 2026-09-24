@@ -69,6 +69,14 @@ export type Capability = {
   alwaysOn?: boolean;
   /** The config column that switches it on. */
   flag: keyof Config;
+  /**
+   * A channel is not something the model can do — it is where the conversation
+   * arrived from. It carries no tools, and the agent replies on the channel a message
+   * came in on rather than choosing one. Named beside the capabilities it would read
+   * as an action the model can take, which is how an agent comes to offer to send a
+   * WhatsApp message to a number it was handed and has no way to reach.
+   */
+  channel?: true;
   label: string;
   summary: string;
   /** What it costs or risks, shown under the toggle. */
@@ -246,6 +254,7 @@ export const CAPABILITIES: Capability[] = [
   {
     id: "telegram",
     flag: "cap_telegram",
+    channel: true,
     label: "Telegram",
     summary: "Talk to the agent on Telegram, in a DM or in a group.",
     tools: [],
@@ -289,6 +298,7 @@ export const CAPABILITIES: Capability[] = [
   {
     id: "whatsapp",
     flag: "cap_whatsapp",
+    channel: true,
     label: "WhatsApp",
     summary: "Talk to the agent on WhatsApp. Follow the setup guide below.",
     note:
@@ -372,6 +382,20 @@ export function capabilityReady(capability: Capability, config: Config): boolean
   // A capability with no switch is on regardless of what an older config row says.
   if (!capability.alwaysOn && !config[capability.flag]) return false;
   return capability.fields.every((f) => !f.required || String(config[f.key] ?? "").trim() !== "");
+}
+
+/**
+ * What to tell the model it can do. Channels are left out: they are not abilities, and
+ * a capability with no tool behind it is still worth naming when it changes what the
+ * model can be given — an image it can see, a file it can be handed.
+ */
+export function capabilityLabels(config: Config): string[] {
+  return CAPABILITIES.filter((c) => !c.channel && capabilityReady(c, config)).map((c) => c.label);
+}
+
+/** Where the agent can be reached, which is a different claim from what it can do. */
+export function channelLabels(config: Config): string[] {
+  return CAPABILITIES.filter((c) => c.channel && capabilityReady(c, config)).map((c) => c.label);
 }
 
 export function enabled(config: Config, id: CapabilityId): boolean {
