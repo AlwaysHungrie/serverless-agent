@@ -215,6 +215,7 @@ export type Config = {
   cap_vision: number;
   cap_image_generation: number;
   cap_audio_input: number;
+  cap_voice_output: number;
   cap_scheduled_tasks: number;
   cap_memory: number;
   cap_telegram: number;

@@ -23,6 +23,10 @@
  * - `!!toolcall` — the model calls the `list` tool, then answers using its result.
  *   The second leg is recognised by the tool message the SDK sends back, so the whole
  *   two-step exchange stays deterministic.
+ * - `!!schedule` — the model schedules a task a second out, then confirms it. The task
+ *   itself comes back through here as an ordinary message, prefixed `[scheduled task]`.
+ * - `!!voice` — the model sends a voice note, then confirms it. The speaking call is
+ *   answered here too, with a token Ogg Opus file.
  * - anything else — the model replies `You said: <message>`.
  *
  * Every successful turn reports `COST_PER_TURN` in its usage, so spend accounting is
@@ -40,7 +44,10 @@
  * https://graph.facebook.com/__sent` is answered here rather than by Meta. That is
  * also why each test uses a recipient number of its own: the log is shared.
  */
-const graphSent: { to: string; body: string; replyTo?: string }[] = [];
+const graphSent: { to: string; body: string; replyTo?: string; audio?: string }[] = [];
+
+/** What the Worker has uploaded to Graph's media store, oldest first. */
+const graphUploads: { id: string; mime: string; bytes: number; name: string }[] = [];
 
 /**
  * A recipient whose sends are refused with 131047, so the closed-window path can be
@@ -68,6 +75,25 @@ async function graphMock(request: Request, url: URL): Promise<Response> {
     return json(graphSubscribed);
   }
 
+  if (url.pathname === "/__media") {
+    return json(graphUploads);
+  }
+
+  // The media store. A voice note is uploaded here first and named by id on the send,
+  // so a test can check the bytes that went out as well as the message that named them.
+  if (url.pathname.endsWith("/media")) {
+    const form = await request.formData();
+    const file = form.get("file");
+    const id = `media-mock${graphUploads.length + 1}`;
+    graphUploads.push({
+      id,
+      mime: String(form.get("type") ?? ""),
+      bytes: file instanceof File ? file.size : 0,
+      name: file instanceof File ? file.name : "",
+    });
+    return json({ id });
+  }
+
   // The account-level subscription, which is what makes Meta deliver anything.
   if (url.pathname.endsWith("/subscribed_apps")) {
     const waba = url.pathname.split("/").at(-2) ?? "";
@@ -89,6 +115,7 @@ async function graphMock(request: Request, url: URL): Promise<Response> {
     to?: string;
     status?: string;
     text?: { body?: string };
+    audio?: { id?: string };
     context?: { message_id?: string };
   };
   // A read receipt names no recipient and sends nothing.
@@ -110,6 +137,7 @@ async function graphMock(request: Request, url: URL): Promise<Response> {
     to: body.to ?? "",
     body: body.text?.body ?? "",
     replyTo: body.context?.message_id,
+    audio: body.audio?.id,
   });
   return json({
     messaging_product: "whatsapp",
@@ -128,9 +156,23 @@ export const COMPLETION_TOKENS = 7;
 /** What the mock replies with, absent a trigger. */
 export const replyTo = (message: string) => `You said: ${message}`;
 
+/** What `!!schedule` asks the agent to run later. */
+export const SCHEDULED_PROMPT = "the standup digest";
+
+/** What `!!voice` asks to have spoken. */
+export const SPOKEN_TEXT = "Here is the answer, out loud.";
+
+/**
+ * The audio the speaking model returns: an Ogg page header and an `OpusHead` payload,
+ * which is exactly what the agent checks before uploading anything to Meta. Not a
+ * playable file — nothing in a test plays it — but the right kind of file.
+ */
+const OGG_OPUS = "OggS" + "\u0000".repeat(24) + "OpusHead" + "mock voice note";
+
 type ChatBody = {
   model?: string;
   stream?: boolean;
+  modalities?: string[];
   messages?: { role: string; content?: unknown }[];
 };
 
@@ -179,6 +221,24 @@ function completion(content: string) {
     created: 1,
     model: "mock/model",
     choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+    usage: usage(),
+  });
+}
+
+/** A completion carrying spoken audio, which is how a voice model answers. */
+function spoken() {
+  return json({
+    id: "chatcmpl-mock",
+    object: "chat.completion",
+    created: 1,
+    model: "mock/voice",
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: "", audio: { data: btoa(OGG_OPUS) } },
+        finish_reason: "stop",
+      },
+    ],
     usage: usage(),
   });
 }
@@ -278,8 +338,23 @@ export async function openrouterMock(request: Request): Promise<Response> {
     return json({ error: { message: "No auth credentials found" } }, 401);
   }
 
+  // The speaking call, which is not streamed either — so it is answered before the
+  // title call below, which would otherwise hand a voice note the word "Mock Title".
+  if (body.modalities?.includes("audio")) return spoken();
+
   // The title call: no streaming, and a system prompt asking for a name.
   if (!body.stream) return completion("Mock Title");
+
+  if (message.startsWith("!!schedule")) {
+    if (carriesToolResult(body)) return streamedText("Scheduled it.");
+    // A second out, so the alarm lands inside a test's patience.
+    return streamedToolCall("schedule_task", { when: "1", prompt: SCHEDULED_PROMPT });
+  }
+
+  if (message.startsWith("!!voice")) {
+    if (carriesToolResult(body)) return streamedText("Sent it.");
+    return streamedToolCall("send_voice_note", { text: SPOKEN_TEXT });
+  }
 
   if (message.startsWith("!!toolcall")) {
     // Second leg: the SDK has sent the tool's result back, so answer for real.

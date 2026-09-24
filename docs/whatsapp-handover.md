@@ -188,10 +188,13 @@ does: resolve/create the session, then
 - **Retries.** Meta re-delivers aggressively on non-200. Dedupe on `messages[0].id`
   (`wamid…`) — Telegram's code has no dedupe and doesn't need it; this does.
 - **24-hour window.** Free-form replies only work within 24h of the user's last inbound
-  message. Outside it, sends fail with **131047**. This breaks scheduled-task delivery
-  (`deliverToChat`). For the spike, let it fail and log it. Phase 2 decides: store
-  `last_inbound_at` and skip, or send a template nudge. Hermes, the reference
-  implementation, simply lets cron fail here.
+  message, and every inbound message restarts that clock — an outbound one does not.
+  Outside it, sends fail with **131047**. Settled: `deliverToChat` splits per channel
+  and `deliverToWhatsapp` sends the answer free-form, logging a 131047 rather than
+  failing the task. Since the refusal reaches nobody, the warning is sent instead at
+  the moment a task is scheduled (`WHATSAPP_WINDOW_NOTICE`), asking the user to write
+  once a day. A template nudge would remove that chore but needs an approved template,
+  which the test number cannot have — Phase 3.
 - **No groups.** Cloud API group messaging needs an Official Business Account and
   business-created groups of ≤8 people. Out of scope; `chat_thread_id` stays empty and
   there is no analogue to `telegram_group_whitelist`.
@@ -232,7 +235,9 @@ does: resolve/create the session, then
    `agent/src/server.ts:2127`.
 6. **Turn** — `whatsappTurn` in `agent.ts` mirroring `telegramTurn`: commands via
    `parseCommand`, `spendBlocked`, file ingest, reply, drawn images. Make
-   `deliverToChat` channel-aware and window-aware.
+   `deliverToChat` channel-aware and window-aware. Done: it dispatches on the session's
+   `source`, and the WhatsApp branch sends text only — a drawn image needs Meta's media
+   upload, which is Phase 3.
 7. **Spend** — every outbound WhatsApp message will be billed by Meta per message from
    1 Oct 2026 (service messages stop being free), and `split()` turns one long answer
    into several billable messages. Worth a note in the PR; a hard cap can come later.
@@ -262,8 +267,6 @@ whitelist denies an unknown `wa_id` and denies when empty, session id stability 
 
 ## Deferred decisions
 
-- Window-expiry behaviour for scheduled tasks: silently queue, or approved template
-  nudge ("update ready, reply to continue") then free-form the real answer.
 - Whether to keep creds in agent config (per-agent, like Telegram) or in Worker
   secrets. Phase 2 assumes per-agent config; the spike uses env vars.
 - No-train provider pinning for WhatsApp turns — required by Meta's terms, not yet

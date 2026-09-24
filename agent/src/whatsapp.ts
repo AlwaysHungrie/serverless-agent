@@ -30,6 +30,13 @@ export const GRAPH_VERSION = "v23.0";
 /** Graph's code for "you are outside the 24-hour customer service window". */
 export const OUTSIDE_WINDOW = 131047;
 
+/**
+ * What a voice note has to be. Meta accepts several audio types, but only Ogg Opus is
+ * rendered as a voice note; an MP3 of the same words arrives as a file with a
+ * download button, which is not what anybody means by "send me a voice note".
+ */
+export const VOICE_MIME = "audio/ogg";
+
 /** One message, as the webhook reports it. Only the fields this agent reads. */
 export type WhatsappMessage = {
   /** `wamid.…` — stable across Meta's retries, which is what makes dedupe possible. */
@@ -134,6 +141,60 @@ export class WhatsApp {
       if (id) ids.push(id);
     }
     return ids;
+  }
+
+  /**
+   * Upload a file to Graph's media store and return the id a message may name.
+   *
+   * A voice note is two calls, not one: Meta takes no bytes on the send. The id it
+   * hands back is good for 30 days and belongs to this phone number only, which is
+   * why nothing caches it — a note is spoken once and sent once.
+   *
+   * Multipart, so `call` (which is JSON) cannot serve: `content-type` is left unset
+   * deliberately, because `fetch` writes it with the boundary it generated.
+   */
+  async upload(bytes: ArrayBuffer, mime: string, filename: string): Promise<string> {
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("type", mime);
+    form.append("file", new Blob([bytes], { type: mime }), filename);
+    const res = await fetch(`${this.api}/${this.version}/${this.phoneNumberId}/media`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.token}` },
+      body: form,
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      id?: string;
+      error?: { message?: string; code?: number };
+    };
+    if (!res.ok || json.error || !json.id) {
+      throw new WhatsappError(
+        `whatsapp media: ${json.error?.message ?? res.status}`,
+        json.error?.code ?? res.status
+      );
+    }
+    return json.id;
+  }
+
+  /**
+   * Send an uploaded audio file. WhatsApp shows it as a voice note — one bubble, a
+   * waveform, play speed — rather than as a file, and it does so on the codec alone:
+   * Ogg Opus is a voice note, everything else is an attachment. See `VOICE_MIME`.
+   *
+   * Nothing is quoted. The written reply that goes out beside the note already
+   * carries the quote, and two bubbles quoting one question reads as a stutter.
+   */
+  async sendVoice(to: string, mediaId: string): Promise<string | undefined> {
+    const sent = await this.call<{ messages?: { id: string }[] }>(
+      `${this.phoneNumberId}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "audio",
+        audio: { id: mediaId },
+      }
+    );
+    return sent.messages?.[0]?.id;
   }
 
   /**
@@ -286,6 +347,20 @@ export function isOwnNumber(configured: string, from: string): boolean {
 }
 
 const digits = (value: string) => value.replace(/\D/g, "");
+
+/**
+ * Whether these bytes are the Ogg Opus that WhatsApp renders as a voice note.
+ *
+ * Checked here rather than trusted from whatever produced the audio: a model asked
+ * for `opus` may answer with something else entirely, and Graph accepts the upload
+ * regardless — the mismatch only shows up as a bubble on the user's phone that will
+ * not play. `OggS` is the page header; `OpusHead` is the first page's payload.
+ */
+export function isVoiceNote(bytes: ArrayBuffer): boolean {
+  const head = new Uint8Array(bytes.slice(0, 64));
+  const text = String.fromCharCode(...head);
+  return text.startsWith("OggS") && text.includes("OpusHead");
+}
 
 /** A conversation's name, for the sidebar. */
 export function chatTitle(inbound: WhatsappInbound): string {

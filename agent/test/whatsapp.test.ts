@@ -1,7 +1,13 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { UNSUBSCRIBABLE_WABA_ID, WINDOW_CLOSED_WA_ID, replyTo } from "./openrouter-mock";
-import { inboundOf, isOwnNumber, verifySignature } from "../src/whatsapp";
+import {
+  SCHEDULED_PROMPT,
+  SPOKEN_TEXT,
+  UNSUBSCRIBABLE_WABA_ID,
+  WINDOW_CLOSED_WA_ID,
+  replyTo,
+} from "./openrouter-mock";
+import { inboundOf, isOwnNumber, isVoiceNote, verifySignature } from "../src/whatsapp";
 
 /**
  * The WhatsApp channel, from the handshake to a delivered answer.
@@ -17,6 +23,13 @@ const APP_SECRET = "test-app-secret";
 const VERIFY_TOKEN = "test-verify-token";
 
 const someone = (label = "user") => `${label}-${crypto.randomUUID().slice(0, 8)}@x.com`;
+
+/** What `agent.ts` prefixes a scheduled task's user message with. */
+const SCHEDULED_PREFIX = "[scheduled task] ";
+
+/** The window warning, verbatim, so a reworded one fails here rather than in the wild. */
+const WINDOW_NOTICE =
+  "Meta policy disallows me to send you a message if we don't have an active chat session. To ensure scheduled messages reach you, send me a message every 24 hours.";
 
 function as(email: string, init: RequestInit = {}) {
   return {
@@ -154,12 +167,21 @@ async function post(hook: string, payload: unknown, signature?: string) {
 /** What the Graph stand-in was asked to send to one number. */
 async function sentTo(to: string) {
   const res = await fetch(`https://graph.facebook.com/__sent?to=${to}`);
-  return (await res.json()) as { to: string; body: string; replyTo?: string }[];
+  return (await res.json()) as { to: string; body: string; replyTo?: string; audio?: string }[];
 }
 
+/** What the Graph stand-in was asked to put in its media store. */
+async function uploads() {
+  const res = await fetch("https://graph.facebook.com/__media");
+  return (await res.json()) as { id: string; mime: string; bytes: number; name: string }[];
+}
+
+/** The bytes of a file, as a string, for the container checks. */
+const bytesOf = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
+
 /** Meta's answer arrives after the 200, so a delivered reply is waited for. */
-async function waitForReply(to: string, count = 1) {
-  for (let i = 0; i < 100; i++) {
+async function waitForReply(to: string, count = 1, tries = 100) {
+  for (let i = 0; i < tries; i++) {
     const sent = await sentTo(to);
     if (sent.length >= count) return sent;
     await scheduler.wait(50);
@@ -414,5 +436,98 @@ describe("the account subscription", () => {
     expect(res.ok).toBe(true);
     expect((await res.json()) as { whatsapp?: unknown }).not.toHaveProperty("whatsapp");
     expect((await subscribed()).length).toBe(before);
+  });
+});
+
+describe("a task scheduled from WhatsApp", () => {
+  it("delivers the task's answer to the chat when it runs", async () => {
+    const { hook, number } = await agentFixture({ cap_scheduled_tasks: 1 });
+    expect((await post(hook, delivery(number, "!!schedule the digest"))).status).toBe(200);
+
+    // Three sends: the answer, the window warning, and the task's own answer once the
+    // alarm has fired. The last one is the whole point — before it, a scheduled task
+    // wrote its reply into the transcript and the phone never heard about it.
+    const sent = await waitForReply(number, 3, 200);
+    expect(sent[0].body).toBe("Scheduled it.");
+    expect(sent[2].body).toContain(`${SCHEDULED_PREFIX}${SCHEDULED_PROMPT}`);
+    // Nothing to quote: the message that asked for the task is long past.
+    expect(sent[2].replyTo).toBeUndefined();
+  });
+
+  it("warns about the 24-hour window as its own message", async () => {
+    const { hook, number } = await agentFixture({ cap_scheduled_tasks: 1 });
+    await post(hook, delivery(number, "!!schedule the digest"));
+
+    const sent = await waitForReply(number, 2);
+    expect(sent[1].body).toBe(WINDOW_NOTICE);
+  });
+
+  it("still delivers after `!new` has moved the chat to another session", async () => {
+    const { hook, number } = await agentFixture({ cap_scheduled_tasks: 1 });
+    // `!new` hands the chat to a successor session, which is named after the chat id.
+    // A WhatsApp chat id is `wa:<number>`, and a session id carrying that colon is
+    // routed to its Durable Object percent-encoded — so the object looked itself up
+    // under a name the registry had never stored, found no chat, and dropped every
+    // scheduled reply without a word.
+    expect((await post(hook, delivery(number, "!new"))).status).toBe(200);
+    expect((await waitForReply(number))[0].body).toContain("Starting fresh");
+
+    await post(hook, delivery(number, "!!schedule the digest"));
+    const sent = await waitForReply(number, 4, 200);
+    expect(sent[1].body).toBe("Scheduled it.");
+    expect(sent[3].body).toContain(`${SCHEDULED_PREFIX}${SCHEDULED_PROMPT}`);
+  });
+
+  it("says nothing about the window on a turn that scheduled nothing", async () => {
+    const { hook, number } = await agentFixture({ cap_scheduled_tasks: 1 });
+    await post(hook, delivery(number, "hello"));
+
+    const sent = await waitForReply(number);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toBe(replyTo("hello"));
+  });
+});
+
+describe("a voice note", () => {
+  it("uploads Ogg Opus and sends it beside the written reply", async () => {
+    const { hook, number } = await agentFixture({ cap_voice_output: 1 });
+    expect((await post(hook, delivery(number, "!!voice say it out loud"))).status).toBe(200);
+
+    // Two sends: the note, which the tool posts mid-turn, and the reply the turn ends
+    // with. The written answer still goes out — a voice note is an addition to it.
+    const sent = await waitForReply(number, 2);
+    const note = sent.find((s) => s.audio);
+    expect(note).toBeTruthy();
+    expect(sent.some((s) => s.body === "Sent it.")).toBe(true);
+    // The spoken words are heard, not read: they are in the note, not in a bubble.
+    expect(sent.every((s) => s.body !== SPOKEN_TEXT)).toBe(true);
+
+    // Meta takes no bytes on a send: the note is an upload the message names by id.
+    const upload = (await uploads()).find((u) => u.id === note?.audio);
+    expect(upload).toBeTruthy();
+    // Ogg Opus and nothing else is rendered as a voice note; an MP3 of the same words
+    // arrives as a file with a download button.
+    expect(upload?.mime).toBe("audio/ogg");
+    expect(upload?.bytes).toBeGreaterThan(0);
+  });
+
+  it("says nothing aloud when the capability is off", async () => {
+    const { hook, number } = await agentFixture();
+    const before = (await uploads()).length;
+    await post(hook, delivery(number, "!!voice say it out loud"));
+
+    // The model is never handed the tool, so nothing is spoken and nothing uploaded.
+    const sent = await waitForReply(number);
+    expect(sent.every((s) => !s.audio)).toBe(true);
+    expect((await uploads()).length).toBe(before);
+  });
+
+  it("counts only Ogg Opus as a voice note", () => {
+    // Graph accepts the wrong codec and Meta delivers it; the only sign of trouble is
+    // a bubble on the phone that will not play, so the check happens before the upload.
+    expect(isVoiceNote(bytesOf(`OggS${"\u0000".repeat(24)}OpusHeadmock`))).toBe(true);
+    expect(isVoiceNote(bytesOf("ID3\u0003mp3 all the way down"))).toBe(false);
+    expect(isVoiceNote(bytesOf(`OggS${"\u0000".repeat(24)}vorbis`))).toBe(false);
+    expect(isVoiceNote(bytesOf(""))).toBe(false);
   });
 });

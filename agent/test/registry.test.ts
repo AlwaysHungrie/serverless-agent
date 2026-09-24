@@ -2,6 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_CONFIG,
+  sessionIdForChat,
   MAX_AGENT_BYTES,
   MAX_SESSIONS,
   SESSION_LIMIT_MESSAGE,
@@ -320,6 +321,36 @@ describe("telegram chat sessions", () => {
     await reg.create("s1", "chat", "o1", origin("999"));
     await reg.detachChat("s1");
     expect(await reg.forChat("999")).toBeUndefined();
+  });
+});
+
+describe("the name a chat's session gets", () => {
+  /**
+   * A session id is addressed as a URL path segment, so one holding a character that
+   * percent-encodes reaches its Durable Object in a different spelling than the one
+   * the registry stored — and every lookup the object makes about itself misses in
+   * silence. A WhatsApp chat id is `wa:<number>`; the colon is exactly that character.
+   */
+  const routable = (id: string) => encodeURIComponent(id) === id;
+
+  it("survives a round trip through a URL path", () => {
+    expect(routable(sessionIdForChat("a1", "wa:919718497676", "", "wa"))).toBe(true);
+    expect(routable(sessionIdForChat("a1", "919718497676", "", "wa"))).toBe(true);
+    expect(routable(sessionIdForChat("a1", "-1001234567890"))).toBe(true);
+    expect(routable(sessionIdForChat("a1", "-1001234567890", "42"))).toBe(true);
+  });
+
+  it("still names a Telegram chat the way the stored ids are named", () => {
+    // These ids are in live registries. A change here orphans every one of them.
+    expect(sessionIdForChat("a1", "999")).toBe("a1~tg-999");
+    expect(sessionIdForChat("a1", "-1001234567890")).toBe("a1~tg-n1001234567890");
+    expect(sessionIdForChat("a1", "999", "7")).toBe("a1~tg-999-t7");
+  });
+
+  it("keeps two chats apart after the unsafe characters are dropped", () => {
+    expect(sessionIdForChat("a1", "wa:111", "", "wa")).not.toBe(
+      sessionIdForChat("a1", "wa:222", "", "wa")
+    );
   });
 });
 

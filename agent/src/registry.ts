@@ -41,6 +41,7 @@ export type Config = {
   cap_vision: number;
   cap_image_generation: number;
   cap_audio_input: number;
+  cap_voice_output: number;
   cap_scheduled_tasks: number;
   cap_memory: number;
   cap_telegram: number;
@@ -64,6 +65,8 @@ export type Config = {
   image_model: string;
   /** OpenRouter model used to transcribe audio uploads; same key, same bill. */
   transcription_model: string;
+  /** OpenRouter model that speaks a `send_voice_note` note; same key, same bill. */
+  voice_model: string;
   /** Bot token from @BotFather. The bot is the agent's face on Telegram. */
   telegram_bot_token: string;
   /** The bot's @handle, without the @: a chat needs it to link back to the bot. */
@@ -116,6 +119,7 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   cap_vision: 0,
   cap_image_generation: 0,
   cap_audio_input: 0,
+  cap_voice_output: 0,
   cap_scheduled_tasks: 0,
   cap_memory: 0,
   // On from the start: Telegram is how most agents are actually talked to, and the
@@ -135,6 +139,7 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
   searxng_token: "",
   image_model: "google/gemini-2.5-flash-image",
   transcription_model: "google/gemini-2.5-flash-lite",
+  voice_model: "openai/gpt-audio-mini",
   telegram_bot_token: "",
   telegram_bot_username: "",
   telegram_user_whitelist: "",
@@ -487,8 +492,25 @@ export function sessionIdForChat(
   threadId = "",
   channel: "tg" | "wa" = "tg"
 ): string {
-  const base = `${channel}-${chatId.replace("-", "n")}`;
+  const base = `${channel}-${safeChatId(chatId)}`;
   return sessionName(agentId, threadId ? `${base}-t${threadId}` : base);
+}
+
+/**
+ * A chat id reduced to characters a session id may hold.
+ *
+ * A session id is addressed as a URL path segment — `/agents/session-agent/<id>` —
+ * and the Durable Object is named by that segment as it arrives. Anything
+ * `encodeURIComponent` rewrites therefore reaches the object in its encoded form,
+ * while the registry still holds the raw one, and every lookup the object makes about
+ * itself quietly misses. A WhatsApp chat id is `wa:<number>`, and that colon is
+ * exactly such a character: it cost a day of silent scheduled messages.
+ *
+ * Telegram ids are digits and a leading `-`, which keeps its own spelling as `n` so
+ * the ids already stored stay the ids this returns.
+ */
+function safeChatId(chatId: string): string {
+  return chatId.replace("-", "n").replace(/[^A-Za-z0-9_-]/g, "");
 }
 
 /** Sessions per page when the caller does not ask for a size. */
@@ -721,6 +743,20 @@ const SESSION_REGISTRY_MIGRATIONS: readonly Migration[] = [
       // above, so agents configured before it have it blank and are asked for it the
       // next time their settings are opened.
       addColumnIfMissing(sql, "config", `whatsapp_waba_id TEXT NOT NULL DEFAULT ''`);
+    },
+  },
+  {
+    name: "voice note columns",
+    up: (sql) => {
+      // What the agent speaks with, and whether it may. Agents that predate this have
+      // the capability off and the model at its default, which is the same state a
+      // new agent arrives in.
+      addColumnIfMissing(sql, "config", `cap_voice_output INTEGER NOT NULL DEFAULT 0`);
+      addColumnIfMissing(
+        sql,
+        "config",
+        `voice_model TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.voice_model}'`
+      );
     },
   },
 ];

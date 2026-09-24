@@ -38,7 +38,14 @@ import {
   topicId,
   type TelegramMessage,
 } from "./telegram";
-import { OUTSIDE_WINDOW, WhatsApp, WhatsappError, type WhatsappInbound } from "./whatsapp";
+import {
+  isVoiceNote,
+  OUTSIDE_WINDOW,
+  VOICE_MIME,
+  WhatsApp,
+  WhatsappError,
+  type WhatsappInbound,
+} from "./whatsapp";
 
 export type Env = {
   SessionAgent: DurableObjectNamespace<SessionAgent>;
@@ -233,6 +240,19 @@ const MAX_TOOL_ROUNDS = 6;
 const SCHEDULED_PREFIX = "[scheduled task] ";
 
 /**
+ * What WhatsApp is told the moment a task is scheduled.
+ *
+ * Meta only lets a business send free-form text within 24 hours of the user's last
+ * message. A task due after that window closes delivers nothing, and the send that
+ * would carry the apology is the send that is refused — so the warning goes out now,
+ * while the window is certainly open, rather than later when it cannot.
+ *
+ * Telegram has no such rule and is told nothing.
+ */
+const WHATSAPP_WINDOW_NOTICE =
+  "Meta policy disallows me to send you a message if we don't have an active chat session. To ensure scheduled messages reach you, send me a message every 24 hours.";
+
+/**
  * A pending task, reduced to what re-creating it needs. `when` is a cron expression
  * or an ISO timestamp — the two forms `scheduleTask` reads back.
  */
@@ -388,6 +408,12 @@ export class SessionAgent extends Think<Env> {
 
   /** Usage accumulated by `onStepFinish` for the turn that is running now. */
   private turnUsage = { prompt: 0, completion: 0, cost: 0, reported: 0, started: 0 };
+
+  /**
+   * Whether the turn running now scheduled a task. Read by the WhatsApp channel,
+   * which owes the user a word about the 24-hour window whenever one is made.
+   */
+  private scheduledInTurn = false;
 
   /**
    * The turn that is streaming right now, if there is one. Every event it has sent is
@@ -549,6 +575,26 @@ export class SessionAgent extends Think<Env> {
    */
   private agentId(): string {
     return agentIdOf(this.name);
+  }
+
+  /**
+   * This session's id as the registry stores it.
+   *
+   * `this.name` is the URL path segment the request was routed on, so a session whose
+   * id holds a character `encodeURIComponent` rewrites arrives here encoded — a colon
+   * becomes `%3A` — while the row was written under the raw id. Every lookup an object
+   * makes about itself has to undo that, or it silently finds nothing: that is how a
+   * WhatsApp session named `tg-wa:<number>` by `!new` came to drop every scheduled
+   * message it produced. Ids generated now are URL-safe (see `safeChatId` in
+   * registry.ts); this is what keeps the ones already stored working.
+   */
+  private sessionId(): string {
+    try {
+      return decodeURIComponent(this.name);
+    } catch {
+      // Not valid percent-encoding, so not a name this code wrote. Use it as it is.
+      return this.name;
+    }
   }
 
   private registry() {
@@ -721,6 +767,7 @@ export class SessionAgent extends Think<Env> {
     await this.loadConfig();
     const config = this.config();
     this.turnUsage = { prompt: 0, completion: 0, cost: 0, reported: 0, started: Date.now() };
+    this.scheduledInTurn = false;
 
     return {
       // Chat completions, not Responses: see `getModel`.
@@ -1026,7 +1073,12 @@ export class SessionAgent extends Think<Env> {
         return `/agents/session-agent/${encodeURIComponent(this.name)}/files/${id}`;
       },
       transcribeAttachment: (id) => this.transcribeAttachment(id),
-      schedule: (when, prompt) => this.scheduleTask(when, prompt),
+      sendVoiceNote: (base64) => this.sendVoiceNote(base64),
+      schedule: async (when, prompt) => {
+        const task = await this.scheduleTask(when, prompt);
+        this.scheduledInTurn = true;
+        return task;
+      },
       listTasks: () => this.listTasks(),
       cancelTask: (id) => this.cancelTask(id),
     };
@@ -1076,37 +1128,142 @@ export class SessionAgent extends Think<Env> {
     if (questions.length === 1 && result.status === "completed") {
       await this.nameSession(textOf(questions[0]), textOf(result.message));
     }
+  }
 
-    // A turn started from a chat posts its own reply; a turn started by an alarm has
-    // no caller to post one, so it is done here, where every completion path lands.
-    const asked = questions[questions.length - 1];
-    if (result.status === "completed" && asked && textOf(asked).startsWith(SCHEDULED_PREFIX)) {
-      await this.deliverToChat(result.message);
+  /**
+   * Post a reply to the chat this session belongs to, over whichever channel it came
+   * in on. Best effort throughout: the turn is already in the transcript, so a chat
+   * that cannot be reached must not turn a completed task into a failed one.
+   *
+   * The channel is decided by the session's `source` rather than by which credentials
+   * happen to be filled in: an agent may have both channels on, and a WhatsApp chat id
+   * posted to Telegram would land in whichever chat that number happens to name.
+   */
+  private async deliverToChat(message: UIMessage): Promise<void> {
+    const row = await this.registry().get(this.sessionId());
+    // A browser session, or one cut loose from its chat by `!new`, has nowhere to post.
+    if (!row?.chat_id) {
+      console.log(`delivery skipped for session ${this.name}: no chat to post to`);
+      return;
+    }
+    if (row.source === "whatsapp") return await this.deliverToWhatsapp(message, row.chat_id);
+    return await this.deliverToTelegram(message, row.chat_id, row.chat_thread_id);
+  }
+
+  /**
+   * A scheduled reply, sent to the WhatsApp number this session talks to.
+   *
+   * Free-form, so it only arrives inside the 24-hour customer service window. Outside
+   * it Graph refuses with 131047 and the only way through would be an approved
+   * template, which a test number cannot have. That is why `WHATSAPP_WINDOW_NOTICE`
+   * goes out when the task is scheduled: a refusal here reaches nobody.
+   *
+   * Images the turn drew are not sent. Telegram takes a photo in the same call shape
+   * as a message; Meta wants the bytes uploaded first, and that is Phase 3 work.
+   */
+  private async deliverToWhatsapp(message: UIMessage, chatId: string): Promise<void> {
+    const config = this.config();
+    // Each of these is a silent no-send, and a silent no-send is the one failure this
+    // path cannot afford: nobody is watching, and the answer is already in the
+    // transcript, so the only trace left is what is said here.
+    if (!enabled(config, "whatsapp")) {
+      console.warn(`whatsapp delivery skipped for session ${this.name}: capability not ready`);
+      return;
+    }
+    if (!config.whatsapp_access_token || !config.whatsapp_phone_number_id) {
+      console.warn(`whatsapp delivery skipped for session ${this.name}: credentials missing`);
+      return;
+    }
+    // The chat id is `wa:<number>` — see the WhatsApp webhook in server.ts.
+    const to = chatId.startsWith("wa:") ? chatId.slice(3) : chatId;
+    if (!to) {
+      console.warn(`whatsapp delivery skipped for session ${this.name}: chat id ${chatId}`);
+      return;
+    }
+
+    const chat = new WhatsApp(
+      config.whatsapp_access_token,
+      config.whatsapp_phone_number_id,
+      this.env.WHATSAPP_API_BASE
+    );
+    try {
+      // Nothing to quote: the task was scheduled in some earlier exchange, and
+      // quoting the message that asked for it would be a reply to yesterday.
+      const ids = await chat.send(to, textOf(message) || "(no reply)");
+      // The message ids Graph hands back. If these are here and the phone stays quiet,
+      // the message left this Worker and the rest is Meta's side of the wire.
+      console.log(`whatsapp delivered for session ${this.name} to ${to}: ${ids.join(",") || "no id"}`);
+      if (this.scheduledInTurn) await chat.send(to, WHATSAPP_WINDOW_NOTICE);
+    } catch (err) {
+      if (err instanceof WhatsappError && err.code === OUTSIDE_WINDOW) {
+        console.warn(
+          `whatsapp window closed for session ${this.name}; scheduled reply not delivered`
+        );
+        return;
+      }
+      console.error(
+        `whatsapp delivery failed for session ${this.name}: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 
   /**
-   * Post a reply to the Telegram conversation this session belongs to. Best effort:
-   * the turn is already in the transcript, so a chat that cannot be reached must not
-   * turn a completed task into a failed one.
+   * Send a spoken note into this session's chat, as a WhatsApp voice note.
+   *
+   * Called by the `send_voice_note` tool, mid-turn, which is why every refusal here
+   * is a thrown reason rather than a logged one: the model reads it as the tool's
+   * result and can say something true to the user instead of promising audio that
+   * never arrived.
+   *
+   * The chat comes from the session's row and not from the message being answered, so
+   * a note asked for by a scheduled task goes to the same number an ordinary reply
+   * would. A browser session has no number, and this is where that ends.
    */
-  private async deliverToChat(message: UIMessage): Promise<void> {
+  private async sendVoiceNote(base64: string): Promise<string> {
+    const config = this.config();
+    if (!enabled(config, "whatsapp")) {
+      throw new Error("WhatsApp is not set up on this agent, and a voice note has nowhere else to go");
+    }
+    const row = await this.registry().get(this.sessionId());
+    if (row?.source !== "whatsapp" || !row.chat_id) {
+      throw new Error("this conversation is not on WhatsApp, so a voice note cannot be sent here");
+    }
+    // The chat id is `wa:<number>` — see the WhatsApp webhook in server.ts.
+    const to = row.chat_id.startsWith("wa:") ? row.chat_id.slice(3) : row.chat_id;
+    const bytes = base64ToBytes(base64);
+    // Graph accepts the wrong codec and Meta delivers it; the only sign of trouble is
+    // a bubble on the phone that will not play. Better to fail where the model reads.
+    if (!isVoiceNote(bytes)) {
+      throw new Error(
+        "the voice model returned audio that is not Ogg Opus, which is the only kind WhatsApp plays as a voice note"
+      );
+    }
+
+    const chat = new WhatsApp(
+      config.whatsapp_access_token,
+      config.whatsapp_phone_number_id,
+      this.env.WHATSAPP_API_BASE
+    );
+    const media = await chat.upload(bytes, VOICE_MIME, "voice-note.ogg");
+    const sent = await chat.sendVoice(to, media);
+    console.log(`whatsapp voice note sent for session ${this.name} to ${to}: ${sent ?? "no id"}`);
+    return "Voice note sent. Say so in your reply rather than repeating the words you spoke.";
+  }
+
+  /** The same, for a Telegram chat, where a drawn image is one more call. */
+  private async deliverToTelegram(
+    message: UIMessage,
+    chatId: string,
+    chatThreadId: string
+  ): Promise<void> {
     const config = this.config();
     if (!enabled(config, "telegram") || !config.telegram_bot_token) return;
-    const row = await this.registry().get(this.name);
-    // A browser session, or one cut loose from its chat by `!new`, has nowhere to post.
-    if (!row?.chat_id) return;
-    // A WhatsApp session has a chat id too, and it is not a Telegram one: sending it
-    // there would post the conversation into whichever chat that number happens to
-    // name. Scheduled delivery over WhatsApp waits on the 24-hour window question,
-    // which Phase 2 settles — see docs/whatsapp-handover.md.
-    if (row.source === "whatsapp") return;
 
     const bot = new Telegram(config.telegram_bot_token, this.env.TELEGRAM_API_BASE);
     // The topic is stored as text; a chat without topics keeps it empty.
-    const thread = Number(row.chat_thread_id) || undefined;
+    const thread = Number(chatThreadId) || undefined;
     try {
-      await bot.send(row.chat_id, textOf(message) || "(no reply)", undefined, thread);
+      await bot.send(chatId, textOf(message) || "(no reply)", undefined, thread);
       // Images the turn drew are files in a chat, the same as in an answered message.
       // Without a start time there is no way to tell this turn's images from the
       // session's whole history, so none are sent rather than all of them.
@@ -1119,7 +1276,7 @@ export class SessionAgent extends Think<Env> {
       for (const image of drawn) {
         const bytes = await this.workspace.readFileBytes(image.path);
         if (!bytes) continue;
-        await bot.sendPhoto(row.chat_id, toArrayBuffer(bytes), image.name, image.text, thread);
+        await bot.sendPhoto(chatId, toArrayBuffer(bytes), image.name, image.text, thread);
       }
     } catch (err) {
       console.error(
@@ -1170,7 +1327,7 @@ export class SessionAgent extends Think<Env> {
         .replace(/^["'\s]+|["'\s.]+$/g, "")
         .slice(0, 60);
       if (!title) return;
-      await this.registry().rename(this.name, title);
+      await this.registry().rename(this.sessionId(), title);
     } catch {
       // Leave the placeholder title in place.
     }
@@ -2017,6 +2174,10 @@ export class SessionAgent extends Think<Env> {
           : turnFailure(result.status, result.error);
 
       await chat.send(to, reply || "(no reply)", replyTo);
+      // Said as its own message rather than folded into the answer, so the model
+      // cannot paraphrase away the one thing the user has to do for the task to
+      // arrive. The window is open by definition here — they just wrote.
+      if (this.scheduledInTurn) await chat.send(to, WHATSAPP_WINDOW_NOTICE);
       return { ok: true };
     } catch (err) {
       // 131047 is the 24-hour window having closed, which no retry and no apology can
@@ -2299,13 +2460,13 @@ export class SessionAgent extends Think<Env> {
       return "Cleared this session's turn state. Everything it holds is still here — ask again.";
     }
     if (command === "new") {
-      const row = await this.registry().get(this.name);
+      const row = await this.registry().get(this.sessionId());
       if (!row?.chat_id) {
         return "Nothing to move: this session is not tied to a chat. Start a new one from the sidebar.";
       }
       return await this.startOver(row);
     }
-    await this.registry().remove(this.name);
+    await this.registry().remove(this.sessionId());
     return "Deleted this session and everything in it. The next message starts over.";
   }
 
@@ -2330,9 +2491,10 @@ export class SessionAgent extends Think<Env> {
     const next = await this.registry().freeChatSessionId(
       this.agentId(),
       row.chat_id,
-      row.chat_thread_id
+      row.chat_thread_id,
+      row.source === "whatsapp" ? "wa" : "tg"
     );
-    await this.registry().detachChat(this.name);
+    await this.registry().detachChat(this.sessionId());
     try {
       await this.registry().create(
         next,
@@ -2498,8 +2660,17 @@ export class SessionAgent extends Think<Env> {
   /**
    * A scheduled task runs a turn with nobody watching: the prompt is stored as the
    * user message and the reply lands in the transcript, so the session reads as a
-   * conversation when the user comes back to it. It is submitted rather than awaited,
-   * because an alarm has nowhere to stream to and a submission survives a restart.
+   * conversation when the user comes back to it.
+   *
+   * The turn is awaited here rather than submitted, and the reply is posted from here
+   * rather than from `onChatResponse`. A submitted turn finishes on an invocation that
+   * has nothing left to wait for it: on staging the alarm was recorded `canceled`
+   * about sixty milliseconds after `onChatResponse` read the session's chat row, which
+   * is the Graph call being cut off mid-flight. The transcript had the answer and the
+   * phone never got it, silently — the throw that would have been logged never
+   * happened, because the whole invocation went away. Awaiting keeps the send inside
+   * the alarm that caused it, which is the arrangement the webhook turn already has
+   * and the one that demonstrably delivers.
    */
   async runScheduledTask(payload: { prompt: string }) {
     this.ensureSchema();
@@ -2507,13 +2678,13 @@ export class SessionAgent extends Think<Env> {
     // A task that comes due over the ceiling is dropped, not queued: it was meant to
     // run at a time that has passed, and running it next month is not what was asked
     // for. Logged, because nobody is watching a scheduled task fail.
+    console.log(`scheduled task running in session ${this.name}`);
     const blocked = await this.spendBlocked();
     if (blocked) {
       console.warn(`scheduled task skipped in session ${this.name}: ${blocked}`);
       return;
     }
-    await this.runTurn({
-      mode: "submit",
+    const result = await this.runTurn({
       input: [
         {
           id: crypto.randomUUID(),
@@ -2522,6 +2693,13 @@ export class SessionAgent extends Think<Env> {
         },
       ],
     });
+    if (result.status !== "completed") {
+      console.warn(
+        `scheduled task ${result.status} in session ${this.name}: ${result.error ?? "no reason given"}`
+      );
+      return;
+    }
+    await this.deliverToChat(result.message as unknown as UIMessage);
   }
 
   /**

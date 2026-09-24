@@ -30,6 +30,7 @@ export type CapabilityId =
   | "vision"
   | "image_generation"
   | "audio_input"
+  | "voice_output"
   | "scheduled_tasks"
   | "memory"
   | "telegram"
@@ -94,6 +95,16 @@ const IMAGE_MODELS = [
   { value: "google/gemini-3-pro-image", label: "Nano Banana Pro — best quality" },
   { value: "openai/gpt-5-image-mini", label: "GPT-5 Image Mini" },
   { value: "openai/gpt-5-image", label: "GPT-5 Image" },
+];
+
+/**
+ * Models that can speak. Audio *output* is rare on OpenRouter — these are the two
+ * chat models that have it — so this list is short by the catalogue's doing, not by
+ * choice. Cheapest first.
+ */
+const VOICE_MODELS = [
+  { value: "openai/gpt-audio-mini", label: "GPT Audio Mini — cheapest" },
+  { value: "openai/gpt-audio", label: "GPT Audio — best quality" },
 ];
 
 const TRANSCRIPTION_MODELS = [
@@ -208,6 +219,23 @@ export const CAPABILITIES: Capability[] = [
     ],
   },
   {
+    id: "voice_output",
+    flag: "cap_voice_output",
+    label: "Voice notes",
+    summary: "Agent will be able to answer with a voice note on WhatsApp.",
+    note: "WhatsApp only. The reply is still sent as text; the note goes with it.",
+    tools: ["send_voice_note"],
+    fields: [
+      {
+        key: "voice_model",
+        label: "Voice model",
+        secret: false,
+        required: true,
+        options: VOICE_MODELS,
+      },
+    ],
+  },
+  {
     id: "scheduled_tasks",
     flag: "cap_scheduled_tasks",
     label: "Schedule tasks",
@@ -286,7 +314,6 @@ export const CAPABILITIES: Capability[] = [
       {
         key: "whatsapp_waba_id",
         label: "WhatsApp Business account ID",
-        hint: "Shown beside the phone number ID. Saving it subscribes your app to the account's messages, which is what makes replies arrive.",
         secret: false,
         required: true,
         placeholder: "123456789012345",
@@ -371,6 +398,12 @@ export type ToolContext = {
   saveImage: (dataUrl: string, prompt: string) => Promise<string>;
   /** Transcribes a stored audio attachment by id, caching the words on its row. */
   transcribeAttachment: (id: string) => Promise<string>;
+  /**
+   * Speaks base64 Ogg Opus into the chat this session belongs to, as a voice note.
+   * Throws with a reason the model can act on when the chat is not on WhatsApp, which
+   * is the only channel that has them.
+   */
+  sendVoiceNote: (base64: string) => Promise<string>;
   schedule: (when: string, prompt: string) => Promise<ScheduledTask>;
   listTasks: () => ScheduledTask[];
   cancelTask: (id: string) => Promise<boolean>;
@@ -384,6 +417,17 @@ export type ToolSpec = {
 };
 
 const str = (v: unknown, fallback = "") => (typeof v === "string" ? v : fallback);
+
+/**
+ * How much text one voice note may carry. A spoken minute is about 150 words, so this
+ * is roughly two minutes — past which a note stops being a note, and every character
+ * is billed as audio on the way out.
+ */
+const VOICE_NOTE_LIMIT = 1500;
+
+/** What the speaking model is told, so it reads the words instead of replying to them. */
+const SPEAK_PROMPT =
+  "You are a text-to-speech voice. Read the user's message aloud exactly as written, in its own language. Do not answer it, introduce it, or add a word of your own.";
 
 /** Rough HTML-to-text: enough for a model to read a page, cheap enough for a Worker. */
 function htmlToText(html: string): string {
@@ -553,6 +597,58 @@ export const TOOLS: ToolSpec[] = [
       if (!id) throw new Error("attachment_id is required");
       const transcript = await ctx.transcribeAttachment(id);
       return transcript.trim() === "" ? "The clip transcribed to nothing." : transcript;
+    },
+  },
+  {
+    name: "send_voice_note",
+    description:
+      "Say something out loud and send it to the user as a WhatsApp voice note. Use it when they ask to be sent a voice note or voice message, or when hearing it beats reading it. The words are spoken and not shown, so write them the way you would say them, and keep your written reply as well.",
+    parameters: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          description:
+            "What to say, in the language the user is writing in. A few sentences: a voice note is listened to, not skimmed.",
+        },
+      },
+      required: ["text"],
+    },
+    async run(args, ctx) {
+      const text = str(args.text).trim();
+      if (!text) throw new Error("text was empty");
+      if (text.length > VOICE_NOTE_LIMIT) {
+        throw new Error(
+          `that is ${text.length} characters to say aloud; keep a voice note under ${VOICE_NOTE_LIMIT}`
+        );
+      }
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${ctx.openrouterKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: ctx.config.voice_model,
+          modalities: ["text", "audio"],
+          // Opus because that is the one container WhatsApp plays as a voice note.
+          audio: { voice: "alloy", format: "opus" },
+          // These models answer a message rather than read it, so the instruction is
+          // what keeps the note from being the speaker's reply to the words it was
+          // handed.
+          messages: [
+            { role: "system", content: SPEAK_PROMPT },
+            { role: "user", content: text },
+          ],
+        }),
+      });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      const json = (await res.json()) as {
+        choices?: { message?: { audio?: { data?: string } } }[];
+      };
+      const base64 = json.choices?.[0]?.message?.audio?.data;
+      if (!base64) return "The voice model returned no audio. Try a different voice model.";
+      return await ctx.sendVoiceNote(base64);
     },
   },
   {
