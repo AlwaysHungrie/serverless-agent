@@ -247,9 +247,12 @@ command and stop it with `pkill -f "wrangler tail"` when you are finished.
   it answers.
 - **A refused send outside the window is logged, not retried.** The turn still ran and
   is in the transcript, readable from the browser.
-- **Text in; text, pictures and voice notes out.** Inbound media needs two more Graph
-  calls to download and is not implemented — when it is, it fills `files` on the
-  channel's inbound and the turn loop needs no change. Outbound, an image the agent
+- **Media goes both ways.** Inbound, a voice note, a picture, a video or a document is
+  two Graph calls — the id resolves to a URL, the URL serves the bytes — and the file
+  is then taken in exactly as a browser upload is, under the same capability gates:
+  Audio input for a clip, Image input for a picture, File ingest for the rest. A clip
+  is stored untranscribed; the model calls `transcribe_audio` when it wants the words.
+  A caption is read as the message the file came with. Outbound, an image the agent
   drew and a voice note from the Voice notes capability are each an upload to Meta's
   media store followed by a send that names the id. A voice note goes out as Ogg Opus,
   the only container WhatsApp plays as a note rather than as a file.

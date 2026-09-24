@@ -1372,6 +1372,21 @@ export class SessionAgent extends Think<Env> {
   }
 
   /**
+   * The files a turn is opening with: the ones it names, or every pending one when it
+   * names none. Named ids are looked up whatever their `used` flag says — the caller
+   * has just written them and is the only party that could claim them.
+   */
+  private claimed(only?: string[]): Attachment[] {
+    if (!only) return this.pendingAttachments();
+    if (only.length === 0) return [];
+    const marks = only.map(() => "?").join(", ");
+    return this.exec<Attachment>(
+      `SELECT * FROM attachments WHERE id IN (${marks}) ORDER BY ts ASC`,
+      ...only
+    );
+  }
+
+  /**
    * Every file this session writes goes through here, so this is where the agent's
    * byte total is moved. Reported rather than awaited: the file is already written,
    * and a count that lands a moment later is better than an upload that waits on it.
@@ -1689,9 +1704,15 @@ export class SessionAgent extends Think<Env> {
   /**
    * The message a turn sends, and the files it claims: the pending ones, or — on a
    * retry — the ones the question being asked again came with.
+   *
+   * `only` names them outright, and is how a chat channel says "these files, the ones
+   * that arrived on this message". A browser turn passes nothing and takes the pending
+   * pool, because that is exactly what it means there: files dropped on the composer
+   * before the message was sent. A channel has no composer, and its pool is shared with
+   * every other message being answered at that moment.
    */
-  private async openTurn(message: string, retry: boolean): Promise<UIMessage> {
-    const attachments = retry ? await this.rewind() : this.pendingAttachments();
+  private async openTurn(message: string, retry: boolean, only?: string[]): Promise<UIMessage> {
+    const attachments = retry ? await this.rewind() : this.claimed(only);
     const id = crypto.randomUUID();
     for (const a of attachments) {
       this.exec(`UPDATE attachments SET used = 1 WHERE id = ?`, a.id);
@@ -1936,10 +1957,12 @@ export class SessionAgent extends Think<Env> {
         return { ok: true };
       }
 
-      await this.ingestFiles(inbound.files);
+      const attached = await this.ingestFiles(inbound.files);
       const drawnBefore = this.drawnIds();
 
-      const result = await this.runTurn({ input: [await this.openTurn(inbound.text, false)] });
+      const result = await this.runTurn({
+        input: [await this.openTurn(inbound.text, false, attached)],
+      });
       if (result.status !== "completed") {
         // The turn carries why it stopped; a chat that only ever says "try again"
         // cannot be told apart from one that is broken in a way retrying will not fix.
@@ -1971,11 +1994,11 @@ export class SessionAgent extends Think<Env> {
         console.warn(`${channel.id} unreachable for session ${this.name}: ${unreachable}`);
         return { ok: false, skipped: unreachable };
       }
+      // The same one line the browser gets: a raw platform error names SQL statements
+      // and isolate resets, which is not an answer to someone who asked a question.
+      // `reportable` logs the whole thing and returns the sentence worth sending.
       await channel
-        .sendText(
-          { ...target, replyTo: undefined },
-          `Something went wrong: ${err instanceof Error ? err.message : String(err)}`
-        )
+        .sendText({ ...target, replyTo: undefined }, `Something went wrong: ${reportable(err, this.name)}`)
         .catch(() => {
           // The chat is unreachable; the error is already the answer to the request.
         });
@@ -1991,8 +2014,15 @@ export class SessionAgent extends Think<Env> {
    * The files are `ChannelFile`s and not any one channel's shape, so a channel that
    * learns to hand over inbound media gets all of this — the capability gates, the
    * storage ceiling, the PDF and audio handling — without a line here.
+   *
+   * Returns the ids it took in, and the turn that follows claims those rather than
+   * whatever is pending. The pool is the session's, and two messages sent a second
+   * apart are two turns running side by side inside one Durable Object: downloading
+   * the second clip while the first turn is still opening is enough for one turn to
+   * claim both files and answer both questions, which is what it did.
    */
-  private async ingestFiles(files: ChannelFile[]): Promise<void> {
+  private async ingestFiles(files: ChannelFile[]): Promise<string[]> {
+    const taken: string[] = [];
     const config = this.config();
     for (const file of files) {
       const isImage = file.mime.startsWith("image/");
@@ -2015,6 +2045,7 @@ export class SessionAgent extends Think<Env> {
         continue;
       }
       const id = crypto.randomUUID().slice(0, 12);
+      taken.push(id);
       const path = uploadPath(id, file.name);
       await this.workspace.writeFileBytes(path, bytes, file.mime);
       const pdf = isPdf(file.mime, file.name);
@@ -2030,6 +2061,7 @@ export class SessionAgent extends Think<Env> {
         bytes: bytes.byteLength,
       });
     }
+    return taken;
   }
 
   /** Every image in this session so far, so the ones a turn adds can be told apart. */
@@ -2911,11 +2943,19 @@ function audioFormat(mime: string, name: string): string {
   const extension = name.split(".").pop()?.toLowerCase() ?? "";
   const candidate = AUDIO_FORMATS[subtype] ?? AUDIO_FORMATS[extension];
   if (!candidate) {
-    throw new Error(`${name} is not an audio format transcription accepts. WAV and MP3 work.`);
+    throw new Error(
+      `${name} is not an audio format transcription accepts. WAV, MP3 and Ogg Opus work.`
+    );
   }
   return candidate;
 }
 
+/**
+ * Ogg is here because every voice note is one — both chat apps record Opus in Ogg and
+ * neither offers anything else — so refusing it would mean refusing the clips people
+ * actually send. Whether it goes through is the transcription model's call: the default
+ * one reads Ogg, and a model that does not answers with a 400 that the tool reports.
+ */
 const AUDIO_FORMATS: Record<string, string> = {
   wav: "wav",
   wave: "wav",
@@ -2923,4 +2963,6 @@ const AUDIO_FORMATS: Record<string, string> = {
   mp3: "mp3",
   mpeg: "mp3",
   mpga: "mp3",
+  ogg: "ogg",
+  opus: "ogg",
 };

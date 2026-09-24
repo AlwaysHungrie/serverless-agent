@@ -289,8 +289,12 @@ function whatsappChannel(config: Config, env: ChannelEnv): Channel {
 /**
  * One WhatsApp delivery, as a turn should read it.
  *
- * No files: inbound media is two more round trips through Graph and is not implemented.
- * When it is, it fills this array and nothing in the turn loop changes.
+ * The size of an attached file is 0 rather than a number: the webhook names a file
+ * without saying what it weighs, and asking Graph would cost the round trip the lazy
+ * `read` exists to avoid. The turn loop weighs the bytes it downloaded instead.
+ *
+ * The client is built once here and closed over by the files, the way `telegramInbound`
+ * does, so a message with an attachment is still one client and one token.
  */
 export function whatsappInbound(
   inbound: WhatsappInbound,
@@ -299,11 +303,21 @@ export function whatsappInbound(
 ): ChannelInbound | { skipped: string } {
   const opened = openChannel("whatsapp", config, env);
   if (!opened.channel) return { skipped: opened.reason };
+  const chat = new WhatsApp(
+    config.whatsapp_access_token,
+    config.whatsapp_phone_number_id,
+    env.WHATSAPP_API_BASE
+  );
   return {
     channel: opened.channel,
     target: { to: inbound.from, replyTo: inbound.message.id },
     text: inbound.text || "(no text)",
-    files: [],
+    files: (inbound.files ?? []).map((file) => ({
+      name: file.name,
+      mime: file.mime,
+      size: 0,
+      read: () => chat.download(file.id),
+    })),
   };
 }
 

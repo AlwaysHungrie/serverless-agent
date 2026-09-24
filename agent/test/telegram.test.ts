@@ -1,6 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { SPOKEN_TEXT, TELEGRAM_FILE_BODY, replyTo } from "./openrouter-mock";
+import { PLATFORM_RESET, RESET_FILE_ID, SPOKEN_TEXT, TELEGRAM_FILE_BODY, replyTo } from "./openrouter-mock";
 
 /**
  * The Telegram channel, end to end.
@@ -98,14 +98,14 @@ function update(chat: number, text: string, messageId = Math.floor(Math.random()
 }
 
 /** The same, carrying a document the agent is expected to ingest. */
-function withDocument(chat: number, text: string) {
+function withDocument(chat: number, text: string, fileId?: string) {
   const message = update(chat, text).message;
   return {
     update_id: Math.floor(Math.random() * 1e9),
     message: {
       ...message,
       document: {
-        file_id: `file-${crypto.randomUUID().slice(0, 8)}`,
+        file_id: fileId ?? `file-${crypto.randomUUID().slice(0, 8)}`,
         file_name: "notes.txt",
         mime_type: "text/plain",
         file_size: TELEGRAM_FILE_BODY.length,
@@ -230,5 +230,18 @@ describe("what the channel seam buys", () => {
     ).json()) as { messages: { role: string; attachments?: { name: string }[] }[] };
     const names = page.messages.flatMap((m) => (m.attachments ?? []).map((a) => a.name));
     expect(names).toContain("notes.txt");
+  });
+
+  it("apologises for a platform reset in one line, without the SQL", async () => {
+    // A deploy restarts the object under whatever request is running, and Cloudflare
+    // says so by naming a failed SQL query and an isolate reset. The chat used to get
+    // that verbatim. It is the same mapping the browser gets, so it belongs here.
+    const { hook, chat } = await agentFixture({ cap_file_ingest: 1 });
+    await post(hook, withDocument(chat, "read this", RESET_FILE_ID));
+
+    const [sent] = await waitForReply(chat);
+    expect(sent.text).toBe("Something went wrong: Session restarted before your message was processed.");
+    expect(sent.text).not.toContain("SQL");
+    expect(sent.text).not.toContain(PLATFORM_RESET);
   });
 });

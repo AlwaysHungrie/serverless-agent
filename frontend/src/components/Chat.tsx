@@ -1016,6 +1016,26 @@ function forkAt(
   return [offset + i - 1, draft];
 }
 
+/**
+ * How a session that lives on another platform is marked: the wash behind the
+ * footer, the link's underline and the logo, in that platform's own colour.
+ * Tailwind reads classes as written, so each one is spelled out rather than built.
+ */
+const CHANNEL_MARK = {
+  telegram: {
+    fade: "from-[#229ED9]/18",
+    underline: "decoration-[#229ED9]",
+    fill: "fill-[#229ED9]",
+    path: "M12 0a12 12 0 1 0 0 24 12 12 0 0 0 0-24Zm5.56 8.22-1.86 8.78c-.14.62-.51.77-1.03.48l-2.85-2.1-1.37 1.32c-.15.15-.28.28-.58.28l.2-2.9 5.29-4.78c.23-.2-.05-.32-.36-.12l-6.54 4.12-2.82-.88c-.61-.19-.62-.61.13-.9l11.03-4.25c.51-.19.96.12.79.95Z",
+  },
+  whatsapp: {
+    fade: "from-[#25D366]/18",
+    underline: "decoration-[#25D366]",
+    fill: "fill-[#25D366]",
+    path: "M12.04 0A11.9 11.9 0 0 0 1.76 17.9L.06 24l6.25-1.64A11.9 11.9 0 1 0 12.04 0Zm0 21.8a9.9 9.9 0 0 1-5.04-1.38l-.36-.21-3.71.97.99-3.62-.24-.37a9.9 9.9 0 1 1 8.36 4.61Zm5.43-7.41c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.96-.94 1.16-.18.2-.35.22-.65.07a8.1 8.1 0 0 1-2.39-1.47 9 9 0 0 1-1.65-2.06c-.17-.3-.02-.46.13-.61.14-.14.3-.35.45-.53.15-.18.2-.3.3-.5.1-.2.05-.38-.02-.53-.08-.15-.67-1.61-.92-2.2-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.48s1.07 2.88 1.22 3.08c.15.2 2.1 3.2 5.08 4.49.71.3 1.26.49 1.7.63.71.22 1.36.19 1.87.12.57-.09 1.76-.72 2-1.42.25-.7.25-1.29.18-1.42-.08-.13-.28-.2-.58-.35Z",
+  },
+} as const;
+
 export function Chat({
   sessionId,
   initialMessages,
@@ -1051,7 +1071,11 @@ export function Chat({
    * A conversation that lives somewhere else. The transcript still reads here, but
    * there is nothing to type into: the reply has to come from the place it started.
    */
-  continueAt?: { label: string; href: string } | null;
+  continueAt?: {
+    label: string;
+    href: string;
+    channel: "telegram" | "whatsapp";
+  } | null;
 }) {
   const [input, setInput] = useState(initialInput);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1597,21 +1621,23 @@ export function Chat({
       </div>
 
       {continueAt ? (
-        <div className="bg-linear-to-t from-[#229ED9]/18 to-transparent px-5 py-6 text-center md:px-8 md:py-7">
+        <div
+          className={`bg-linear-to-t to-transparent px-5 py-6 text-center md:px-8 md:py-7 ${CHANNEL_MARK[continueAt.channel].fade}`}
+        >
           <p className="text-muted text-sm leading-[1.43]">
             Continue this conversation in{" "}
             <a
               href={continueAt.href}
               target="_blank"
               rel="noreferrer"
-              className="text-ink inline-flex items-center gap-1 underline decoration-[#229ED9] underline-offset-4 hover:decoration-2"
+              className={`text-ink inline-flex items-center gap-1 underline underline-offset-4 hover:decoration-2 ${CHANNEL_MARK[continueAt.channel].underline}`}
             >
               <svg
                 viewBox="0 0 24 24"
                 aria-hidden="true"
-                className="h-[15px] w-[15px] fill-[#229ED9]"
+                className={`h-[15px] w-[15px] ${CHANNEL_MARK[continueAt.channel].fill}`}
               >
-                <path d="M12 0a12 12 0 1 0 0 24 12 12 0 0 0 0-24Zm5.56 8.22-1.86 8.78c-.14.62-.51.77-1.03.48l-2.85-2.1-1.37 1.32c-.15.15-.28.28-.58.28l.2-2.9 5.29-4.78c.23-.2-.05-.32-.36-.12l-6.54 4.12-2.82-.88c-.61-.19-.62-.61.13-.9l11.03-4.25c.51-.19.96.12.79.95Z" />
+                <path d={CHANNEL_MARK[continueAt.channel].path} />
               </svg>
               {continueAt.label}
             </a>

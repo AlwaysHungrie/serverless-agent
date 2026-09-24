@@ -341,9 +341,14 @@ export default function AgentPage({
                     ? {
                         label: "Telegram",
                         href: telegramLink(current, botUsername),
+                        channel: "telegram" as const,
                       }
                     : current?.source === "whatsapp" && whatsappLink(current)
-                      ? { label: "WhatsApp", href: whatsappLink(current) }
+                      ? {
+                          label: "WhatsApp",
+                          href: whatsappLink(current),
+                          channel: "whatsapp" as const,
+                        }
                       : null
                 }
               />

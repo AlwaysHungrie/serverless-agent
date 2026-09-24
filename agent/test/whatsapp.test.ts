@@ -138,6 +138,48 @@ function delivery(from: string, text: string, wamid = `wamid.${crypto.randomUUID
   };
 }
 
+/** The same, carrying a file instead of words — a voice note, a picture, a document. */
+function mediaDelivery(
+  from: string,
+  type: "audio" | "image" | "video" | "document",
+  media: Record<string, unknown>,
+  wamid = `wamid.${crypto.randomUUID()}`
+) {
+  const payload = delivery(from, "", wamid);
+  payload.entry[0].changes[0].value.messages = [
+    { from, id: wamid, timestamp: "1758000000", type, [type]: media },
+  ] as never;
+  return payload;
+}
+
+/** One inbound voice note, in the shape Meta posts it: an id, and Opus in Ogg. */
+const voiceNote = (from: string, id = `media-${crypto.randomUUID().slice(0, 8)}`) =>
+  mediaDelivery(from, "audio", { id, mime_type: "audio/ogg; codecs=opus", voice: true });
+
+/** A file put in a session from the browser, which leaves it pending until a turn sends it. */
+async function uploadToSession(sessionId: string, email: string, name: string) {
+  const form = new FormData();
+  form.set("file", new File(["notes from the browser"], name, { type: "text/plain" }));
+  const res = await SELF.fetch(`${BASE}/agents/session-agent/${sessionId}/files`, {
+    method: "POST",
+    headers: { "x-api-secret": SECRET, "x-user-email": email },
+    body: form,
+  });
+  expect(res.ok).toBe(true);
+}
+
+/** What is waiting to be sent with this session's next message. */
+async function pending(sessionId: string, email: string): Promise<string[]> {
+  const res = await SELF.fetch(`${BASE}/agents/session-agent/${sessionId}/files`, as(email));
+  return ((await res.json()) as { attachments: { name: string }[] }).attachments.map((a) => a.name);
+}
+
+/** Which inbound media ids the Worker has fetched the bytes of. */
+async function downloaded(): Promise<string[]> {
+  const res = await fetch("https://graph.facebook.com/__downloaded");
+  return (await res.json()) as string[];
+}
+
 const hex = (bytes: ArrayBuffer) =>
   [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
@@ -537,6 +579,108 @@ describe("a voice note", () => {
     expect(isVoiceNote(bytesOf("ID3\u0003mp3 all the way down"))).toBe(false);
     expect(isVoiceNote(bytesOf(`OggS${"\u0000".repeat(24)}vorbis`))).toBe(false);
     expect(isVoiceNote(bytesOf(""))).toBe(false);
+  });
+});
+
+describe("a voice note the user sent", () => {
+  it("names the clip, strips the codec off its type and dates its filename", () => {
+    const inbound = inboundOf(voiceNote("919718497676", "media-abc"));
+    expect(inbound?.files).toEqual([
+      { id: "media-abc", name: "voice-1758000000.ogg", mime: "audio/ogg" },
+    ]);
+    // A voice note carries no words. The turn still has to run: the clip is the message.
+    expect(inbound?.text).toBe("");
+  });
+
+  it("downloads it and files it in the session as an attachment", async () => {
+    const { hook, number, email } = await agentFixture({ cap_audio_input: 1 });
+    const res = await post(hook, voiceNote(number, "media-inbound1"));
+    const sessionId = res.headers.get("x-session")!;
+    await waitForReply(number);
+
+    // Two hops: the id resolves to a URL, and the URL serves the bytes.
+    expect(await downloaded()).toContain("media-inbound1");
+    const page = (await (
+      await SELF.fetch(`${BASE}/agents/session-agent/${sessionId}/messages`, as(email))
+    ).json()) as { messages: { attachments?: { name: string; mime: string }[] }[] };
+    const files = page.messages.flatMap((m) => m.attachments ?? []);
+    expect(files.map((f) => f.name)).toContain("voice-1758000000.ogg");
+    expect(files.map((f) => f.mime)).toContain("audio/ogg");
+  });
+
+  it("leaves it on Meta's servers when Audio input is off", async () => {
+    const { hook, number } = await agentFixture();
+    await post(hook, voiceNote(number, "media-inbound2"));
+
+    // The turn still answers; the clip is simply never fetched.
+    await waitForReply(number);
+    expect(await downloaded()).not.toContain("media-inbound2");
+  });
+
+  it("reads a picture's caption as the message it came with", () => {
+    const inbound = inboundOf(
+      mediaDelivery("919718497676", "image", {
+        id: "media-pic",
+        mime_type: "image/jpeg",
+        caption: "  what is this  ",
+      })
+    );
+    expect(inbound?.text).toBe("what is this");
+    expect(inbound?.files[0]?.name).toBe("image-1758000000.jpg");
+  });
+
+  it("keeps the name a document was sent under", () => {
+    const inbound = inboundOf(
+      mediaDelivery("919718497676", "document", {
+        id: "media-doc",
+        mime_type: "application/pdf",
+        filename: "invoice.pdf",
+      })
+    );
+    expect(inbound?.files[0]?.name).toBe("invoice.pdf");
+  });
+
+  it("answers with the clip that arrived, not with whatever else is pending", async () => {
+    // Two messages a second apart are two turns running side by side in one Durable
+    // Object, and the pending pool is the session's. A turn that takes the pool takes
+    // the other message's clip with it and answers both questions at once, which is
+    // what it did: "First clip … Second clip", to someone who had asked one thing.
+    const { hook, number, email } = await agentFixture({ cap_audio_input: 1, cap_file_ingest: 1 });
+    const opened = await post(hook, delivery(number, "hello"));
+    const sessionId = opened.headers.get("x-session")!;
+    await waitForReply(number);
+
+    await uploadToSession(sessionId, email, "notes.txt");
+    await post(hook, voiceNote(number, "media-alone"));
+    await waitForReply(number, 2);
+
+    const page = (await (
+      await SELF.fetch(`${BASE}/agents/session-agent/${sessionId}/messages`, as(email))
+    ).json()) as { messages: { role: string; attachments?: { name: string }[] }[] };
+    const carried = page.messages
+      .filter((m) => m.role === "user")
+      .map((m) => (m.attachments ?? []).map((a) => a.name));
+    // The clip went out by itself. Nothing carried two files, and nothing carried a
+    // file the message it belongs to never had.
+    expect(carried).toEqual([[], ["voice-1758000000.ogg"]]);
+    // The browser's file is untouched and still waiting for the message it was for.
+    expect(await pending(sessionId, email)).toEqual(["notes.txt"]);
+  });
+
+  it("ignores a message that is neither words nor a file", async () => {
+    // A location, a contact card, an order: nothing to read and nothing to download,
+    // so answering one would be the agent replying to nothing.
+    const location = delivery("919718497676", "");
+    location.entry[0].changes[0].value.messages = [
+      {
+        from: "919718497676",
+        id: "wamid.loc",
+        timestamp: "1758000000",
+        type: "location",
+        location: { latitude: 19.07, longitude: 72.87 },
+      },
+    ] as never;
+    expect(inboundOf(location)).toBeUndefined();
   });
 });
 

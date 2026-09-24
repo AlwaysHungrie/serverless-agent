@@ -79,6 +79,9 @@ async function telegramMock(request: Request, url: URL): Promise<Response> {
   // A file the user attached: one call to resolve it, one to fetch the bytes.
   if (method === "getFile") {
     const body = (await request.json().catch(() => ({}))) as { file_id?: string };
+    // A file id a test uses to make the step before the turn fail the way the platform
+    // fails it — see RESET_FILE_ID.
+    if (body.file_id === RESET_FILE_ID) return json({ ok: false, description: PLATFORM_RESET }, 500);
     return json({ ok: true, result: { file_path: `files/${body.file_id ?? "unknown"}` } });
   }
   if (url.pathname.includes("/file/bot")) {
@@ -121,6 +124,21 @@ async function telegramMock(request: Request, url: URL): Promise<Response> {
 /** What the Telegram stand-in serves for any file a message attached. */
 export const TELEGRAM_FILE_BODY = "a document the agent was sent";
 
+/**
+ * What Cloudflare says when a Durable Object is restarted under a running request —
+ * a deploy, most often. It names a SQL statement and an isolate reset, neither of
+ * which is an answer to the person whose message was in flight.
+ */
+export const PLATFORM_RESET =
+  "SQL query failed. Durable object reset because its code was updated.";
+
+/**
+ * A file id `getFile` refuses with `PLATFORM_RESET`, so a test can make the ingest
+ * step — which runs inside the channel turn but outside the model loop — throw a real
+ * platform error rather than a tidy one.
+ */
+export const RESET_FILE_ID = "file-platform-reset";
+
 /* ------------------------------------------------------------------- graph -- */
 
 /**
@@ -145,6 +163,12 @@ const graphSent: {
 
 /** What the Worker has uploaded to Graph's media store, oldest first. */
 const graphUploads: { id: string; mime: string; bytes: number; name: string }[] = [];
+
+/** Which inbound media ids the Worker has fetched the bytes of, oldest first. */
+const graphDownloads: string[] = [];
+
+/** What the Graph stand-in serves for any file a message attached. */
+export const WHATSAPP_FILE_BODY = "a note the agent was sent";
 
 /**
  * A recipient whose sends are refused with 131047, so the closed-window path can be
@@ -174,6 +198,21 @@ async function graphMock(request: Request, url: URL): Promise<Response> {
 
   if (url.pathname === "/__media") {
     return json(graphUploads);
+  }
+
+  // Inbound media: an id resolves to a URL, and the URL serves the bytes. Meta puts
+  // that URL on its own CDN; here it is one more path on the stand-in, because the
+  // Worker fetches whatever it is given.
+  if (url.pathname.startsWith("/__inbound/")) {
+    graphDownloads.push(url.pathname.slice("/__inbound/".length));
+    return new Response(WHATSAPP_FILE_BODY, { headers: { "content-type": "text/plain" } });
+  }
+  if (url.pathname === "/__downloaded") {
+    return json(graphDownloads);
+  }
+  if (/^\/v\d+\.\d+\/media-[\w-]+$/.test(url.pathname)) {
+    const id = url.pathname.split("/").at(-1) ?? "";
+    return json({ id, url: `https://graph.facebook.com/__inbound/${id}`, file_size: WHATSAPP_FILE_BODY.length });
   }
 
   // The media store. A voice note is uploaded here first and named by id on the send,

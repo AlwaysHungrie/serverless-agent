@@ -30,6 +30,22 @@ export const GRAPH_VERSION = "v23.0";
 /** Graph's code for "you are outside the 24-hour customer service window". */
 export const OUTSIDE_WINDOW = 131047;
 
+/**
+ * A file on a message. Meta names it and never sends the bytes, so every one of these
+ * is a download away — see `WhatsApp.download`.
+ */
+export type WhatsappMedia = {
+  id: string;
+  /** `audio/ogg; codecs=opus` for a voice note, so the parameters are stripped below. */
+  mime_type?: string;
+  /** What was written under a picture or a clip, when anything was. */
+  caption?: string;
+  /** Only a document carries the name it had on the sender's phone. */
+  filename?: string;
+  /** True when a clip was spoken into the mic rather than attached as a track. */
+  voice?: boolean;
+};
+
 /** One message, as the webhook reports it. Only the fields this agent reads. */
 export type WhatsappMessage = {
   /** `wamid.…` — stable across Meta's retries, which is what makes dedupe possible. */
@@ -39,8 +55,21 @@ export type WhatsappMessage = {
   timestamp: string;
   type: string;
   text?: { body: string };
+  audio?: WhatsappMedia;
+  image?: WhatsappMedia;
+  video?: WhatsappMedia;
+  document?: WhatsappMedia;
   /** Set when the user replied to an earlier message. */
   context?: { from?: string; id?: string };
+};
+
+/** A file that arrived on a message, named the way the workspace will store it. */
+export type WhatsappFile = {
+  /** The media id, which is what `download` takes. */
+  id: string;
+  name: string;
+  /** The type without its parameters: `audio/ogg`, not `audio/ogg; codecs=opus`. */
+  mime: string;
 };
 
 /** The `value` of one `messages` change. */
@@ -77,6 +106,11 @@ export type WhatsappInbound = {
    * agent, and nothing else in the payload names it.
    */
   businessNumber: string;
+  /**
+   * What the message carried, undownloaded. Ids rather than bytes, because this whole
+   * object is serialised to the session's Durable Object before anything reads it.
+   */
+  files: WhatsappFile[];
 };
 
 export class WhatsApp {
@@ -212,6 +246,31 @@ export class WhatsApp {
   }
 
   /**
+   * Fetch a file the user sent. Two hops, because Graph hands over an id and not bytes:
+   * the id resolves to a short-lived URL on Meta's CDN, and that URL still wants the
+   * access token — fetched without it, it answers with an error page rather than a file.
+   */
+  async download(mediaId: string): Promise<ArrayBuffer> {
+    const auth = { authorization: `Bearer ${this.token}` };
+    const found = await fetch(`${this.api}/${this.version}/${encodeURIComponent(mediaId)}`, {
+      headers: auth,
+    });
+    const json = (await found.json().catch(() => ({}))) as {
+      url?: string;
+      error?: { message?: string; code?: number };
+    };
+    if (!found.ok || json.error || !json.url) {
+      throw new WhatsappError(
+        `whatsapp media ${mediaId}: ${json.error?.message ?? found.status}`,
+        json.error?.code ?? found.status
+      );
+    }
+    const file = await fetch(json.url, { headers: auth });
+    if (!file.ok) throw new WhatsappError(`whatsapp download: ${file.status}`, file.status);
+    return await file.arrayBuffer();
+  }
+
+  /**
    * Blue ticks plus the typing bubble, in one call — Meta only offers the indicator
    * as part of a read receipt. Best effort: nothing depends on it, and a turn that
    * failed to look busy must not fail.
@@ -320,8 +379,12 @@ function timingSafeEqual(a: string, b: string): boolean {
  *
  * Meta batches: a payload may carry several entries, several changes, several
  * messages, or none at all — a status receipt is the common case and must be a no-op.
- * Only text is read here; media is two more round trips and is out of scope for the
- * spike.
+ * A message carrying a file is read too: it names the file and the bytes are fetched
+ * later, by whoever decides the agent is allowed to keep it.
+ *
+ * Anything else — a sticker, a contact card, a location, an order — is skipped rather
+ * than answered with its empty text, which would look like the agent replying to
+ * nothing.
  */
 export function inboundOf(payload: WhatsappPayload | null): WhatsappInbound | undefined {
   for (const entry of payload?.entry ?? []) {
@@ -329,8 +392,11 @@ export function inboundOf(payload: WhatsappPayload | null): WhatsappInbound | un
       if (change.field && change.field !== "messages") continue;
       const value = change.value;
       const message = value?.messages?.[0];
-      if (!message || message.type !== "text") continue;
-      const text = (message.text?.body ?? "").trim();
+      if (!message) continue;
+      const media = mediaOf(message);
+      if (message.type !== "text" && !media) continue;
+      // A picture or a clip says what it is for in its caption; there is no other text.
+      const text = (message.text?.body ?? media?.caption ?? "").trim();
       const contact = value?.contacts?.find((c) => c.wa_id === message.from) ?? value?.contacts?.[0];
       return {
         message,
@@ -338,11 +404,43 @@ export function inboundOf(payload: WhatsappPayload | null): WhatsappInbound | un
         name: contact?.profile?.name ?? "",
         text,
         businessNumber: digits(value?.metadata?.display_phone_number ?? ""),
+        files: media ? [fileOf(message, media)] : [],
       };
     }
   }
   return undefined;
 }
+
+/**
+ * The file on a message, if it carries one. A message carries at most one: WhatsApp
+ * sends an album of three pictures as three messages, each with its own `wamid`.
+ */
+function mediaOf(message: WhatsappMessage): WhatsappMedia | undefined {
+  return message.audio ?? message.image ?? message.video ?? message.document;
+}
+
+/**
+ * A name for a file that mostly arrives without one. Only a document keeps the name it
+ * had on the sender's phone; a voice note and a picture are named after the moment they
+ * were sent, which is all WhatsApp knows about them.
+ *
+ * The extension matters beyond tidiness: transcription and PDF parsing both read it
+ * when the type alone is ambiguous.
+ */
+function fileOf(message: WhatsappMessage, media: WhatsappMedia): WhatsappFile {
+  const mime = (media.mime_type ?? "").split(";")[0].trim() || "application/octet-stream";
+  if (media.filename) return { id: media.id, name: media.filename, mime };
+  const kind = media.voice ? "voice" : message.type;
+  return { id: media.id, name: `${kind}-${message.timestamp}.${extensionOf(mime)}`, mime };
+}
+
+/** The extension for a type, for the handful WhatsApp actually sends. */
+function extensionOf(mime: string): string {
+  const subtype = mime.split("/")[1] ?? "";
+  return EXTENSIONS[subtype] ?? subtype ?? "bin";
+}
+
+const EXTENSIONS: Record<string, string> = { jpeg: "jpg", mpeg: "mp3", plain: "txt", quicktime: "mov" };
 
 /**
  * Whether this sender is the person the agent belongs to.
