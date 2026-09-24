@@ -26,7 +26,7 @@ export default async function WhatsappGuide({
   // hand out something that looks copyable, the page says where the real one is.
   const callback = agent
     ? `${AGENT_URL}/whatsapp/webhook/${encodeURIComponent(agent)}`
-    : null;
+    : `${AGENT_URL}/whatsapp/webhook/${"agent-id-goes-here"}`;
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-14">
@@ -34,34 +34,38 @@ export default async function WhatsappGuide({
         Connect your agent to WhatsApp
       </h1>
       <p className="text-muted mt-3 text-sm font-light leading-[1.5]">
-        This guide will help you get a test phone number and set up your agent to use
-        it.
+        This guide will help you get a test phone number and set up your agent
+        to use that number to message you on WhatsApp. Following it will require
+        you to open three different browser tabs and follow precise
+        instructions. No technical skills are required.
       </p>
 
       <div className="mt-6">
         <Warn>
-          <B>Disclaimer:</B> You are not allowed to share access to your agent with
-          any WhatsApp account other than your own. Doing so violates our terms of
-          use and Meta&rsquo;s, and your account will be suspended.
+          <B>Disclaimer:</B> Sharing your agent with any other WhatsApp account
+          or group strictly violates Meta&rsquo;s terms of use and ours, and
+          will get your account suspended. Only use your own phone number to
+          talk to your agent.
         </Warn>
       </div>
 
       <Callout>
         <p className="text-sm leading-[1.5]">What to expect:</p>
-        <ul className="mt-2 ml-4 list-disc space-y-1.5 text-sm leading-[1.5]">
+        <ul className="mt-2 ml-4 list-disc space-y-1.5 text-sm leading-normal">
           <li>
-            You will create a free developer account on Meta and get a test number.
-            Your agent uses that number to message you on WhatsApp.
+            You will create a developer account on Meta and get a test number.
+            This is a free service provided by Meta for testing purposes, and as
+            such Meta can change or remove this service at any time.
           </li>
           <li>
-            Your agent will not work in WhatsApp groups, or with any account other
-            than yours.
+            Your agent will not work in WhatsApp groups, or with any account
+            other than yours.
           </li>
           <li>
-            Your agent can only reply within 24 hours of your last message to it. If
-            you do not message it for a day, WhatsApp blocks whatever it tries to
-            send you, including reminders and scheduled messages. Send it a message
-            and it can reach you again.
+            Your agent cannot send you a message on its own unless there is an
+            active chat session, and a session only lasts 24 hours. To make sure
+            reminders and scheduled messages reach you, keep a session alive by
+            sending at least one message every 24 hours.
           </li>
         </ul>
       </Callout>
@@ -69,7 +73,9 @@ export default async function WhatsappGuide({
       <Step n={1} title="Create a Meta app">
         <p>
           Sign in to{" "}
-          <A href="https://developers.facebook.com/apps">developers.facebook.com</A>{" "}
+          <A href="https://developers.facebook.com/apps">
+            developers.facebook.com
+          </A>{" "}
           and create a new app.
         </p>
         <Shot
@@ -78,9 +84,12 @@ export default async function WhatsappGuide({
           height={1042}
           alt="The Meta apps dashboard with the Create App button"
         />
-        <p>This opens a five step app creation process.</p>
+        <p>This opens a five-step app creation process.</p>
         <ol className="ml-4 list-decimal space-y-3">
-          <li>Enter an app name. &ldquo;My Agent&rdquo; is fine.</li>
+          <li>
+            Enter an app name. Use &lt;Your-Name&gt;&apos;s Assistant as the
+            name.
+          </li>
           <li>
             Under use cases, pick <B>Business messaging</B>, then{" "}
             <B>Connect with customers through WhatsApp</B>.
@@ -95,8 +104,10 @@ export default async function WhatsappGuide({
             On the Business step:
             <ol className="mt-2 ml-4 list-[lower-alpha] space-y-3">
               <li>
-                Create a business portfolio. Name it <B>My Agent</B> and enter your
-                contact details.
+                Create a business portfolio{" "}
+                <em>only if you do not have one already.</em> Use{" "}
+                <b>&lt;Your-Name&gt;&apos;s Assistant</b> as the business
+                portfolio name. Also enter your contact details.
                 <Shot
                   src="/guides/whatsapp/step1-portfolio.png"
                   width={1200}
@@ -118,8 +129,7 @@ export default async function WhatsappGuide({
           </li>
           <li>
             Requirements: if everything so far is right, you will see &ldquo;No
-            requirements identified. This may change if you add more to this
-            app.&rdquo; Click <B>Next</B>.
+            requirements identified.&rdquo; Click <B>Next</B>.
           </li>
           <li>
             Review your details and click <B>Create app</B>.
@@ -158,8 +168,8 @@ export default async function WhatsappGuide({
 
       <Step n={3} title="Request a test phone number">
         <p>
-          Step 2 takes you to a new page. Check that the right business portfolio is
-          selected, then click <B>Continue</B>.
+          Step 2 takes you to a new page. Check that the right business
+          portfolio is selected, then click <B>Continue</B>.
         </p>
         <Shot
           src="/guides/whatsapp/step3-portfolio.png"
@@ -168,8 +178,8 @@ export default async function WhatsappGuide({
           alt="The WhatsApp Business Platform panel with the business portfolio dropdown and a Continue button"
         />
         <p>
-          This opens a three step overview. You only need steps 1 and 2 of it. Click{" "}
-          <B>Step 1. Try it out</B>.
+          This opens a three-step overview. For now you only need to partly
+          complete step 1. Click <B>Step 1. Try it out</B>.
         </p>
         <Shot
           src="/guides/whatsapp/step3-overview.png"
@@ -181,15 +191,13 @@ export default async function WhatsappGuide({
 
       <Step
         n={4}
-        title="Copy the phone number ID and optionally send a test message"
+        title="Copy the phone number ID and register your own phone number"
       >
         <ol className="ml-4 list-[lower-alpha] space-y-3">
           <li>
             Copy the <B>Phone number ID</B> and the{" "}
-            <B>WhatsApp Business account ID</B>, and add both to your agent&rsquo;s
-            settings. The account ID is what lets your agent subscribe itself to the
-            account&rsquo;s messages when you save, which is what makes replies
-            arrive.
+            <B>WhatsApp Business account ID</B>, and add both to your
+            agent&rsquo;s settings.
             <Shot
               src="/guides/whatsapp/step4-test-number.png"
               width={1604}
@@ -198,8 +206,7 @@ export default async function WhatsappGuide({
             />
           </li>
           <li>
-            Optionally, send yourself a test message from the new number. Click{" "}
-            <B>Generate token</B>, choose{" "}
+            Click <B>Generate token</B>, choose{" "}
             <B>Opt in to all current and future WhatsApp accounts</B>,{" "}
             <B>Continue</B>, then <B>Save</B>.
             <Shot
@@ -208,10 +215,12 @@ export default async function WhatsappGuide({
               height={1224}
               alt="The opt in dialog with all current and future WhatsApp accounts selected"
             />
-            Then click <B>Select a recipient number</B> →{" "}
-            <B>Manage phone number list</B>, add your phone number and confirm the
-            code WhatsApp sends you. Click <B>Send message</B> and it arrives on your
-            phone.
+          </li>
+          <li>
+            Finally, click <B>Select a recipient number</B> →{" "}
+            <B>Manage phone number list</B>, add your phone number and verify
+            the 5-digit code WhatsApp sends you. Click <B>Send message</B> and
+            it should arrive on your phone.
             <Shot
               src="/guides/whatsapp/step5-send-message.png"
               width={1188}
@@ -222,16 +231,18 @@ export default async function WhatsappGuide({
         </ol>
       </Step>
 
-      <Step n={5} title="Make a permanent access token">
+      <Step n={5} title="Create a system user and a permanent access token">
         <p>
-          Go to{" "}
-          <A href="https://business.facebook.com/settings">business.facebook.com</A>{" "}
-          and select the business portfolio you created in step 1.
+          In a second new tab, go to{" "}
+          <A href="https://business.facebook.com/settings">
+            business.facebook.com
+          </A>{" "}
+          and select the business portfolio you created in the first step.
         </p>
         <p>
-          Click the settings icon at the bottom left of the sidebar. A second sidebar
-          opens: select <B>System users</B> and create a new system user named{" "}
-          <B>Salts</B> with the <B>Admin</B> role.
+          Click the settings icon at the bottom left of the sidebar. A second
+          sidebar opens: select <B>System users</B> and create a new system user
+          named <B>Salts</B> with the <B>Admin</B> role.
         </p>
         <p>
           Once it is created, click <B>Assign assets</B>.
@@ -253,8 +264,8 @@ export default async function WhatsappGuide({
           alt="The Select assets and assign permissions dialog with the WhatsApp account selected and Full access on"
         />
         <p>
-          Now click <B>Generate token</B> and follow the process. Select your app,
-          then set the expiry to <B>Never</B>.
+          Now click <B>Generate token</B> and follow the process. Select your
+          app, then set the expiry to <B>Never</B>.
         </p>
         <Shot
           src="/guides/whatsapp/step5-expiry.png"
@@ -262,9 +273,7 @@ export default async function WhatsappGuide({
           height={1138}
           alt="The token expiry screen with Never selected"
         />
-        <p>
-          On the permissions screen, select every permission in the list.
-        </p>
+        <p>On the permissions screen, select every permission in the list.</p>
         <Shot
           src="/guides/whatsapp/step5-permissions.png"
           width={1596}
@@ -272,22 +281,26 @@ export default async function WhatsappGuide({
           alt="The assign permissions screen with all options selected"
         />
         <Warn>
-          If that screen says <B>&ldquo;No permissions available&rdquo;</B>, the app
-          assignment did not save. Go back to <B>Assign assets</B>, turn on Full
-          access for the app again, then retry. The permissions only appear once the
-          system user has access to the app.
+          You might need to refresh the page after creating the system user and
+          after assigning assets. Assigned asset changes can take time to
+          propagate, and the <B>Generate token</B> button will not work until
+          they do.
         </Warn>
         <p>
-          The token is shown once. Copy it into the <B>Access token</B> field in your
-          agent&rsquo;s settings before closing the dialog.
+          The token will only be shown once. Copy it into the{" "}
+          <B>Access token</B> field in your agent&rsquo;s settings before
+          closing the dialog.
         </p>
       </Step>
 
       <Step n={6} title="Get the app secret">
         <p>
-          Go back to{" "}
-          <A href="https://developers.facebook.com/apps">developers.facebook.com</A>.
-          In the left sidebar, open <B>App settings</B> and select <B>Basic</B>.
+          In a third new tab, go to{" "}
+          <A href="https://developers.facebook.com/apps">
+            developers.facebook.com
+          </A>
+          . In the left sidebar, open <B>App settings</B> and select{" "}
+          <B>Basic</B>.
         </p>
         <Shot
           src="/guides/whatsapp/step6-sidebar.png"
@@ -310,41 +323,58 @@ export default async function WhatsappGuide({
 
       <Step n={7} title="Configure the webhook">
         <p>
-          Go back to the tab you left in step 4, the one with the three step
-          overview. Click <B>Step 2. Production setup</B>.
+          Almost there. Go back to the first tab you left open in step 3, the
+          one with the three-step overview. Click{" "}
+          <B>Step 2. Production setup</B>.
         </p>
         <p>Add this callback URL:</p>
-        {callback ? (
-          <>
-            <CopyField value={callback} />
-            <p className="text-faint text-xs leading-[1.4]">
-              This URL is for agent <Mono>{agent}</Mono>. Check that is the agent
-              whose settings you are filling in — each agent has its own route and
-              its own verify token, and Meta refuses the handshake if they belong to
-              different agents.
-            </p>
-          </>
+        <CopyField value={callback} />
+        {agent ? (
+          <p className="text-faint text-xs leading-[1.4]">
+            Here <Mono>{agent}</Mono> is your agent ID. Verify it is the same
+            agent ID you see when you are talking to your agent on the web{" "}
+            <Mono>
+              https://serverless-agent-one.vercel.app/a/&lt;find-agent-id-here&gt;
+            </Mono>
+          </p>
         ) : (
-          <Warn>
-            This page does not know which agent you are setting up, and the callback
-            URL is different for every agent. Open the guide from your agent&rsquo;s
-            settings, using the <B>Whatsapp setup guide</B> button, and the URL to
-            copy appears here.
-          </Warn>
+          <p className="text-faint text-xs leading-[1.4]">
+            Find your agent ID in the URL when you are talking to your agent on
+            the web{" "}
+            <Mono>
+              https://serverless-agent-one.vercel.app/a/&lt;find-agent-id-here&gt;
+            </Mono>
+          </p>
         )}
+
         <p>
-          Add this verify token underneath, then click <B>Verify and save</B>:
+          Generate a <B>verify token</B> below, then copy it into your agent
+          settings <B>first</B>:
         </p>
         <VerifyTokenField />
         <p>
-          Copy the same verify token into the <B>Verify token</B> field in your
-          agent&rsquo;s settings. The two have to match exactly, and Meta calls the
-          URL as soon as you save, so save your agent&rsquo;s settings first.
+          Once it is saved there, paste the same verify token into the{" "}
+          <B>Verify token</B> field of the Configure webhook step and click{" "}
+          <B>Verify and save</B>.
         </p>
+        <Shot
+          src="/guides/whatsapp/step7-verify-token.png"
+          width={1502}
+          height={296}
+          alt="The Verify token field with the Verify and save button"
+        />
+
         <p>
-          Then click <B>Manage</B> and subscribe the <Mono>messages</Mono> field.
-          Saving the URL on its own delivers nothing.
+          After the page refreshes, visit the same step again and check that{" "}
+          <B>messages</B> is subscribed under the webhook configuration. It is
+          on by default.
         </p>
+        <Shot
+          src="/guides/whatsapp/step7-messages-subscribed.png"
+          width={1502}
+          height={134}
+          alt="The messages webhook field showing Subscribed"
+        />
       </Step>
 
       <h2 className="mt-12 text-lg font-semibold leading-[1.35]">
@@ -352,34 +382,43 @@ export default async function WhatsappGuide({
       </h2>
       <div className="text-muted mt-4 space-y-3 text-sm font-light leading-[1.5]">
         <p>
-          Message the test number from your phone. Your agent answers in the same
-          chat, with the same memory, tools and settings it has in your browser, and
-          the conversation shows up in your sessions like any other.
+          Message the test number from your phone. Your agent answers in the
+          same chat, with the same memory, tools and settings it has in your
+          browser, and the conversation shows up in your sessions like any
+          other.
         </p>
         <p>
-          Keep the 24 hour window in mind: if you have not messaged your agent for a
-          day, WhatsApp will not let it reach you until you do.
+          Keep the 24-hour window in mind: if you have not messaged your agent
+          for a day, WhatsApp will not let your agent reach you until you
+          message it again.
         </p>
       </div>
 
-      <h2 className="mt-12 text-lg font-semibold leading-[1.35]">Disclaimer</h2>
-      <div className="text-muted mt-4 space-y-3 text-sm font-light leading-[1.5]">
-        <p>
+      <h2 className="mt-12 text-lg font-semibold leading-[1.35]">Footnotes</h2>
+      <ol className="list-decimal text-muted mt-4 space-y-3 text-sm font-light leading-[1.5]">
+        <li>
+          The most common mistake is an incorrect callback URL, or a verify
+          token that does not match between the Meta dashboard and your agent
+          settings. Check both first if messages are not going through.
+        </li>
+
+        <li>
           If messages stop going through, check{" "}
           <A href="https://business.facebook.com">business.facebook.com</A> for
-          account suspension notices.
-        </p>
-        <p>
-          Creating more than one unverified business portfolio can get the newer
-          portfolios suspended automatically. You may have to verify your business to
-          get them back.
-        </p>
-        <p>
-          If you would rather use a second number of your own than the test number
-          WhatsApp provides, you can add and verify it on the same page as step 7.
-          That one is left to you.
-        </p>
-      </div>
+          account suspension notices. Some business portfolio names and app
+          names are not allowed and can result in an immediate suspension.
+        </li>
+        <li>
+          Creating more than one unverified business portfolio gets the newer
+          portfolios suspended automatically. You may have to verify your
+          business and ask for a review to get them back.
+        </li>
+        <li>
+          If you would rather use a second number of your own than the test
+          number WhatsApp provides, you can add and verify it on the same page
+          as step 7. That exercise is left to the reader.
+        </li>
+      </ol>
     </main>
   );
 }

@@ -262,19 +262,19 @@ export const CAPABILITIES: Capability[] = [
     id: "whatsapp",
     flag: "cap_whatsapp",
     label: "WhatsApp",
-    summary: "Talk to the agent on WhatsApp, please refer to setup guide below.",
+    summary: "Talk to the agent on WhatsApp. Follow the setup guide below.",
     note:
-      "Meta only allows a reply within 24 hours of your last message. Send anything to the number to reopen the window.",
-    guide: { label: "Whatsapp setup guide", href: "/guides/whatsapp" },
+      "Meta will only provide one additional test phone number per user pending business verification",
+    guide: { label: "WhatsApp setup guide", href: "/guides/whatsapp" },
     tools: [],
     fields: [
       {
         key: "whatsapp_number",
         label: "Your WhatsApp number",
-        hint: "Using a number that you do not own violates Meta's and Our Terms of Service and will result in permanent account suspension.",
+        hint: "Enter your full number including the country code without any spaces or symbols except digits.",
         secret: false,
         required: true,
-        placeholder: "+91 98765 43210",
+        placeholder: "919876543210",
       },
       {
         key: "whatsapp_phone_number_id",
