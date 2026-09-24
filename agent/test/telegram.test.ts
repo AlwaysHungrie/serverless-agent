@@ -1,0 +1,234 @@
+import { SELF, env } from "cloudflare:test";
+import { describe, expect, it } from "vitest";
+import { SPOKEN_TEXT, TELEGRAM_FILE_BODY, replyTo } from "./openrouter-mock";
+
+/**
+ * The Telegram channel, end to end.
+ *
+ * It had no coverage at all until the channel seam was built: `api.telegram.org` is
+ * sealed off by the suite's outbound mock, so every turn this file drives used to run
+ * only in production. The Worker is pointed at a stand-in through `TELEGRAM_API_BASE`
+ * — see vitest.config.ts — and the seal on the real host is untouched.
+ *
+ * What is worth checking here is what the channel seam claims: that Telegram and
+ * WhatsApp run the same eight steps, so a feature written once reaches both. The
+ * voice note and the drawn image below are the two halves of that claim — neither
+ * channel has a line of code of its own for either.
+ */
+
+const SECRET = env.API_SECRET as string;
+const BASE = "https://worker.test";
+const BOT_TOKEN = "123456:mock-bot-token";
+
+const someone = (label = "tg") => `${label}-${crypto.randomUUID().slice(0, 8)}@x.com`;
+
+/** A chat id no other test uses: the stand-in's log of sends is shared by the file. */
+const chatId = () => -Math.floor(Math.random() * 1e11) - 1e11;
+
+function as(email: string, init: RequestInit = {}) {
+  return {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      "x-api-secret": SECRET,
+      "x-user-email": email,
+      ...(init.headers as Record<string, string> | undefined),
+    },
+  };
+}
+
+/** The secret Telegram sends back on every update, as server.ts derives it. */
+async function webhookSecret(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 32);
+}
+
+/** An agent with Telegram configured, and the route that answers for it. */
+async function agentFixture(patch: Record<string, unknown> = {}) {
+  const email = someone();
+  const agent = (await (
+    await SELF.fetch(
+      `${BASE}/api/agents`,
+      as(email, {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Telegram Agent",
+          allowed_emails: email,
+          openrouter_api_key: "sk-fake-but-valid",
+        }),
+      })
+    )
+  ).json()) as { id: string };
+
+  const res = await SELF.fetch(
+    `${BASE}/api/agents/${agent.id}/config`,
+    as(email, {
+      method: "PATCH",
+      body: JSON.stringify({
+        cap_telegram: 1,
+        telegram_bot_token: BOT_TOKEN,
+        telegram_bot_username: "mock_bot",
+        // The whitelists ship as placeholders that match nobody, which is the whole
+        // point of them; these tests are the owner talking to their own bot.
+        telegram_user_whitelist: "",
+        telegram_group_whitelist: "",
+        ...patch,
+      }),
+    })
+  );
+  expect(res.ok).toBe(true);
+  return { agentId: agent.id, email, chat: chatId(), hook: `${BASE}/telegram/webhook/${agent.id}` };
+}
+
+/** One private message, in the shape Telegram actually posts. */
+function update(chat: number, text: string, messageId = Math.floor(Math.random() * 1e6)) {
+  return {
+    update_id: Math.floor(Math.random() * 1e9),
+    message: {
+      message_id: messageId,
+      date: 1758000000,
+      text,
+      chat: { id: chat, type: "private", first_name: "Owner", username: "owner" },
+      from: { id: chat, is_bot: false, first_name: "Owner", username: "owner" },
+    },
+  };
+}
+
+/** The same, carrying a document the agent is expected to ingest. */
+function withDocument(chat: number, text: string) {
+  const message = update(chat, text).message;
+  return {
+    update_id: Math.floor(Math.random() * 1e9),
+    message: {
+      ...message,
+      document: {
+        file_id: `file-${crypto.randomUUID().slice(0, 8)}`,
+        file_name: "notes.txt",
+        mime_type: "text/plain",
+        file_size: TELEGRAM_FILE_BODY.length,
+      },
+    },
+  };
+}
+
+async function post(hook: string, payload: unknown) {
+  return await SELF.fetch(hook, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-telegram-bot-api-secret-token": await webhookSecret(BOT_TOKEN),
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** What the Telegram stand-in was asked to send to one chat. */
+async function sentTo(chat: number) {
+  const res = await fetch(`https://telegram.test/__sent?chat=${chat}`);
+  return (await res.json()) as {
+    chatId: string;
+    text: string;
+    replyTo?: number;
+    photo?: string;
+    voice?: number;
+    caption?: string;
+  }[];
+}
+
+/** Telegram is answered before the turn runs, so a delivered reply is waited for. */
+async function waitForReply(chat: number, count = 1, tries = 120) {
+  for (let i = 0; i < tries; i++) {
+    const sent = await sentTo(chat);
+    if (sent.length >= count) return sent;
+    await scheduler.wait(50);
+  }
+  return await sentTo(chat);
+}
+
+describe("a whole round trip", () => {
+  it("answers the chat with a real model reply, quoting the message", async () => {
+    const { hook, chat } = await agentFixture();
+    const messageId = 4242;
+    const res = await post(hook, update(chat, "hello there", messageId));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-session")).toBeTruthy();
+
+    const [sent] = await waitForReply(chat);
+    expect(sent.text).toBe(replyTo("hello there"));
+    expect(sent.replyTo).toBe(messageId);
+  });
+
+  it("gives the same chat the same session on the next message", async () => {
+    const { hook, chat } = await agentFixture();
+    const one = await post(hook, update(chat, "first"));
+    const two = await post(hook, update(chat, "second"));
+    expect(two.headers.get("x-session")).toBe(one.headers.get("x-session"));
+  });
+
+  it("answers a command without running a turn", async () => {
+    const { hook, chat } = await agentFixture();
+    await post(hook, update(chat, "!new"));
+    const [sent] = await waitForReply(chat);
+    expect(sent.text).toContain("Starting fresh");
+  });
+
+  it("refuses an update that is not signed with the bot's secret", async () => {
+    const { hook, chat } = await agentFixture();
+    const res = await SELF.fetch(hook, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "not-the-secret",
+      },
+      body: JSON.stringify(update(chat, "let me in")),
+    });
+    expect(res.status).toBe(401);
+    expect(await sentTo(chat)).toHaveLength(0);
+  });
+});
+
+describe("what the channel seam buys", () => {
+  it("sends a voice note, with no Telegram code of its own", async () => {
+    // The tool, the speaking model and the Ogg Opus check are the ones WhatsApp uses.
+    // Only `Channel.sendVoice` differs, and that is fifteen lines in telegram.ts.
+    const { hook, chat } = await agentFixture({ cap_voice_output: 1 });
+    await post(hook, update(chat, "!!voice say it out loud"));
+
+    const sent = await waitForReply(chat, 2);
+    const note = sent.find((s) => s.voice !== undefined);
+    expect(note).toBeTruthy();
+    expect(note?.voice).toBeGreaterThan(0);
+    // Spoken, not written: the words are in the note, not in a bubble.
+    expect(sent.every((s) => s.text !== SPOKEN_TEXT)).toBe(true);
+    expect(sent.some((s) => s.text === "Sent it.")).toBe(true);
+  });
+
+  it("sends a drawn image as a photo", async () => {
+    const { hook, chat } = await agentFixture({ cap_image_generation: 1 });
+    await post(hook, update(chat, "!!draw something"));
+
+    const sent = await waitForReply(chat, 2);
+    const photo = sent.find((s) => s.photo !== undefined);
+    expect(photo).toBeTruthy();
+    // The prompt rides along as the caption.
+    expect(photo?.caption).toContain("mock drawing");
+  });
+
+  it("ingests a file the message carried", async () => {
+    const { hook, chat, email } = await agentFixture({ cap_file_ingest: 1 });
+    const res = await post(hook, withDocument(chat, "what does this say"));
+    const sessionId = res.headers.get("x-session")!;
+    await waitForReply(chat);
+
+    // Read back off the transcript rather than the pending-files list: by the time the
+    // turn has answered, the file has been sent with it and is no longer pending.
+    const page = (await (
+      await SELF.fetch(`${BASE}/agents/session-agent/${sessionId}/messages`, as(email))
+    ).json()) as { messages: { role: string; attachments?: { name: string }[] }[] };
+    const names = page.messages.flatMap((m) => (m.attachments ?? []).map((a) => a.name));
+    expect(names).toContain("notes.txt");
+  });
+});

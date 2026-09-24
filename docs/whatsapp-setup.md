@@ -247,11 +247,12 @@ command and stop it with `pkill -f "wrangler tail"` when you are finished.
   it answers.
 - **A refused send outside the window is logged, not retried.** The turn still ran and
   is in the transcript, readable from the browser.
-- **Text in, text and voice notes out.** Inbound media needs two more Graph calls to
-  download and is not implemented. Outbound, the Voice notes capability lets the agent
-  speak a reply: the audio is uploaded to Meta's media store first, then sent as Ogg
-  Opus, which is the only container WhatsApp plays as a voice note rather than as a
-  file. Drawn images still are not sent.
+- **Text in; text, pictures and voice notes out.** Inbound media needs two more Graph
+  calls to download and is not implemented — when it is, it fills `files` on the
+  channel's inbound and the turn loop needs no change. Outbound, an image the agent
+  drew and a voice note from the Voice notes capability are each an upload to Meta's
+  media store followed by a send that names the id. A voice note goes out as Ogg Opus,
+  the only container WhatsApp plays as a note rather than as a file.
 - **No groups.** Cloud API group messaging needs an Official Business Account, so every
   conversation is one person.
 

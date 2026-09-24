@@ -7,7 +7,8 @@ import {
   WINDOW_CLOSED_WA_ID,
   replyTo,
 } from "./openrouter-mock";
-import { inboundOf, isOwnNumber, isVoiceNote, verifySignature } from "../src/whatsapp";
+import { isVoiceNote } from "../src/channel";
+import { inboundOf, isOwnNumber, verifySignature } from "../src/whatsapp";
 
 /**
  * The WhatsApp channel, from the handshake to a delivered answer.
@@ -167,7 +168,14 @@ async function post(hook: string, payload: unknown, signature?: string) {
 /** What the Graph stand-in was asked to send to one number. */
 async function sentTo(to: string) {
   const res = await fetch(`https://graph.facebook.com/__sent?to=${to}`);
-  return (await res.json()) as { to: string; body: string; replyTo?: string; audio?: string }[];
+  return (await res.json()) as {
+    to: string;
+    body: string;
+    replyTo?: string;
+    audio?: string;
+    image?: string;
+    caption?: string;
+  }[];
 }
 
 /** What the Graph stand-in was asked to put in its media store. */
@@ -529,5 +537,24 @@ describe("a voice note", () => {
     expect(isVoiceNote(bytesOf("ID3\u0003mp3 all the way down"))).toBe(false);
     expect(isVoiceNote(bytesOf(`OggS${"\u0000".repeat(24)}vorbis`))).toBe(false);
     expect(isVoiceNote(bytesOf(""))).toBe(false);
+  });
+});
+
+describe("an image the agent drew", () => {
+  it("is uploaded and sent as a picture", async () => {
+    // WhatsApp could not send one until the channel seam: Telegram takes a photo in
+    // the same call as a message, Meta wants the bytes in its media store first.
+    const { hook, number } = await agentFixture({ cap_image_generation: 1 });
+    expect((await post(hook, delivery(number, "!!draw something"))).status).toBe(200);
+
+    const sent = await waitForReply(number, 2);
+    const picture = sent.find((s) => s.image);
+    expect(picture).toBeTruthy();
+    // The prompt rides along as the caption.
+    expect(picture?.caption).toContain("mock drawing");
+
+    const upload = (await uploads()).find((u) => u.id === picture?.image);
+    expect(upload?.mime).toBe("image/png");
+    expect(upload?.bytes).toBeGreaterThan(0);
   });
 });

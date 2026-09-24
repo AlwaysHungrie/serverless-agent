@@ -27,11 +27,99 @@
  *   itself comes back through here as an ordinary message, prefixed `[scheduled task]`.
  * - `!!voice` — the model sends a voice note, then confirms it. The speaking call is
  *   answered here too, with a token Ogg Opus file.
+ * - `!!draw` — the model draws an image, then confirms it. The drawing call is
+ *   answered here too, with a one-pixel PNG.
  * - anything else — the model replies `You said: <message>`.
  *
  * Every successful turn reports `COST_PER_TURN` in its usage, so spend accounting is
  * exercised rather than assumed.
  */
+
+/* ---------------------------------------------------------------- telegram -- */
+
+/**
+ * What the Telegram stand-in was asked to send, oldest first.
+ *
+ * Read over the wire by a test, the same way the Graph log is: `GET
+ * https://telegram.test/__sent`. The host is a stand-in rather than `api.telegram.org`
+ * so that the suite's seal on the real host — and the test that proves it — stays
+ * exactly as it was. The Worker is pointed here by `TELEGRAM_API_BASE`, which is what
+ * production uses to reach a local Bot API server.
+ */
+const tgSent: {
+  chatId: string;
+  text: string;
+  replyTo?: number;
+  threadId?: number;
+  /** Set on a photo: the file's name. */
+  photo?: string;
+  /** Set on a voice note: how many bytes were uploaded. */
+  voice?: number;
+  caption?: string;
+}[] = [];
+
+/** The Bot API, enough of it to answer a message and to be told about a webhook. */
+async function telegramMock(request: Request, url: URL): Promise<Response> {
+  if (url.pathname === "/__sent") {
+    const chatId = url.searchParams.get("chat");
+    return json(chatId ? tgSent.filter((s) => s.chatId === chatId) : tgSent);
+  }
+  const method = url.pathname.split("/").at(-1) ?? "";
+
+  // The webhook is registered whenever an agent's settings are saved. Nothing leaves
+  // the process, so the seal the suite keeps on api.telegram.org is untouched.
+  if (method === "setWebhook" || method === "deleteWebhook") return json({ ok: true, result: true });
+  if (method === "getMe") return json({ ok: true, result: { id: 1, username: "mock_bot" } });
+  if (method === "getWebhookInfo") {
+    return json({ ok: true, result: { url: "https://worker.test/hook", pending_update_count: 0 } });
+  }
+  // The indicator, which nothing depends on.
+  if (method === "sendChatAction") return json({ ok: true, result: true });
+
+  // A file the user attached: one call to resolve it, one to fetch the bytes.
+  if (method === "getFile") {
+    const body = (await request.json().catch(() => ({}))) as { file_id?: string };
+    return json({ ok: true, result: { file_path: `files/${body.file_id ?? "unknown"}` } });
+  }
+  if (url.pathname.includes("/file/bot")) {
+    return new Response(TELEGRAM_FILE_BODY, { headers: { "content-type": "text/plain" } });
+  }
+
+  if (method === "sendPhoto" || method === "sendVoice") {
+    const form = await request.formData();
+    const file = form.get(method === "sendPhoto" ? "photo" : "voice");
+    tgSent.push({
+      chatId: String(form.get("chat_id") ?? ""),
+      text: "",
+      threadId: Number(form.get("message_thread_id")) || undefined,
+      caption: String(form.get("caption") ?? "") || undefined,
+      ...(method === "sendPhoto"
+        ? { photo: file instanceof File ? file.name : "" }
+        : { voice: file instanceof File ? file.size : 0 }),
+    });
+    return json({ ok: true, result: { message_id: tgSent.length } });
+  }
+
+  if (method !== "sendMessage") {
+    return json({ ok: false, description: `unmocked telegram method ${method}` }, 404);
+  }
+  const body = (await request.json().catch(() => ({}))) as {
+    chat_id?: string;
+    text?: string;
+    message_thread_id?: number;
+    reply_parameters?: { message_id?: number };
+  };
+  tgSent.push({
+    chatId: String(body.chat_id ?? ""),
+    text: body.text ?? "",
+    replyTo: body.reply_parameters?.message_id,
+    threadId: body.message_thread_id,
+  });
+  return json({ ok: true, result: { message_id: tgSent.length } });
+}
+
+/** What the Telegram stand-in serves for any file a message attached. */
+export const TELEGRAM_FILE_BODY = "a document the agent was sent";
 
 /* ------------------------------------------------------------------- graph -- */
 
@@ -44,7 +132,16 @@
  * https://graph.facebook.com/__sent` is answered here rather than by Meta. That is
  * also why each test uses a recipient number of its own: the log is shared.
  */
-const graphSent: { to: string; body: string; replyTo?: string; audio?: string }[] = [];
+const graphSent: {
+  to: string;
+  body: string;
+  replyTo?: string;
+  /** The media id a voice note named. */
+  audio?: string;
+  /** The media id a picture named, and what was written under it. */
+  image?: string;
+  caption?: string;
+}[] = [];
 
 /** What the Worker has uploaded to Graph's media store, oldest first. */
 const graphUploads: { id: string; mime: string; bytes: number; name: string }[] = [];
@@ -116,6 +213,7 @@ async function graphMock(request: Request, url: URL): Promise<Response> {
     status?: string;
     text?: { body?: string };
     audio?: { id?: string };
+    image?: { id?: string; caption?: string };
     context?: { message_id?: string };
   };
   // A read receipt names no recipient and sends nothing.
@@ -138,6 +236,8 @@ async function graphMock(request: Request, url: URL): Promise<Response> {
     body: body.text?.body ?? "",
     replyTo: body.context?.message_id,
     audio: body.audio?.id,
+    image: body.image?.id,
+    caption: body.image?.caption,
   });
   return json({
     messaging_product: "whatsapp",
@@ -221,6 +321,28 @@ function completion(content: string) {
     created: 1,
     model: "mock/model",
     choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+    usage: usage(),
+  });
+}
+
+/** A one-pixel PNG, as a data URL: what the drawing model answers with. */
+const PIXEL_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/** A completion carrying a drawn image, which is how an image model answers. */
+function drawn() {
+  return json({
+    id: "chatcmpl-mock",
+    object: "chat.completion",
+    created: 1,
+    model: "mock/image",
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: "", images: [{ image_url: { url: PIXEL_PNG } }] },
+        finish_reason: "stop",
+      },
+    ],
     usage: usage(),
   });
 }
@@ -313,6 +435,7 @@ function streamedToolCall(name: string, args: Record<string, unknown>) {
 export async function openrouterMock(request: Request): Promise<Response> {
   const url = new URL(request.url);
   if (url.hostname === "graph.facebook.com") return graphMock(request, url);
+  if (url.hostname === "telegram.test") return telegramMock(request, url);
   if (url.hostname !== "openrouter.ai") {
     return new Response(`blocked outbound request to ${url.hostname}`, { status: 503 });
   }
@@ -341,6 +464,7 @@ export async function openrouterMock(request: Request): Promise<Response> {
   // The speaking call, which is not streamed either — so it is answered before the
   // title call below, which would otherwise hand a voice note the word "Mock Title".
   if (body.modalities?.includes("audio")) return spoken();
+  if (body.modalities?.includes("image")) return drawn();
 
   // The title call: no streaming, and a system prompt asking for a name.
   if (!body.stream) return completion("Mock Title");
@@ -354,6 +478,11 @@ export async function openrouterMock(request: Request): Promise<Response> {
   if (message.startsWith("!!voice")) {
     if (carriesToolResult(body)) return streamedText("Sent it.");
     return streamedToolCall("send_voice_note", { text: SPOKEN_TEXT });
+  }
+
+  if (message.startsWith("!!draw")) {
+    if (carriesToolResult(body)) return streamedText("Drew it.");
+    return streamedToolCall("generate_image", { prompt: "a mock drawing" });
   }
 
   if (message.startsWith("!!toolcall")) {

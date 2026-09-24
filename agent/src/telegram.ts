@@ -166,6 +166,22 @@ export class Telegram {
     if (!res.ok) throw new Error(`telegram sendPhoto: ${res.status} ${await res.text()}`);
   }
 
+  /**
+   * Send a voice note: one bubble with a waveform, not a file with a download button.
+   *
+   * `sendVoice` and not `sendAudio` — `sendAudio` is for music and shows a track, and
+   * Telegram only draws the waveform for Ogg Opus, which is the same container
+   * WhatsApp requires. See `VOICE_MIME` in channel.ts.
+   */
+  async sendVoice(chatId: string, bytes: ArrayBuffer, threadId?: number) {
+    const form = new FormData();
+    form.set("chat_id", chatId);
+    if (threadId) form.set("message_thread_id", String(threadId));
+    form.set("voice", new Blob([bytes], { type: "audio/ogg" }), "voice-note.ogg");
+    const res = await fetch(`${this.api}/bot${this.token}/sendVoice`, { method: "POST", body: form });
+    if (!res.ok) throw new Error(`telegram sendVoice: ${res.status} ${await res.text()}`);
+  }
+
   /** Download a file the user sent. Telegram serves it from a one-shot path. */
   async download(fileId: string): Promise<ArrayBuffer> {
     const file = await this.call<{ file_path: string }>("getFile", { file_id: fileId });

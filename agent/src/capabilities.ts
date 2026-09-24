@@ -222,8 +222,8 @@ export const CAPABILITIES: Capability[] = [
     id: "voice_output",
     flag: "cap_voice_output",
     label: "Voice notes",
-    summary: "Agent will be able to answer with a voice note on WhatsApp.",
-    note: "WhatsApp only. The reply is still sent as text; the note goes with it.",
+    summary: "Agent will be able to answer with a voice note on WhatsApp and Telegram.",
+    note: "Chat channels only. The reply is still sent as text; the note goes with it.",
     tools: ["send_voice_note"],
     fields: [
       {
@@ -602,7 +602,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "send_voice_note",
     description:
-      "Say something out loud and send it to the user as a WhatsApp voice note. Use it when they ask to be sent a voice note or voice message, or when hearing it beats reading it. The words are spoken and not shown, so write them the way you would say them, and keep your written reply as well.",
+      "Say something out loud and send it to the user as a voice note. Use it when they ask to be sent a voice note or voice message, or when hearing it beats reading it. The words are spoken and not shown, so write them the way you would say them, and keep your written reply as well.",
     parameters: {
       type: "object",
       properties: {

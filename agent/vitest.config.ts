@@ -48,7 +48,12 @@ export default defineConfig({
         // so the suite sets one — including for the tests that assert it stays shut
         // for everyone who does not present it. `CLERK_ISSUER` comes from the config's
         // own `vars`, which is what production reads too.
-        bindings: { API_SECRET: "test-secret" },
+        //
+        // `TELEGRAM_API_BASE` points the Bot API at the stand-in in the mock rather
+        // than at Telegram. Production uses the same variable to reach a local Bot API
+        // server, and pointing it away from `api.telegram.org` is what lets the suite
+        // keep its seal — and the test that proves it — on the real host.
+        bindings: { API_SECRET: "test-secret", TELEGRAM_API_BASE: "https://telegram.test" },
         // Every outbound `fetch` from the Worker and from its Durable Objects, routed
         // to a fake OpenRouter. This is what makes the turn loop testable: the real
         // agent, the real AI SDK client and the real transcript writes all run, with
