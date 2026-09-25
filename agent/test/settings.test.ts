@@ -247,7 +247,7 @@ describe("a deployment with incomplete settings", () => {
     await reset();
   });
 
-  it("refuses every ordinary request, naming what is missing", async () => {
+  it("refuses every ordinary request with a message fit for end users", async () => {
     await clear();
     await patch({ max_sessions: 9 });
     const res = await SELF.fetch(
@@ -255,10 +255,13 @@ describe("a deployment with incomplete settings", () => {
       asOwner({ headers: { "x-user-email": "refused@x.com" } })
     );
     expect(res.status).toBe(503);
-    const body = await res.json<{ error: string; missing: string[] }>();
-    expect(body.missing).toContain("max_tool_rounds");
-    expect(body.missing).not.toContain("max_sessions");
-    expect(body.error).toMatch(/admin CLI/);
+    // The UI shows this verbatim: no field names, no tooling. The list is the owner's,
+    // over the admin route.
+    expect(await res.json()).toEqual({ error: "Deployment is missing default settings" });
+    const admin = await SELF.fetch(`${BASE}/api/admin/settings`, asOwner());
+    const { missing } = await admin.json<{ missing: string[] }>();
+    expect(missing).toContain("max_tool_rounds");
+    expect(missing).not.toContain("max_sessions");
   });
 
   it("still answers the routes the admin CLI sets it up with", async () => {

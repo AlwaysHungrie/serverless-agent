@@ -38,7 +38,8 @@ screen (`s` on the list, `enter` to edit a row, `r` to set it to the shipped val
 
 Every field is required. The Worker has no values of its own to fall back on: until the
 stored document is complete it answers every request except `/api/admin/settings` and
-`/api/admin/stats` with a 503 naming the fields still unset, and `npm run deploy`
+`/api/admin/stats` with a 503 saying `Deployment is missing default settings` (the UI
+shows it as is; the unset fields are listed by `admin-cli check`), and `npm run deploy`
 refuses while the live deployment is in that state. The values a deployment starts from
 ship with the admin CLI, in `admin-cli/defaults.json`:
 
@@ -229,7 +230,7 @@ Two layers, because the one that matters is the version that is already live:
 The same two layers apply to the [deployment settings](#deployment-settings): the
 preflight runs `admin-cli check` and refuses while any setting is unset (exit 2, a live
 Worker older than the settings route, is let through once), and the Worker returns 503
-with the unset fields named until they are written. `npm run deploy` runs `admin-cli
+with `Deployment is missing default settings` until they are written. `npm run deploy` runs `admin-cli
 init` after `wrangler deploy`. The root [README](../README.md#deployment-settings) has
 the full sequence.
 

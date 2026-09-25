@@ -92,8 +92,9 @@ each deployment before it will serve.
 What that means in practice:
 
 - **A worker with any setting unset returns 503** to every request except
-  `/api/admin/settings` and `/api/admin/stats`, with the names of the unset fields in
-  the response. This applies to a brand-new deployment, a fresh local `wrangler dev`
+  `/api/admin/settings` and `/api/admin/stats`. The response says only
+  `Deployment is missing default settings`, which is what the UI shows; the unset
+  fields are listed by `admin-cli check` and the dashboard, not to end users. This applies to a brand-new deployment, a fresh local `wrangler dev`
   database, and a deployment whose stored settings are partial.
 - **`npm run init`** in `admin-cli` writes the default from `defaults.json` for every
   field that is unset. Fields already set are left alone. Add `-- --dev` or

@@ -2880,8 +2880,10 @@ export default {
         await deploymentSettings(env);
       } catch (err) {
         if (!(err instanceof SettingsIncompleteError)) throw err;
+        // Shown to end users as it stands, so it names no fields and no tooling. The
+        // owner gets the list from `admin-cli check` or `GET /api/admin/settings`.
         return withCors(
-          Response.json({ error: err.message, missing: err.missing }, { status: 503 })
+          Response.json({ error: "Deployment is missing default settings" }, { status: 503 })
         );
       }
     }
