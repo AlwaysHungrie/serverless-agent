@@ -444,6 +444,9 @@ const finalChunk = () => ({
   usage: usage(),
 });
 
+/** How long a `!!slow` reply keeps the turn waiting before a word of it arrives. */
+export const SLOW_REPLY_MS = 700;
+
 /** The text reply, streamed one word at a time so the SSE path is genuinely exercised. */
 function streamedText(text: string) {
   const words = text.split(" ");
@@ -479,6 +482,97 @@ function streamedToolCall(name: string, args: Record<string, unknown>) {
   ]);
 }
 
+/* ------------------------------------------------------------- mcp server -- */
+
+/**
+ * The tools the MCP stand-in advertises.
+ *
+ * Shaped like a real server's list and not like a convenient one: a handful that do
+ * the work, and two whose names say `admin`, which is what the recommendation is meant
+ * to leave behind. Exported so a test asserts against the same names the Worker saw.
+ */
+export const MCP_TOOLS = [
+  { name: "search_pages", description: "Search every page in the workspace by text." },
+  { name: "read_page", description: "Read one page's blocks and properties." },
+  { name: "create_page", description: "Create a page in a database." },
+  { name: "update_page", description: "Change a page's properties." },
+  { name: "admin_list_users", description: "List every user in the workspace." },
+  { name: "admin_audit_log", description: "Read the workspace audit log." },
+].map((tool) => ({ ...tool, inputSchema: { type: "object", properties: {} } }));
+
+/** The names the recommendation is expected to keep, once `admin_*` is dropped. */
+export const MCP_KEPT = MCP_TOOLS.filter((t) => !t.name.includes("admin")).map((t) => t.name);
+
+/**
+ * An MCP server, enough of one to be connected to and asked what it can do.
+ *
+ * Plain JSON-RPC over one POST, which is the half of Streamable HTTP this Worker uses.
+ * A server at `/empty` lists nothing, which is how a test reaches the route's "refresh
+ * it first" answer without deleting a row's tools behind its back.
+ */
+async function mcpMock(request: Request, url: URL): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { id?: number; method?: string };
+  const reply = (result: unknown) =>
+    json({ jsonrpc: "2.0", id: body.id ?? 1, result }, 200);
+
+  if (body.method === "initialize") {
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id ?? 1,
+        result: {
+          protocolVersion: "2025-06-18",
+          capabilities: { tools: {} },
+          serverInfo: { name: "mock-mcp", version: "1.0" },
+        },
+      }),
+      { headers: { "content-type": "application/json", "mcp-session-id": "mock-session" } }
+    );
+  }
+  if (body.method === "tools/list") {
+    return reply({ tools: url.pathname === "/empty" ? [] : MCP_TOOLS });
+  }
+  if (body.method === "tools/call") return reply({ content: [{ type: "text", text: "done" }] });
+  // A notification, which carries no id and expects no envelope.
+  return json({ jsonrpc: "2.0", result: {} });
+}
+
+/* ------------------------------------------------------------ openrouter -- */
+
+/** A tool name the server never advertised, which the Worker is expected to drop. */
+export const INVENTED_TOOL = "mock_tool_that_does_not_exist";
+
+/**
+ * Whether this is the "which of these tools should the agent keep" call rather than a
+ * turn. Recognised by its own system prompt, so a test never has to know the route.
+ */
+function isToolChoice(body: ChatBody): boolean {
+  return (body.messages ?? []).some(
+    (m) =>
+      m.role === "system" &&
+      typeof m.content === "string" &&
+      m.content.includes("which of an MCP server's tools")
+  );
+}
+
+/**
+ * The choice, made from the catalog the Worker sent rather than from a fixed list — so
+ * a test asserts on real filtering of its own server's tools.
+ *
+ * Keeps everything whose name does not say `admin`, and adds one tool the server never
+ * offered: the Worker is supposed to drop a name it cannot match, and a mock that only
+ * ever answers truthfully never proves that. A server named `nonsense` gets prose
+ * instead of JSON, which is the unparseable case.
+ */
+function chosenTools(catalog: string): Response {
+  if (/The server "[^"]*nonsense/.test(catalog)) {
+    return completion("I would keep the useful ones, I think.");
+  }
+  const names = [...catalog.matchAll(/^- ([^:\n]+):/gm)].map((m) => m[1]);
+  const keep = names.filter((name) => !name.includes("admin"));
+  return completion(JSON.stringify({ keep: [...keep, INVENTED_TOOL] }));
+}
+
 /**
  * Handle one outbound request. Returns a 503 for any host that is not OpenRouter, so
  * a test that reaches for the network fails loudly instead of going out to it.
@@ -487,6 +581,7 @@ export async function openrouterMock(request: Request): Promise<Response> {
   const url = new URL(request.url);
   if (url.hostname === "graph.facebook.com") return graphMock(request, url);
   if (url.hostname === "telegram.test") return telegramMock(request, url);
+  if (url.hostname === "mcp.test") return mcpMock(request, url);
   if (url.hostname !== "openrouter.ai") {
     return new Response(`blocked outbound request to ${url.hostname}`, { status: 503 });
   }
@@ -527,6 +622,10 @@ export async function openrouterMock(request: Request): Promise<Response> {
   if (body.modalities?.includes("audio")) return spoken();
   if (body.modalities?.includes("image")) return drawn();
 
+  // Choosing which of a server's tools to keep. Not streamed either, so it has to be
+  // answered before the title call below, which would hand it the words "Mock Title".
+  if (isToolChoice(body)) return chosenTools(message);
+
   // The title call: no streaming, and a system prompt asking for a name.
   if (!body.stream) return completion("Mock Title");
 
@@ -550,6 +649,14 @@ export async function openrouterMock(request: Request): Promise<Response> {
     // Second leg: the SDK has sent the tool's result back, so answer for real.
     if (carriesToolResult(body)) return streamedText("I listed the workspace.");
     return streamedToolCall("list", { path: "/" });
+  }
+
+  // A reply that takes its time. Every other trigger answers in one go, which leaves
+  // no moment in which a turn is still running — and a command that interrupts one
+  // has nothing to interrupt.
+  if (message.startsWith("!!slow")) {
+    await scheduler.wait(SLOW_REPLY_MS);
+    return streamedText(replyTo(message));
   }
 
   return streamedText(replyTo(message));

@@ -53,13 +53,15 @@ Open **Settings**:
 - **Custom instructions**: three lines on how you want it to reply. This is the
   highest-value setting in the product and the one people skip.
 
-## 6. Learn the three commands
+## 6. Learn the five commands
 
 Type these as a whole message, in the web app or on Telegram:
 
 | Command | What it does |
 |---|---|
 | `!new` | Move a Telegram chat onto a fresh session, keeping scheduled tasks |
+| `!clear` | The same, and delete the conversation it moved off |
+| `!stop` | Stop the reply being written right now |
 | `!unstick` | Clear a wedged turn without losing the conversation |
 | `!delete` | Delete this session and everything in it |
 

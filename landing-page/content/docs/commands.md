@@ -2,7 +2,7 @@
 title: Commands
 section: Everyday use
 order: 3
-summary: Three things you say to the session itself rather than to the agent, and why they still work when nothing else does.
+summary: Five things you say to the session itself rather than to the agent, and why they still work when nothing else does.
 ---
 
 Commands are handled by the conversation, not by the model. That matters: a session that
@@ -12,11 +12,13 @@ all.
 
 They cost nothing. No tokens are spent running one.
 
-## The three commands
+## The five commands
 
 | Command | What it does |
 |---|---|
 | `!new` | Hands this chat to a brand new session. Scheduled tasks move across |
+| `!clear` | The same, but the old conversation is deleted rather than kept |
+| `!stop` | Stops the reply being written right now |
 | `!unstick` | Clears a stuck turn. The conversation and everything in it is kept |
 | `!delete` | Deletes this session and everything in it |
 
@@ -44,6 +46,36 @@ reminder keeps arriving.
 
 In the web app there is a new-chat button, so `!new` is mostly a Telegram tool. Sent in
 a web session that is not tied to a chat, it says so and does nothing.
+
+## `!clear` — start clean and leave nothing behind
+
+`!clear` does everything `!new` does — the chat carries on in the same place on a fresh
+session, and scheduled tasks move across — and then deletes the conversation it just
+left, with its messages, its uploaded files and its stored bytes. It cannot be undone.
+
+Use it instead of `!new` when you do not want the old transcript readable in the
+browser afterwards, or when you are near the session limit: `!clear` frees the slot it
+uses, so it keeps working where `!new` is refused.
+
+Like `!new`, it is a chat command. Sent in a web session that is not tied to a chat, it
+says so and does nothing.
+
+## `!stop` — stop a reply being written
+
+The web app has a Stop button beside the message box. Telegram and WhatsApp have
+nowhere to put one, so they have this instead: send `!stop` while the agent is
+answering and it stops.
+
+What it had written by then is kept in the transcript and readable in the browser; it
+is not sent to the chat, because half an answer to a question you have just withdrawn
+is worse than none. The stopped turn says nothing of its own — the only reply you get
+is the one confirming the stop.
+
+You are told which of the two things happened, because a chat has no spinner to look
+at: `Stopped.` if something was running, and `Nothing to stop` if nothing was.
+
+Use it when you asked the wrong question, or when an answer is clearly going the wrong
+way and you would rather not pay for the rest of it.
 
 ## `!unstick` — get a wedged session moving
 

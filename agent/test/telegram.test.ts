@@ -1,6 +1,13 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { PLATFORM_RESET, RESET_FILE_ID, SPOKEN_TEXT, TELEGRAM_FILE_BODY, replyTo } from "./openrouter-mock";
+import {
+  PLATFORM_RESET,
+  RESET_FILE_ID,
+  SLOW_REPLY_MS,
+  SPOKEN_TEXT,
+  TELEGRAM_FILE_BODY,
+  replyTo,
+} from "./openrouter-mock";
 
 /**
  * The Telegram channel, end to end.
@@ -125,6 +132,13 @@ async function post(hook: string, payload: unknown) {
   });
 }
 
+/** The sessions an agent still holds, newest first. */
+async function sessionIds(agentId: string, email: string): Promise<string[]> {
+  const res = await SELF.fetch(`${BASE}/api/agents/${agentId}/sessions`, as(email));
+  const { sessions } = (await res.json()) as { sessions: { id: string }[] };
+  return sessions.map((s) => s.id);
+}
+
 /** What the Telegram stand-in was asked to send to one chat. */
 async function sentTo(chat: number) {
   const res = await fetch(`https://telegram.test/__sent?chat=${chat}`);
@@ -173,6 +187,56 @@ describe("a whole round trip", () => {
     await post(hook, update(chat, "!new"));
     const [sent] = await waitForReply(chat);
     expect(sent.text).toContain("Starting fresh");
+  });
+
+  it("stops a reply that is still being written with !stop", async () => {
+    const { hook, chat } = await agentFixture();
+    // `!!slow` dribbles the reply out, so there is a turn in flight to interrupt.
+    await post(hook, update(chat, "!!slow tell me everything you know"));
+    await scheduler.wait(SLOW_REPLY_MS / 4);
+    await post(hook, update(chat, "!stop"));
+
+    const [first] = await waitForReply(chat);
+    expect(first.text).toContain("Stopped.");
+
+    // The stopped turn says nothing of its own. Waiting out the whole reply it would
+    // have written is the only way to know it never arrives.
+    await scheduler.wait(SLOW_REPLY_MS * 2);
+    expect(await sentTo(chat)).toHaveLength(1);
+
+    // And the session is left usable: stopping one reply must not cost the next one.
+    await post(hook, update(chat, "are you still there"));
+    const sent = await waitForReply(chat, 2);
+    expect(sent[1].text).toBe(replyTo("are you still there"));
+  });
+
+  it("says so when !stop has nothing to stop", async () => {
+    const { hook, chat } = await agentFixture();
+    await post(hook, update(chat, "!stop"));
+    const [sent] = await waitForReply(chat);
+    expect(sent.text).toContain("Nothing to stop");
+  });
+
+  it("keeps the old session on !new, and drops it on !clear", async () => {
+    // The one difference between the two commands, checked on the thing that differs:
+    // what the agent still lists afterwards.
+    for (const command of ["!new", "!clear"] as const) {
+      const { hook, chat, agentId, email } = await agentFixture();
+      const before = (await post(hook, update(chat, "hello"))).headers.get("x-session");
+      await waitForReply(chat);
+
+      await post(hook, update(chat, command));
+      const [, said] = await waitForReply(chat, 2);
+      expect(said.text).toContain("Starting fresh");
+
+      // The chat carries on either way, on a session that is not the old one.
+      const after = (await post(hook, update(chat, "again"))).headers.get("x-session");
+      expect(after).not.toBe(before);
+
+      const ids = (await sessionIds(agentId, email));
+      expect(ids).toContain(after);
+      expect(ids.includes(before as string)).toBe(command === "!new");
+    }
   });
 
   it("refuses an update that is not signed with the bot's secret", async () => {

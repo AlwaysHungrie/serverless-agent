@@ -9,9 +9,19 @@
 
 // TEMP — `oom` is a probe for the 128 MB isolate limit, not a feature. Remove it, and
 // its branch in `runCommand`, once the behaviour it exposes has been seen.
-export type Command = "unstick" | "delete" | "new" | "oom";
+export type Command = "unstick" | "delete" | "new" | "clear" | "stop" | "oom";
 
-const COMMANDS: Command[] = ["unstick", "delete", "new", "oom"];
+const COMMANDS: Command[] = ["unstick", "delete", "new", "clear", "stop", "oom"];
+
+/**
+ * What running a command produced: the line to say, and whether the session it ran in
+ * is finished.
+ *
+ * `destroy` is separate from the command name because it is not decided by the name.
+ * `!clear` only ends the session once the chat has somewhere else to go, and a
+ * `!clear` in a browser session — which has no chat — does nothing at all.
+ */
+export type CommandResult = { text: string; destroy: boolean };
 
 /**
  * The command a message is, or nothing if it is just a message.

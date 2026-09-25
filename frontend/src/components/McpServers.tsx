@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Plus, Trash2, X } from "lucide-react";
+import { Loader2, Plus, Sparkles, Trash2, X } from "lucide-react";
 import {
   SECRET_MASK,
   type McpAuth,
@@ -142,6 +142,8 @@ function ServerCard({
   server,
   onPatch,
   onToolsChange,
+  onRecommend,
+  recommending,
   onAction,
   onRemove,
   busy,
@@ -151,6 +153,10 @@ function ServerCard({
   onPatch: (patch: Record<string, unknown>) => void;
   /** Switching a tool on or off, applied locally before the Worker answers. */
   onToolsChange: (disabled: string[]) => void;
+  /** Hand the choice to the model. Answers by replacing the row, chips and all. */
+  onRecommend: () => void;
+  /** Whether that choice is in flight for this card. */
+  recommending: boolean;
   onAction: (action: "connect" | "disconnect" | "refresh") => void;
   onRemove: () => void;
   busy: boolean;
@@ -215,6 +221,30 @@ function ServerCard({
       )}
 
       <div className="flex flex-wrap gap-2 mt-2">
+        {/*
+          First of the actions, and ahead of Disconnect, because it is the one worth
+          reaching for: every tool left on is re-sent to the model on every message,
+          so a forty-tool server is a standing bill rather than a one-off. Reading
+          forty descriptions to trim it is the part nobody does. Hidden until the
+          server has listed something, since there is nothing to choose between.
+        */}
+        {server.tools.length > 0 && (
+          <button
+            onClick={onRecommend}
+            disabled={recommending}
+            title="Let the model keep the tools this agent actually needs"
+            className={actionButton}
+          >
+            <span className="inline-flex items-center gap-2">
+              {recommending ? (
+                <Loader2 size={14} strokeWidth={2} className="animate-spin" />
+              ) : (
+                <Sparkles size={14} strokeWidth={2} />
+              )}
+              {recommending ? "Choosing\u2026" : "Select recommended"}
+            </span>
+          </button>
+        )}
         {server.auth === "oauth" &&
           (server.connected ? (
             <button
@@ -481,6 +511,8 @@ export function McpServers({
   // first render, and there is nothing to synchronize with afterwards.
   const [error, setError] = useState<string | null>(() => oauthResult().failed);
   const [busy, setBusy] = useState(false);
+  /** Which server, if any, is having its tools chosen for it right now. */
+  const [recommending, setRecommending] = useState<string | null>(null);
   /** Preset ids this agent's meta settings offer. Empty means every preset. */
   const [templates, setTemplates] = useState<string[]>([]);
   /** Templates provisioned for this agent, which replace the built-in strip. */
@@ -618,6 +650,31 @@ export function McpServers({
     setServers((all) => all.filter((s) => s.id !== id));
   };
 
+  /**
+   * Hand one server's tool choice to the model. Tracked per server rather than on the
+   * shared `busy` flag: this is a model call, so it takes seconds, and dimming every
+   * other card while it runs would read as the whole page having stalled.
+   */
+  const recommend = async (id: string) => {
+    setRecommending(id);
+    const res = await apiFetch(`${base}/${id}/recommend`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    setRecommending(null);
+    const payload = (await res.json().catch(() => null)) as {
+      server?: McpServer;
+      error?: string;
+    } | null;
+    if (!res.ok || !payload?.server) {
+      setError(payload?.error ?? "Couldn't choose tools for that server. Try again.");
+      return;
+    }
+    setServers((all) => all.map((s) => (s.id === id ? payload.server! : s)));
+    setError(null);
+  };
+
   return (
     <div className="space-y-4">
       {error && (
@@ -659,6 +716,8 @@ export function McpServers({
               },
             )
           }
+          onRecommend={() => void recommend(server.id)}
+          recommending={recommending === server.id}
           onAction={(action) =>
             void call(`${base}/${server.id}/${action}`, {
               method: "POST",

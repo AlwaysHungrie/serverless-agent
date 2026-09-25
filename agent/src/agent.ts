@@ -14,7 +14,7 @@ import {
   type ScheduledTask,
   type ToolContext,
 } from "./capabilities";
-import { parseCommand, type Command } from "./commands";
+import { parseCommand, type Command, type CommandResult } from "./commands";
 import type { McpServerRow } from "./mcp";
 import { applyMigrations, type Migration } from "./schema";
 import {
@@ -398,6 +398,29 @@ export class SessionAgent extends Think<Env> {
   private scheduledInTurn = false;
 
   /**
+   * How many turns are running right now, and whether the last thing to happen to
+   * them was `!stop`.
+   *
+   * Two messages a second apart are two turns inside one object, so this is a count
+   * and not a flag. It is kept because `!stop` has to be able to say whether it
+   * stopped anything: a chat has no spinner, and "Stopped." when nothing was running
+   * is how you learn the command does not work.
+   *
+   * It is only ever approximately right, and deliberately so. A turn that dies
+   * without reaching `onChatResponse` — an evicted isolate, a throw on the way in —
+   * leaves its count behind. Both `!stop` and `!unstick` zero it rather than
+   * decrementing, so a leak is corrected by the next use of either.
+   */
+  private turnsRunning = 0;
+
+  /**
+   * Set by `!stop`, cleared when the next question opens a turn. An aborted turn reads it to
+   * tell the stop it was asked for from the one it was not: the first has already
+   * been answered in the chat, the second still owes an explanation.
+   */
+  private stoppedOnPurpose = false;
+
+  /**
    * The turn that is streaming right now, if there is one. Every event it has sent is
    * kept so a browser that reloaded mid-reply can be handed the reply from the start
    * and then follow the rest of it live; `listeners` are the connections doing that.
@@ -761,6 +784,7 @@ export class SessionAgent extends Think<Env> {
     const config = this.config();
     this.turnUsage = { prompt: 0, completion: 0, cached: 0, cost: 0, reported: 0, started: Date.now() };
     this.scheduledInTurn = false;
+    this.turnsRunning++;
 
     return {
       // Chat completions, not Responses: see `getModel`.
@@ -1105,6 +1129,7 @@ export class SessionAgent extends Think<Env> {
     status: "completed" | "error" | "aborted";
   }): Promise<void> {
     this.ensureSchema();
+    this.turnsRunning = Math.max(0, this.turnsRunning - 1);
     this.lastReplyId = result.message.id;
     this.exec(
       `INSERT OR REPLACE INTO usage (message_id, prompt_tokens, completion_tokens, cost_usd, ms, ts)
@@ -1732,6 +1757,11 @@ export class SessionAgent extends Think<Env> {
    * every other message being answered at that moment.
    */
   private async openTurn(message: string, retry: boolean, only?: string[]): Promise<UIMessage> {
+    // A new question is the end of the last stop. Cleared here and not in
+    // `beforeTurn`, which runs again on a retried attempt: an abort is one of the
+    // things Think retries, so clearing it there would clear it on the way down from
+    // the very stop that set it.
+    this.stoppedOnPurpose = false;
     const attachments = retry ? await this.rewind() : this.claimed(only);
     const id = crypto.randomUUID();
     for (const a of attachments) {
@@ -1803,9 +1833,9 @@ export class SessionAgent extends Think<Env> {
   private async runChat(message: string, retry = false) {
     const command = parseCommand(message);
     if (command) {
-      const reply = await this.runCommand(command);
-      if (command === "delete") this.ctx.waitUntil(this.finishDelete());
-      return { body: { reply }, turn: { cost_usd: 0, llm_ms: 0 } };
+      const { text, destroy } = await this.runCommand(command);
+      if (destroy) this.ctx.waitUntil(this.finishDelete());
+      return { body: { reply: text }, turn: { cost_usd: 0, llm_ms: 0 } };
     }
     const blocked = await this.spendBlocked();
     if (blocked) return { body: { reply: blocked }, turn: { cost_usd: 0, llm_ms: 0 } };
@@ -1906,8 +1936,8 @@ export class SessionAgent extends Think<Env> {
    * draws it as an ordinary message. No turn runs, so there is no cost to report.
    */
   private async streamCommand(command: Command): Promise<Response> {
-    const text = await this.runCommand(command);
-    if (command === "delete") this.ctx.waitUntil(this.finishDelete());
+    const { text, destroy } = await this.runCommand(command);
+    if (destroy) this.ctx.waitUntil(this.finishDelete());
     return this.streamSentence(text);
   }
 
@@ -1966,8 +1996,9 @@ export class SessionAgent extends Think<Env> {
       // say in whether it gets reset, and a wedged session could not run one anyway.
       const command = parseCommand(inbound.text);
       if (command) {
-        await channel.sendText(target, await this.runCommand(command));
-        if (command === "delete") await this.finishDelete();
+        const { text, destroy } = await this.runCommand(command);
+        await channel.sendText(target, text);
+        if (destroy) await this.finishDelete();
         return { ok: true };
       }
 
@@ -1983,6 +2014,17 @@ export class SessionAgent extends Think<Env> {
       const result = await this.runTurn({
         input: [await this.openTurn(inbound.text, false, attached)],
       });
+      if (this.stoppedOnPurpose) {
+        // `!stop` has already said so in this chat, so this turn owes it nothing —
+        // not the half-answer to a question that was withdrawn, and least of all
+        // "that turn was cut short", which reads as a fault when it was an
+        // instruction. What it wrote is in the transcript either way.
+        //
+        // Read without looking at the status, because a turn cancelled before its
+        // first chunk reports `completed` with nothing in it. The flag is the only
+        // thing that tells a stop that was asked for from one that was not.
+        return { ok: true };
+      }
       if (result.status !== "completed") {
         // The turn carries why it stopped; a chat that only ever says "try again"
         // cannot be told apart from one that is broken in a way retrying will not fix.
@@ -2336,11 +2378,11 @@ export class SessionAgent extends Think<Env> {
    * Run a bang command and say what it did. The answer is written for whoever typed
    * it, because on Telegram it is the only feedback there is.
    *
-   * `delete` reports before it acts: destroying the object aborts the isolate, so
-   * anything left to say afterwards may never be said. The caller sends the reply and
-   * then calls `finishDelete`.
+   * A command that ends the session reports before it acts: destroying the object
+   * aborts the isolate, so anything left to say afterwards may never be said. That is
+   * what `destroy` is for — the caller sends the reply and then calls `finishDelete`.
    */
-  private async runCommand(command: Command): Promise<string> {
+  private async runCommand(command: Command): Promise<CommandResult> {
     // TEMP — remove with the `oom` command itself. Allocates a megabyte at a time
     // until the isolate is killed, to see what a session looks like on the way down
     // and what is left of it afterwards. The strings are held in an array so nothing
@@ -2367,23 +2409,54 @@ export class SessionAgent extends Think<Env> {
       } catch (err) {
         // An allocation failure is a real answer: the runtime refused before it was killed.
         console.log(`[oom] allocation threw at ${mb} MB: ${err instanceof Error ? err.message : err}`);
-        return `Allocation failed at ${mb} MB: ${err instanceof Error ? err.message : String(err)}`;
+        return {
+          text: `Allocation failed at ${mb} MB: ${err instanceof Error ? err.message : String(err)}`,
+          destroy: false,
+        };
       }
-      return `Held ${mb} MB without dying — the limit is not being enforced on this path.`;
+      return {
+        text: `Held ${mb} MB without dying — the limit is not being enforced on this path.`,
+        destroy: false,
+      };
+    }
+    if (command === "stop") {
+      // Counted before the cancel, because cancelling is what makes it zero.
+      const running = this.turnsRunning;
+      this.stoppedOnPurpose = true;
+      // The same teardown `!unstick` does, and for the same reason: cancelling a turn
+      // aborts its model call but does not always settle it, and a turn that never
+      // settles leaves the concurrency state that makes every later question fail.
+      // Stopping one reply must not cost the session the next one.
+      this.unstick();
+      return {
+        text: running
+          ? "Stopped. What it had written is kept in the transcript — ask again when you are ready."
+          : "Nothing to stop: this session is not answering anything right now.",
+        destroy: false,
+      };
     }
     if (command === "unstick") {
       this.unstick();
-      return "Cleared this session's turn state. Everything it holds is still here — ask again.";
+      return {
+        text: "Cleared this session's turn state. Everything it holds is still here — ask again.",
+        destroy: false,
+      };
     }
-    if (command === "new") {
+    if (command === "new" || command === "clear") {
       const row = await this.registry().get(this.sessionId());
       if (!row?.chat_id) {
-        return "Nothing to move: this session is not tied to a chat. Start a new one from the sidebar.";
+        return {
+          text: "Nothing to move: this session is not tied to a chat. Start a new one from the sidebar.",
+          destroy: false,
+        };
       }
-      return await this.startOver(row);
+      return await this.startOver(row, command === "clear");
     }
     await this.registry().remove(this.sessionId());
-    return "Deleted this session and everything in it. The next message starts over.";
+    return {
+      text: "Deleted this session and everything in it. The next message starts over.",
+      destroy: true,
+    };
   }
 
   /**
@@ -2392,25 +2465,39 @@ export class SessionAgent extends Think<Env> {
    * moved onto a session that already exists — and it has to be the same one the next
    * message will land in, which is what makes the id come from the registry.
    *
-   * The order is deliberate: the chat is detached first, so no moment exists where
-   * two sessions claim it. If the handover fails after that, the chat still gets a
-   * working session; only the tasks stay behind, and the reply says so.
+   * `discard` is the difference between `!new` and `!clear`. `!new` detaches the chat
+   * and leaves the old conversation readable in the browser; `!clear` drops it. Either
+   * way the old session loses the chat before the successor claims it, so no moment
+   * exists where two sessions answer the same messages.
+   *
+   * Dropping the row rather than detaching it is also what lets `!clear` work at the
+   * session ceiling: the slot is free by the time the successor asks for one. The cost
+   * is that a create that still fails leaves nothing behind — which is what was asked
+   * for, and the next message gets a fresh session in the same chat anyway.
    */
-  private async startOver(row: SessionRow): Promise<string> {
+  private async startOver(row: SessionRow, discard: boolean): Promise<CommandResult> {
     // Asked before the chat is detached. A successor that cannot be created would
     // otherwise leave the chat belonging to nothing, and the next message would only
-    // meet the same ceiling with the conversation already cut loose.
-    if ((await this.registry().countSessions()) >= MAX_SESSIONS) {
-      return SESSION_LIMIT_MESSAGE;
+    // meet the same ceiling with the conversation already cut loose. `!clear` frees a
+    // slot as it goes, so the ceiling cannot stop it.
+    if (!discard && (await this.registry().countSessions()) >= MAX_SESSIONS) {
+      return { text: SESSION_LIMIT_MESSAGE, destroy: false };
     }
     const tasks = this.taskHandover();
+    // Named before this session's row goes, and only then dropped. The successor is a
+    // Durable Object picked by name, so a name this object already answers to would
+    // make it *this* object — which `!clear` is about to destroy. Asking while the row
+    // is still there is what guarantees a different one.
     const next = await this.registry().freeChatSessionId(
       this.agentId(),
       row.chat_id,
       row.chat_thread_id,
       row.source === "whatsapp" ? "wa" : "tg"
     );
-    await this.registry().detachChat(this.sessionId());
+    // Dropping the row also frees a session slot, which is what lets `!clear` work at
+    // the ceiling: `create` counts below.
+    if (discard) await this.registry().remove(this.sessionId());
+    else await this.registry().detachChat(this.sessionId());
     try {
       await this.registry().create(
         next,
@@ -2426,14 +2513,20 @@ export class SessionAgent extends Think<Env> {
       );
     } catch (err) {
       // Only reachable if the agent filled up between the check above and here. The
-      // chat is already detached, so say what state it is in rather than pretending
-      // the handover worked.
-      return `${(err as Error).message} This conversation has been closed; delete a session and send a message to start a new one.`;
+      // chat no longer belongs to this session either way, so say what state it is in
+      // rather than pretending the handover worked.
+      return {
+        text: discard
+          ? `${(err as Error).message} This conversation has been deleted; send a message to start a new one.`
+          : `${(err as Error).message} This conversation has been closed; delete a session and send a message to start a new one.`,
+        destroy: discard,
+      };
     }
 
-    const kept =
-      "Starting fresh. This conversation is kept and still readable in the browser; anything said here from now on goes to a new session.";
-    if (tasks.length === 0) return kept;
+    const opening = discard
+      ? "Starting fresh. This conversation and everything in it has been deleted; anything said here from now on goes to a new session."
+      : "Starting fresh. This conversation is kept and still readable in the browser; anything said here from now on goes to a new session.";
+    if (tasks.length === 0) return { text: opening, destroy: discard };
 
     try {
       const stub = this.env.SessionAgent.get(this.env.SessionAgent.idFromName(next));
@@ -2442,20 +2535,30 @@ export class SessionAgent extends Think<Env> {
       // could not be re-created still runs somewhere rather than nowhere.
       if (moved > 0) for (const task of this.listTasks()) await this.cancelTask(task.id);
       const carried = `${moved} scheduled ${moved === 1 ? "task" : "tasks"} moved across.`;
-      return failed > 0
-        ? `${kept}\n\n${carried} ${failed} could not be — their time has passed.`
-        : `${kept}\n\n${carried}`;
+      return {
+        text:
+          failed > 0
+            ? `${opening}\n\n${carried} ${failed} could not be — their time has passed.`
+            : `${opening}\n\n${carried}`,
+        destroy: discard,
+      };
     } catch (err) {
       console.error(
         `task handover failed from ${this.name} to ${next}: ${err instanceof Error ? err.message : String(err)}`
       );
-      return `${kept}\n\nIts scheduled tasks could not be moved and stay with the old session.`;
+      return {
+        text: discard
+          ? `${opening}\n\nIts scheduled tasks could not be moved and go with it.`
+          : `${opening}\n\nIts scheduled tasks could not be moved and stay with the old session.`,
+        destroy: discard,
+      };
     }
   }
 
   /**
-   * The half of `!delete` that cannot be reported: the object drops its own storage,
-   * which ends the isolate running this code.
+   * The half of `!delete` — and of `!clear`, once the chat has moved on — that cannot
+   * be reported: the object drops its own storage, which ends the isolate running this
+   * code.
    */
   private async finishDelete(): Promise<void> {
     this.releaseStorage();
@@ -2476,6 +2579,8 @@ export class SessionAgent extends Think<Env> {
   private unstick(): { cancelled: boolean } {
     this.cancelAllChats();
     this.resetTurnState();
+    // Nothing is running once those two have run, whatever the count had drifted to.
+    this.turnsRunning = 0;
     return { cancelled: true };
   }
 

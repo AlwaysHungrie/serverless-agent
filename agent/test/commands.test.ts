@@ -14,6 +14,8 @@ describe("parseCommand", () => {
     expect(parseCommand("!unstick")).toBe("unstick");
     expect(parseCommand("!delete")).toBe("delete");
     expect(parseCommand("!new")).toBe("new");
+    expect(parseCommand("!clear")).toBe("clear");
+    expect(parseCommand("!stop")).toBe("stop");
     expect(parseCommand("!oom")).toBe("oom");
   });
 

@@ -48,7 +48,8 @@ paying for.
 
 - **In the web app**: the new-chat button above the session list.
 - **On Telegram**: send `!new`. The chat carries on in the same place, on a clean
-  session. Anything you had scheduled moves across with it.
+  session. Anything you had scheduled moves across with it. Send `!clear` instead to
+  delete the conversation you are leaving.
 
 ## Limiting how much is re-sent
 

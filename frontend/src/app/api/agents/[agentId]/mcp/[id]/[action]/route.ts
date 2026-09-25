@@ -2,8 +2,12 @@ import { proxy } from "@/lib/proxy";
 
 export const dynamic = "force-dynamic";
 
-/** connect, disconnect and refresh, forwarded to the Worker unchanged. */
-const ACTIONS = ["connect", "disconnect", "refresh"];
+/**
+ * The actions forwarded to the Worker unchanged. An allowlist rather than a pass-
+ * through, so a path this app does not know about never reaches the Worker — which
+ * also means a route added there is a 404 here until it is named below.
+ */
+const ACTIONS = ["connect", "disconnect", "refresh", "recommend"];
 
 export async function POST(
   request: Request,
