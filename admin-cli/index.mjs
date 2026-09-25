@@ -6,15 +6,28 @@
 // the settings screen — every ceiling this deployment enforces and every value an agent
 // starts out holding, editable in place.
 //
-// The settings screen holds no copy of what the settings are. The field list, the
-// ranges it refuses and the prose beside each row all come from `/api/admin/settings`,
-// so a field added to the Worker's `settings.ts` shows up here with no edit at all.
+// The field list, the ranges it refuses and the prose beside each row all come from
+// `/api/admin/settings`, so a field added to the Worker's `settings.ts` shows up here
+// with no edit at all. What this package does hold is `defaults.json`: the values a
+// deployment starts from. The Worker ships none of its own and refuses to serve until
+// every field is set, so these are the only defaults there are.
+//
+// Two non-interactive commands, for scripts and the deploy preflight:
+//
+//   node index.mjs init    write the shipped default for every field not yet set
+//   node index.mjs check   exit 1, naming them, if any field is not set; exit 2 if the
+//                          live Worker predates settings (the one-time bootstrap)
+//
+// Both take `--dev` / `--staging` like the dashboard.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+/** The values a fresh deployment starts from. The Worker has no others. */
+const DEFAULTS = JSON.parse(readFileSync(path.join(here, "defaults.json"), "utf8"));
 
 /** Pull `KEY=VALUE` lines out of a dotenv-style file. Missing file is not an error. */
 function readEnvFile(file) {
@@ -43,6 +56,8 @@ const conf = (key) => process.env[key] ?? fileEnv[key];
 // `--dev` and `--staging` each swap every lookup to that deployment's twin: a
 // different Worker, and usually a different secret with it. No flag means production.
 const argv = process.argv.slice(2);
+/** `init`, `check`, or undefined for the dashboard. */
+const COMMAND = argv.find((a) => !a.startsWith("-"));
 const TARGET = argv.some((a) => a === "--dev" || a === "-d")
   ? "DEV"
   : argv.some((a) => a === "--staging" || a === "-s")
@@ -75,7 +90,9 @@ async function call(pathname, init = {}) {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}${body ? `: ${body}` : ""}`);
+    const err = new Error(`${res.status} ${res.statusText}${body ? `: ${body}` : ""}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -97,9 +114,9 @@ const state = {
 
   /** "requests" or "settings". The detail screen is a mode of the first. */
   screen: "requests",
-  /** The document in force, the subset this deployment decided, and the field list. */
+  /** The stored document, the fields it is still missing, and the field list. */
   settings: null,
-  overrides: {},
+  missing: [],
   fields: [],
   settingsSelected: 0,
   settingsTop: 0,
@@ -114,7 +131,7 @@ async function loadSettings() {
   try {
     const doc = await call("/api/admin/settings");
     state.settings = doc.settings;
-    state.overrides = doc.overrides ?? {};
+    state.missing = missingOf(doc);
     state.fields = doc.fields ?? [];
   } catch (err) {
     state.status = `could not load settings — ${err.message}`;
@@ -124,24 +141,86 @@ async function loadSettings() {
 }
 
 /**
- * Send one field.
+ * What the stored document is missing, from the Worker's answer.
  *
- * `null` is not "set it to zero": the Worker reads it as "stop deciding this one",
- * which puts the field back on the shipped value and keeps it there as that value
- * moves. That is what `r` on a row does.
+ * A Worker from before every setting was required answers with `overrides` — what it
+ * was told — and fills the rest from its own constants. Against one of those, the
+ * missing fields are worked out here, so `init` can write them before the upgrade
+ * lands and the new Worker comes up complete.
  */
-async function saveSetting(key, value) {
-  state.status = `saving ${key}…`;
+function missingOf(doc) {
+  if (Array.isArray(doc.missing)) return doc.missing;
+  const stored = doc.overrides ?? {};
+  const out = [];
+  for (const { key } of doc.fields ?? []) {
+    if (stored[key] === undefined) {
+      out.push(key);
+    } else if (key === "max_upload_bytes" || key === "config_defaults") {
+      for (const sub of Object.keys(DEFAULTS[key] ?? {})) {
+        if (stored[key][sub] === undefined) out.push(`${key}.${sub}`);
+      }
+    }
+  }
+  return out;
+}
+
+/** Merge a patch into the stored document. Returns the Worker's answer. */
+async function patchSettings(patch) {
+  return await call("/api/admin/settings", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+/**
+ * The shipped default for every field the Worker says is missing, as one patch.
+ *
+ * Driven by the Worker's own `missing` list rather than by diffing against
+ * `defaults.json`, so a field this Worker does not know yet is never sent — it would
+ * be refused as unknown. Nested gaps (`max_upload_bytes.audio`) fill only that key.
+ */
+function defaultsFor(missing) {
+  const patch = {};
+  for (const entry of missing) {
+    const [key, sub] = entry.split(".");
+    if (!(key in DEFAULTS)) continue;
+    if (sub === undefined) patch[key] = DEFAULTS[key];
+    else if (DEFAULTS[key]?.[sub] !== undefined) {
+      patch[key] = { ...(patch[key] ?? {}), [sub]: DEFAULTS[key][sub] };
+    }
+  }
+  return patch;
+}
+
+/**
+ * Every field back on the shipped value. `field_options` merges per column on the
+ * Worker, so a column the defaults do not list is sent as null to drop it.
+ */
+function allDefaults(fields, current) {
+  const patch = {};
+  for (const { key } of fields) if (key in DEFAULTS) patch[key] = DEFAULTS[key];
+  if (patch.field_options) {
+    const dropped = Object.keys(current?.field_options ?? {}).filter(
+      (column) => !(column in DEFAULTS.field_options)
+    );
+    patch.field_options = {
+      ...DEFAULTS.field_options,
+      ...Object.fromEntries(dropped.map((column) => [column, null])),
+    };
+  }
+  return patch;
+}
+
+/** Send a patch from the settings screen and show what came back. */
+async function saveSettings(patch, done) {
+  state.status = "saving…";
   render();
   try {
-    const doc = await call("/api/admin/settings", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ [key]: value }),
-    });
+    const doc = await patchSettings(patch);
     state.settings = doc.settings;
-    state.overrides = doc.overrides ?? {};
-    state.status = value === null ? `${key} back to the shipped value` : `${key} saved`;
+    state.missing = missingOf(doc);
+    state.status = done;
   } catch (err) {
     state.status = err.message.replace(/^\d+ [^:]*: /, "");
   }
@@ -159,8 +238,8 @@ function showValue(value) {
 /**
  * Read a typed value back for its field.
  *
- * An empty line on a string field is a real empty string — several of these use blank
- * to mean "fall through to what the Worker ships" — so it is not treated as a cancel.
+ * An empty line on a string field is a real empty string — a blank `system_prompt`
+ * is the owner choosing to say nothing — so it is not treated as a cancel.
  * Anything the Worker will not take comes back as its own error message, which is the
  * only validation this CLI needs to know about.
  */
@@ -283,12 +362,15 @@ function render() {
 /**
  * Every ceiling and default, one per row.
  *
- * A row marked `·` is on the value the Worker ships; a row marked `*` is one this
- * deployment has decided for itself. The distinction matters more than the number: a
- * shipped value follows the code forward, an override does not.
+ * A row marked `!` is not set, or not wholly — the deployment refuses to serve while
+ * any row is. `i` fills every such row with the shipped default.
  */
 function renderSettings(out) {
-  out.push(`${BOLD}deployment settings${OFF}   ${DIM}* set here   · as shipped${OFF}`);
+  out.push(
+    state.missing.length
+      ? `${BOLD}deployment settings${OFF}   ${BOLD}! ${state.missing.length} unset — the deployment is refusing requests${OFF}`
+      : `${BOLD}deployment settings${OFF}   ${DIM}all set${OFF}`
+  );
   out.push("");
   if (!state.fields.length) {
     out.push(state.loading ? `${DIM}loading…${OFF}` : `${DIM}none available.${OFF}`);
@@ -312,9 +394,9 @@ function renderSettings(out) {
   out.push(`${DIM}  ${pad("setting", 22)} ${pad("value", 44)}${OFF}`);
   rows.forEach((field, i) => {
     const idx = state.settingsTop + i;
-    const own = state.overrides[field.key] !== undefined;
+    const unset = state.missing.some((m) => m === field.key || m.startsWith(`${field.key}.`));
     const value = showValue(state.settings?.[field.key]);
-    const line = `${own ? "*" : "·"} ${pad(field.key, 22)} ${pad(value, 44)}`;
+    const line = `${unset ? "!" : " "} ${pad(field.key, 22)} ${pad(value, 44)}`;
     out.push(idx === state.settingsSelected ? `${INV}${line}${OFF}` : line);
   });
 
@@ -326,6 +408,11 @@ function renderSettings(out) {
         ? `  ${DIM}(${current.min}–${current.max})${OFF}`
         : "";
     out.push(`  ${DIM}${current.doc}${range}${OFF}`);
+    const gaps = state.missing.filter((m) => m.startsWith(`${current.key}.`));
+    if (gaps.length) out.push(`  ${BOLD}unset: ${gaps.join(", ")}${OFF}`);
+    if (current.key in DEFAULTS) {
+      out.push(`  ${DIM}shipped: ${pad(showValue(DEFAULTS[current.key]), 70)}${OFF}`);
+    }
   }
   out.push("");
   if (state.editing) {
@@ -335,7 +422,9 @@ function renderSettings(out) {
     out.push("");
     out.push(`${DIM}enter save   esc cancel${OFF}`);
   } else {
-    out.push(`${DIM}↑/↓ move   enter edit   r shipped value   R reset all   esc back   q quit${OFF}`);
+    out.push(
+      `${DIM}↑/↓ move   enter edit   r shipped value   i fill unset   R all shipped   esc back   q quit${OFF}`
+    );
   }
   if (state.status) out.push(`${DIM}${state.status}${OFF}`);
 }
@@ -406,7 +495,7 @@ async function onSettingsKey(key) {
       const typed = state.editing.buffer;
       state.editing = null;
       try {
-        await saveSetting(field.key, parseValue(field, typed));
+        await saveSettings({ [field.key]: parseValue(field, typed) }, `${field.key} saved`);
       } catch (err) {
         state.status = err.message;
         render();
@@ -444,19 +533,28 @@ async function onSettingsKey(key) {
     state.status = "";
     return render();
   }
-  if (key === "r") return await saveSetting(field.key, null);
-  if (key === "R") {
-    state.status = "resetting every setting…";
-    render();
-    try {
-      const doc = await call("/api/admin/settings", { method: "DELETE" });
-      state.settings = doc.settings;
-      state.overrides = doc.overrides ?? {};
-      state.status = "every setting back to the shipped values";
-    } catch (err) {
-      state.status = err.message;
+  if (key === "r") {
+    if (!(field.key in DEFAULTS)) {
+      state.status = `no shipped value for ${field.key} in defaults.json`;
+      return render();
     }
-    return render();
+    return await saveSettings({ [field.key]: DEFAULTS[field.key] }, `${field.key} set to the shipped value`);
+  }
+  if (key === "i") {
+    const patch = defaultsFor(state.missing);
+    if (!Object.keys(patch).length) {
+      state.status = state.missing.length
+        ? `no shipped value for: ${state.missing.join(", ")}`
+        : "nothing unset";
+      return render();
+    }
+    return await saveSettings(patch, "unset fields filled with the shipped values");
+  }
+  if (key === "R") {
+    return await saveSettings(
+      allDefaults(state.fields, state.settings),
+      "every setting set to the shipped values"
+    );
   }
   return render();
 }
@@ -506,6 +604,62 @@ async function onKey(key) {
   if (state.selected >= state.requests.length - 5) await loadMore();
 }
 
+if (COMMAND === "init" || COMMAND === "check") {
+  const where = `${BASE_URL}${TARGET ? ` [${TARGET.toLowerCase()}]` : ""}`;
+  try {
+    let doc = await call("/api/admin/settings");
+    if (COMMAND === "init") {
+      const patch = defaultsFor(missingOf(doc));
+      if (Object.keys(patch).length) {
+        doc = await patchSettings(patch);
+        console.log(`  filled with shipped defaults: ${Object.keys(patch).join(", ")}`);
+      }
+    }
+    const missing = missingOf(doc);
+    if (missing.length) {
+      console.error(
+        `\n  ${where}: settings incomplete — the deployment refuses requests until these are set:\n\n` +
+          missing.map((m) => `    ${m}`).join("\n") +
+          `\n\n  Run \`npm run init${TARGET ? ` -- --${TARGET.toLowerCase()}` : ""}\` in admin-cli to write the shipped defaults,\n  or set them from the dashboard (\`s\`).\n`
+      );
+      process.exit(1);
+    }
+    // Fields this CLI ships a default for that the live Worker has not heard of: a
+    // release adding a setting. They cannot be set before that release is live — the
+    // current Worker refuses unknown keys — so `npm run deploy` runs `init` after it.
+    const known = new Set((doc.fields ?? []).map((f) => f.key));
+    const upcoming = Object.keys(DEFAULTS).filter((k) => !known.has(k));
+    console.log(`  settings complete (${where})`);
+    if (upcoming.length) {
+      console.log(
+        `  not on the live Worker yet: ${upcoming.join(", ")} — the deploy's \`init\` step sets them.`
+      );
+    }
+    process.exit(0);
+  } catch (err) {
+    // A Worker from before the settings route: the route is unknown to it, so the
+    // request falls through to its identity gate (401) or nowhere (404). Told apart
+    // from a wrong secret by `/stats`, which the same secret opens on both versions.
+    // `check` says so with its own exit code — the deploy that installs the route is
+    // the only way to get one, so the preflight lets it through and `init` follows it.
+    if (COMMAND === "check" && (err.status === 401 || err.status === 404)) {
+      const predates = await call("/api/admin/stats").then(
+        () => true,
+        () => false
+      );
+      if (predates) {
+        console.log(
+          `  ${where} predates deployment settings — nothing to check yet.\n` +
+            "  The deploy installs the route; `init` right after it writes the shipped defaults."
+        );
+        process.exit(2);
+      }
+    }
+    console.error(`  could not read settings from ${where}: ${err.message}`);
+    process.exit(1);
+  }
+}
+
 process.stdout.write("\x1b[?25l");
 render();
 
@@ -518,6 +672,15 @@ try {
 }
 render();
 await loadMore();
+
+// A deployment with settings unset refuses every ordinary request, so there is nothing
+// more urgent to show than the rows that need filling.
+await loadSettings();
+if (state.missing.length) {
+  state.screen = "settings";
+  state.status = "settings incomplete — press i to fill every unset row with the shipped value";
+  render();
+}
 
 if (process.stdin.isTTY) process.stdin.setRawMode(true);
 process.stdin.resume();

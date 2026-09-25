@@ -61,9 +61,6 @@ export type AgentPage = {
   cursor: string;
 };
 
-/** How many agents the home page asks for at a time, in each of its lists. */
-export const AGENT_PAGE = 30;
-
 /**
  * A session id is `<agentId>~<local>`, so a session says which agent owns it. That is
  * what lets every session-scoped route stay agent-free: the id is enough.
@@ -106,11 +103,6 @@ export type SessionPage = {
   has_more: boolean;
   cursor: string;
 };
-
-/** Sessions asked for per page. One screenful plus room to scroll before the next. */
-export const SESSION_PAGE = 30;
-/** Messages asked for per page, both on open and on each scroll back. */
-export const MESSAGE_PAGE = 30;
 
 /**
  * Where "Continue in Telegram" points. Telegram has a link for every chat, but a
@@ -462,25 +454,12 @@ export const EMPTY_META: MetaSettings = {
  * The deployment's ceilings the composer has to know before it sends anything, as the
  * `/config` route hands them over.
  *
- * The constants below them are the shipped values, kept only as the fallback for the
- * moment before the route has answered. Every check uses what came back, because the
- * browser's number and the Worker's have to be the same number — and the browser's is
- * the one the user meets first.
+ * There is no copy of them here: the browser's number and the Worker's have to be the
+ * same number, and the browser's is the one the user meets first.
  */
 export type ClientLimits = {
   max_files_per_message: number;
   max_upload_bytes: { text: number; pdf: number; image: number; audio: number };
-};
-
-/** What the Worker ships with. Replaced by the deployment's own on the first `/config`. */
-export const DEFAULT_CLIENT_LIMITS: ClientLimits = {
-  max_files_per_message: 4,
-  max_upload_bytes: {
-    text: 1_000_000,
-    pdf: 8_000_000,
-    image: 10_000_000,
-    audio: 25_000_000,
-  },
 };
 
 /**

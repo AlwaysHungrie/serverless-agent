@@ -1,25 +1,27 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  FACTORY_SETTINGS,
   SettingsError,
-  effectiveSettings,
+  SettingsIncompleteError,
+  completeSettings,
+  missingSettings,
   validateSettingsPatch,
 } from "../src/settings";
 import { normalizeEmails, sessionLimitMessage } from "../src/registry";
+import { SHIPPED } from "./shipped";
 
 /**
  * The deployment's own knobs.
  *
- * Two halves. The merge and the validator are pure and tested directly, because they
- * are where a wrong answer is silent — a patch that stores a bad number keeps working
- * until something enforces it. The routes are tested over HTTP, because what matters
+ * Two halves. The completeness check and the validator are pure and tested directly,
+ * because they are where a wrong answer is silent — a patch that stores a bad number
+ * keeps working until something enforces it. The routes are tested over HTTP, because what matters
  * about them is the gate and the fact that a written ceiling is the one actually
  * enforced a moment later.
  *
- * Every test that writes resets afterwards. The settings live in the one directory
- * object, the pool does not roll storage back, and an override left behind would
- * change what every later test in the run is held to.
+ * Every test that writes restores the shipped document afterwards. The settings live
+ * in the one directory object, the pool does not roll storage back, and a value left
+ * behind would change what every later test in the run is held to.
  */
 
 const SECRET = env.API_SECRET as string;
@@ -39,33 +41,55 @@ function asOwner(init: RequestInit = {}) {
 const patch = (body: unknown) =>
   SELF.fetch(`${BASE}/api/admin/settings`, asOwner({ method: "PATCH", body: JSON.stringify(body) }));
 
-const reset = () => SELF.fetch(`${BASE}/api/admin/settings`, asOwner({ method: "DELETE" }));
+const reset = () => patch(SHIPPED);
 
-describe("the effective document", () => {
-  it("is the factory values when nothing is overridden", () => {
-    expect(effectiveSettings({})).toEqual(FACTORY_SETTINGS);
-    expect(effectiveSettings(null)).toEqual(FACTORY_SETTINGS);
+/** Drop the stored document outright, the way a fresh deployment starts. */
+async function clear() {
+  await env.AgentDirectory.get(env.AgentDirectory.idFromName("root")).clearSettings();
+  // An empty patch through the route: a no-op write that drops the Worker's cached copy.
+  await patch({});
+}
+
+describe("a complete document", () => {
+  it("is what the admin CLI ships", () => {
+    // The CLI's defaults are the only values a fresh deployment can start from, so
+    // they have to be a document this Worker accepts, complete, as they stand.
+    expect(missingSettings(SHIPPED)).toEqual([]);
+    expect(validateSettingsPatch(SHIPPED, {})).toEqual(SHIPPED);
   });
 
-  it("takes an override and leaves every other field alone", () => {
-    const merged = effectiveSettings({ max_sessions: 4 });
-    expect(merged.max_sessions).toBe(4);
-    expect(merged.max_agent_bytes).toBe(FACTORY_SETTINGS.max_agent_bytes);
+  it("names every missing field, nested ones by key", () => {
+    const { max_sessions: _, ...rest } = structuredClone(SHIPPED);
+    const partial = {
+      ...rest,
+      max_upload_bytes: { text: 1, pdf: 1, image: 1 },
+      config_defaults: { ...SHIPPED.config_defaults, cap_mcp: undefined },
+    } as never;
+    expect(missingSettings(partial)).toEqual([
+      "max_sessions",
+      "max_upload_bytes.audio",
+      "config_defaults.cap_mcp",
+    ]);
   });
 
-  it("merges the upload ceilings per kind rather than replacing them", () => {
-    // The whole reason the stored shape is a patch: raising one kind must not reset
-    // the other three to zero, which a wholesale replace would do.
-    const merged = effectiveSettings({ max_upload_bytes: { pdf: 99 } as never });
-    expect(merged.max_upload_bytes.pdf).toBe(99);
-    expect(merged.max_upload_bytes.image).toBe(FACTORY_SETTINGS.max_upload_bytes.image);
+  it("refuses to stand in for anything", () => {
+    // No shipped values to fill a gap with: an empty document is every field missing.
+    expect(() => completeSettings({})).toThrow(SettingsIncompleteError);
+    try {
+      completeSettings({});
+    } catch (err) {
+      expect((err as SettingsIncompleteError).missing).toContain("max_tool_rounds");
+    }
   });
 
-  it("keeps a zero an override rather than reading it as absent", () => {
+  it("counts an empty model list and a blank default model as missing", () => {
+    expect(missingSettings({ ...SHIPPED, models: [] })).toEqual(["models"]);
+    expect(missingSettings({ ...SHIPPED, default_model: " " })).toEqual(["default_model"]);
+  });
+
+  it("keeps a zero as a value rather than reading it as absent", () => {
     // `max_tokens: 0` means "no cap", so absence cannot be a sentinel value.
-    expect(effectiveSettings({ config_defaults: { max_tokens: 0 } }).config_defaults).toEqual({
-      max_tokens: 0,
-    });
+    expect(completeSettings(SHIPPED).config_defaults.max_tokens).toBe(0);
   });
 });
 
@@ -81,15 +105,28 @@ describe("validating a patch", () => {
     expect(() => validateSettingsPatch({ max_tool_rounds: 1.5 }, {})).toThrow(/whole number/);
   });
 
-  it("merges into the overrides already stored", () => {
+  it("merges into the document already stored", () => {
     const first = validateSettingsPatch({ max_sessions: 4 }, {});
     const second = validateSettingsPatch({ max_members: 9 }, first);
     expect(second).toEqual({ max_sessions: 4, max_members: 9 });
   });
 
-  it("removes an override when a key is set to null", () => {
-    const stored = validateSettingsPatch({ max_sessions: 4 }, {});
-    expect(validateSettingsPatch({ max_sessions: null }, stored)).toEqual({});
+  it("refuses to unset a field, top-level or nested", () => {
+    // Every field is required, so there is nothing for "unset" to fall back to.
+    expect(() => validateSettingsPatch({ max_sessions: null }, SHIPPED)).toThrow(/cannot be unset/);
+    expect(() =>
+      validateSettingsPatch({ config_defaults: { temperature: null } }, SHIPPED)
+    ).toThrow(/cannot be unset/);
+  });
+
+  it("merges upload ceilings per kind rather than replacing them", () => {
+    const stored = validateSettingsPatch({ max_upload_bytes: { pdf: 99 } }, SHIPPED);
+    expect(stored.max_upload_bytes).toEqual({ ...SHIPPED.max_upload_bytes, pdf: 99 });
+  });
+
+  it("refuses an empty model list and a blank default model", () => {
+    expect(() => validateSettingsPatch({ models: [] }, {})).toThrow(/at least one/);
+    expect(() => validateSettingsPatch({ default_model: "" }, {})).toThrow(/model id/);
   });
 
   it("refuses a config column that is not settable deployment-wide", () => {
@@ -116,7 +153,7 @@ describe("validating a patch", () => {
 
   it("refuses a page default above its own ceiling", () => {
     // It would clamp on every read, which reads as the default being ignored.
-    expect(() => validateSettingsPatch({ message_page: 500 }, {})).toThrow(
+    expect(() => validateSettingsPatch({ message_page: 500 }, SHIPPED)).toThrow(
       /cannot exceed max_message_page/
     );
   });
@@ -163,16 +200,16 @@ describe("the admin settings route", () => {
     expect(res.status).toBe(401);
   });
 
-  it("serves the document, the overrides and the field list", async () => {
+  it("serves the document, what it is missing and the field list", async () => {
     const res = await SELF.fetch(`${BASE}/api/admin/settings`, asOwner());
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       settings: Record<string, unknown>;
-      overrides: Record<string, unknown>;
+      missing: string[];
       fields: { key: string; kind: string; doc: string }[];
     };
-    expect(body.settings.max_sessions).toBe(FACTORY_SETTINGS.max_sessions);
-    expect(body.overrides).toEqual({});
+    expect(body.settings.max_sessions).toBe(SHIPPED.max_sessions);
+    expect(body.missing).toEqual([]);
     // The CLI draws itself from this, so every setting has to be described by it.
     expect(body.fields.map((f) => f.key)).toContain("max_upload_bytes");
     expect(body.fields.every((f) => f.doc.length > 0)).toBe(true);
@@ -183,11 +220,11 @@ describe("the admin settings route", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       settings: { max_sessions: number; max_agent_bytes: number };
-      overrides: Record<string, unknown>;
+      missing: string[];
     };
     expect(body.settings.max_sessions).toBe(3);
-    expect(body.settings.max_agent_bytes).toBe(FACTORY_SETTINGS.max_agent_bytes);
-    expect(body.overrides).toEqual({ max_sessions: 3 });
+    expect(body.settings.max_agent_bytes).toBe(SHIPPED.max_agent_bytes);
+    expect(body.missing).toEqual([]);
   });
 
   it("answers a bad value with the reason rather than a 500", async () => {
@@ -196,17 +233,51 @@ describe("the admin settings route", () => {
     expect((await res.json<{ error: string }>()).error).toMatch(/whole number/);
   });
 
-  it("puts every setting back on the shipped values", async () => {
-    await patch({ max_sessions: 3, max_members: 7 });
-    const res = await reset();
-    const body = (await res.json()) as { settings: { max_sessions: number }; overrides: unknown };
-    expect(body.settings.max_sessions).toBe(FACTORY_SETTINGS.max_sessions);
-    expect(body.overrides).toEqual({});
+  it("refuses an unknown method, reset included", async () => {
+    // There is no reset: with nothing to fall back to, it would stop the deployment.
+    for (const method of ["PUT", "DELETE"]) {
+      const res = await SELF.fetch(`${BASE}/api/admin/settings`, asOwner({ method }));
+      expect(res.status).toBe(405);
+    }
+  });
+});
+
+describe("a deployment with incomplete settings", () => {
+  afterEach(async () => {
+    await reset();
   });
 
-  it("refuses an unknown method", async () => {
-    const res = await SELF.fetch(`${BASE}/api/admin/settings`, asOwner({ method: "PUT" }));
-    expect(res.status).toBe(405);
+  it("refuses every ordinary request, naming what is missing", async () => {
+    await clear();
+    await patch({ max_sessions: 9 });
+    const res = await SELF.fetch(
+      `${BASE}/api/agents`,
+      asOwner({ headers: { "x-user-email": "refused@x.com" } })
+    );
+    expect(res.status).toBe(503);
+    const body = await res.json<{ error: string; missing: string[] }>();
+    expect(body.missing).toContain("max_tool_rounds");
+    expect(body.missing).not.toContain("max_sessions");
+    expect(body.error).toMatch(/admin CLI/);
+  });
+
+  it("still answers the routes the admin CLI sets it up with", async () => {
+    await clear();
+    const settings = await SELF.fetch(`${BASE}/api/admin/settings`, asOwner());
+    expect(settings.status).toBe(200);
+    expect((await settings.json<{ missing: string[] }>()).missing).toContain("models");
+    expect((await SELF.fetch(`${BASE}/api/admin/stats`, asOwner())).status).toBe(200);
+  });
+
+  it("serves again once the last field is set", async () => {
+    await clear();
+    const saved = await patch(SHIPPED);
+    expect((await saved.json<{ missing: string[] }>()).missing).toEqual([]);
+    const res = await SELF.fetch(
+      `${BASE}/api/agents`,
+      asOwner({ headers: { "x-user-email": "served@x.com" } })
+    );
+    expect(res.status).toBe(200);
   });
 });
 
@@ -260,7 +331,7 @@ describe("a setting the owner changed is the one enforced", () => {
     expect((await refused.json<{ error: string }>()).error).toBe(sessionLimitMessage(1));
   });
 
-  it("offers the model list the owner typed in, ahead of MODELS", async () => {
+  it("offers the model list the owner typed in", async () => {
     await patch({ models: [{ id: "owner/model", label: "Owner's", vision: false }] });
     const res = await SELF.fetch(
       `${BASE}/api/agents/catalog`,

@@ -1,0 +1,55 @@
+{
+  "max_sessions": 256,
+  "max_agent_bytes": 50000000,
+  "max_members": 200,
+  "default_agent_limit": 1,
+  "max_upload_bytes": {
+    "text": 1000000,
+    "pdf": 8000000,
+    "image": 10000000,
+    "audio": 25000000
+  },
+  "max_thumbnail_bytes": 2000000,
+  "max_tool_rounds": 6,
+  "message_page": 30,
+  "max_message_page": 200,
+  "session_page": 30,
+  "agent_page": 30,
+  "max_agent_page": 100,
+  "voice_note_limit": 1500,
+  "max_files_per_message": 4,
+  "max_session_page": 200,
+
+  "models": [
+    { "id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash", "vision": false },
+    { "id": "anthropic/claude-haiku-4.5", "label": "Claude Haiku 4.5", "vision": true },
+    { "id": "openai/gpt-5-mini", "label": "GPT-5 Mini", "vision": true },
+    { "id": "google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "vision": true }
+  ],
+  "default_model": "deepseek/deepseek-v4-flash",
+  "system_prompt": "You are a concise assistant running inside a Cloudflare Durable Object.",
+  "config_defaults": {
+    "temperature": 0.7,
+    "max_tokens": 0,
+    "reasoning_effort": "off",
+    "context_messages": 0,
+    "image_model": "google/gemini-2.5-flash-image",
+    "transcription_model": "google/gemini-2.5-flash-lite",
+    "voice_model": "openai/gpt-audio-mini",
+    "cap_web_search": 0,
+    "cap_url_fetch": 0,
+    "cap_file_ingest": 0,
+    "cap_vision": 0,
+    "cap_image_generation": 0,
+    "cap_audio_input": 0,
+    "cap_voice_output": 0,
+    "cap_scheduled_tasks": 0,
+    "cap_memory": 0,
+    "cap_telegram": 1,
+    "cap_whatsapp": 0,
+    "cap_mcp": 1
+  },
+  "mcp_catalog": [],
+  "mcp_templates": [],
+  "field_options": {}
+}

@@ -28,6 +28,8 @@ export default defineConfig({
     // seconds; a flaky one costs the gate its authority.
     testTimeout: 60_000,
     hookTimeout: 60_000,
+    // The Worker ships no settings of its own; every file starts from the admin CLI's.
+    setupFiles: ["./test/setup.ts"],
   },
   plugins: [
     cloudflareTest({

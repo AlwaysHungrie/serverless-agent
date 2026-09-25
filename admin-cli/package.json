@@ -3,9 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Interactive CLI dashboard for the salt-agent deployment: counts, the limit-increase queue, and the deployment settings.",
+  "description": "Interactive CLI dashboard for the salt-agent deployment: counts, the limit-increase queue, and the deployment settings, with the defaults a deployment starts from.",
   "scripts": {
     "start": "node index.mjs",
-    "dev": "node index.mjs --dev"
+    "dev": "node index.mjs --dev",
+    "init": "node index.mjs init",
+    "check": "node index.mjs check"
   }
 }

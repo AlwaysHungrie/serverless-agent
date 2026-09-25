@@ -11,7 +11,6 @@ import {
   MetaSettingsForm,
 } from "@/components/MetaSettings";
 import {
-  AGENT_PAGE,
   EMPTY_META,
   type AgentPage,
   type AgentRow,
@@ -86,7 +85,7 @@ export default function Agents() {
 
   /** The first page of the list, and the fleets above it. Replaces what is on screen. */
   const load = useCallback(async () => {
-    const res = await apiFetch(`/api/agents?limit=${AGENT_PAGE}`, {
+    const res = await apiFetch(`/api/agents`, {
       cache: "no-store",
     });
     const payload = (await res.json().catch(() => null)) as
@@ -121,7 +120,7 @@ export default function Agents() {
     if (!cursor || loadingMore) return;
     setLoadingMore(true);
     const res = await apiFetch(
-      `/api/agents?limit=${AGENT_PAGE}&cursor=${encodeURIComponent(cursor)}`,
+      `/api/agents?cursor=${encodeURIComponent(cursor)}`,
       { cache: "no-store" },
     );
     const payload = (await res.json().catch(() => null)) as AgentPage | null;
@@ -461,7 +460,7 @@ function Fleet({
     async (after: string) => {
       setBusy(true);
       const res = await apiFetch(
-        `/api/agents?fleet=${encodeURIComponent(fleet.fleet_id)}&limit=${AGENT_PAGE}` +
+        `/api/agents?fleet=${encodeURIComponent(fleet.fleet_id)}` +
           (after ? `&cursor=${encodeURIComponent(after)}` : ""),
         { cache: "no-store" },
       );

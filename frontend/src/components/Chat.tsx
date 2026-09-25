@@ -39,7 +39,6 @@ import {
   type TranscriptPage,
   type TurnStep,
   type UsageData,
-  DEFAULT_CLIENT_LIMITS,
   imageTarget,
   recordingSeconds,
   type ClientLimits,
@@ -52,7 +51,7 @@ import { apiFetch, identityHeaders, useAuthedUrl } from "@/lib/identity";
 
 // The three ceilings the composer enforces — files per message, the size an image is
 // re-encoded to, and how long a take may run — come from the deployment's settings over
-// `/config`, with `DEFAULT_CLIENT_LIMITS` standing in until it answers. See
+// `/config`. Nothing stands in until it answers: uploads and recording wait for it. See
 // `ClientLimits` in `lib/agent.ts` for how the derived two are worked out.
 
 /** How a tool call reads while it runs, once it is done, and when it fails. */
@@ -1081,7 +1080,7 @@ export function Chat({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [ready, setReady] = useState<Set<string>>(new Set());
   /** The deployment's composer ceilings, replaced by the real ones on the first `/config`. */
-  const [limits, setLimits] = useState<ClientLimits>(DEFAULT_CLIENT_LIMITS);
+  const [limits, setLimits] = useState<ClientLimits | null>(null);
   // A message streamed in this session has no stored timestamp yet, so the arrival
   // time is recorded once, when the message first appears. It lives in a plain map
   // rather than in state: writing it must not itself cause a render.
@@ -1115,12 +1114,10 @@ export function Chat({
       const payload = (await res.json().catch(() => null)) as {
         config: Config;
         capabilities: Capability[];
-        limits?: ClientLimits;
+        limits: ClientLimits;
       } | null;
       if (!payload?.config) return;
-      // A deployment on an older Worker sends no limits at all, so the shipped values
-      // stay rather than being replaced with undefined.
-      if (payload.limits) setLimits(payload.limits);
+      setLimits(payload.limits);
       setReady(
         new Set(
           payload.capabilities
@@ -1253,6 +1250,10 @@ export function Chat({
   };
 
   const upload = async (picked: File[]) => {
+    if (!limits) {
+      setUploadError("Still loading this deployment's limits. Try again in a moment.");
+      return;
+    }
     setUploading(true);
     setUploadError(null);
 
@@ -1468,6 +1469,12 @@ export function Chat({
   const recorder = useRef<Recorder | null>(null);
 
   const record = async () => {
+    // The take's length is capped by the deployment's audio ceiling; no ceiling yet,
+    // no take.
+    if (!limits) {
+      setUploadError("Still loading this deployment's limits. Try again in a moment.");
+      return;
+    }
     setUploadError(null);
     try {
       recorder.current = await startRecording();
@@ -1503,7 +1510,7 @@ export function Chat({
     if (!recording) return;
     const id = setInterval(() => {
       setRecordedFor((s) => (s ?? 0) + 1);
-      if ((recordedFor ?? 0) + 1 >= recordingSeconds(limits)) {
+      if (limits && (recordedFor ?? 0) + 1 >= recordingSeconds(limits)) {
         void finishRecording(true);
       }
     }, 1000);
@@ -1753,7 +1760,7 @@ export function Chat({
                   {clock(recordedFor ?? 0)}
                 </span>
                 <span className="text-faint flex-1 text-[13px]">
-                  {recordingSeconds(limits) - (recordedFor ?? 0) <= 30
+                  {limits && recordingSeconds(limits) - (recordedFor ?? 0) <= 30
                     ? `Stopping in ${recordingSeconds(limits) - (recordedFor ?? 0)}s`
                     : "Recording…"}
                 </span>

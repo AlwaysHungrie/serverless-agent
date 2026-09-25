@@ -7,22 +7,17 @@ import type { Env, ModelOption } from "./agent";
  *
  * Why a document and not constants. A ceiling is a decision about a deployment, not
  * about the code — the same Worker runs a demo where 20 sessions is generous and a
- * business account where 256 is tight, and today the only way to tell them apart is
- * to edit a number and ship. `MODELS` already made that argument for the model list
- * and won it; this is the same move for the rest.
+ * business account where 256 is tight.
  *
- * Why only overrides are stored. The row holds a *patch*, never the whole document,
- * so a factory value this deployment never touched keeps tracking the code. Raise
- * `max_upload_bytes.pdf` in a release and every deployment that never overrode it
- * gets the new number; the one that did keeps its own. The alternative — writing the
- * whole document out on first read — freezes every field at whatever the defaults
- * were on the day the owner first opened the dialog, including the fields they never
- * looked at.
+ * Why there is no fallback. This Worker ships with no values of its own: every field
+ * has to be in the stored document, and a deployment missing any of them refuses to
+ * serve (see `SettingsIncompleteError`) until the owner sets it. The values a fresh
+ * deployment starts from ship with the admin CLI (`admin-cli/defaults.json`), which
+ * writes them here — so the number in force is always one somebody wrote down for
+ * this deployment, never one the code decided on its behalf.
  *
  * Why `0` is not "absent". Several of these are legitimately zero (`max_tokens: 0` is
- * "no cap"), so absence has to be key-not-present rather than a sentinel. That is
- * what makes the stored shape `Partial`, and what makes `effectiveSettings` a merge
- * rather than a coalesce.
+ * "no cap"), so absence has to be key-not-present rather than a sentinel.
  *
  * Secrets are deliberately not here. An OpenRouter key, a bot token and a Meta app
  * secret belong to one agent and are billed to it; a deployment-wide default for one
@@ -30,13 +25,11 @@ import type { Env, ModelOption } from "./agent";
  * prevent. `config_defaults` is restricted to `SETTABLE_CONFIG_KEYS` for that reason.
  */
 
+/** The attachment kinds a ceiling is set for. */
+export const UPLOAD_KINDS = ["text", "pdf", "image", "audio"] as const;
+
 /** Attachment ceilings, per kind. */
-export type UploadLimits = {
-  text: number;
-  pdf: number;
-  image: number;
-  audio: number;
-};
+export type UploadLimits = Record<(typeof UPLOAD_KINDS)[number], number>;
 
 /**
  * The config columns a deployment may pick a starting value for.
@@ -125,20 +118,14 @@ export type DeploymentSettings = {
 
   /* ---- soft defaults ---- */
 
-  /**
-   * The models the settings page offers. Empty falls through to `MODELS`, then to
-   * `MODEL` — so a deployment that has said nothing here behaves exactly as before.
-   */
+  /** The models the settings page offers. At least one. */
   models: ModelOption[];
-  /** The model every new agent is seeded with. Empty falls through to `MODEL`. */
+  /** The model every new agent is seeded with. */
   default_model: string;
-  /**
-   * What every agent is told before its own `system_prompt`. Empty keeps the built-in
-   * line, which is what a deployment that has not thought about it should get.
-   */
+  /** What every agent is told before its own `system_prompt`. Blank says nothing. */
   system_prompt: string;
-  /** Starting values for the tuning and capability columns. Absent keeps the factory value. */
-  config_defaults: Partial<Pick<Config, SettableConfigKey>>;
+  /** Starting values for the tuning and capability columns — every one of them. */
+  config_defaults: Pick<Config, SettableConfigKey>;
   /**
    * MCP providers offered on the capabilities page, in place of the ones the frontend
    * ships. Empty leaves the built-in presets alone.
@@ -157,45 +144,11 @@ export type DeploymentSettings = {
 };
 
 /**
- * The values this Worker ships with — the constants that used to be spread across
- * `registry.ts`, `agent.ts` and `capabilities.ts`, now in one place with a name.
- *
- * Changing a number here changes it for every deployment that has not overridden that
- * field, which is the point of storing a patch rather than a document.
+ * The document as stored. Partial, because a deployment is set up one field at a time
+ * and a Worker upgraded to a version with a new field has not been told it yet — but
+ * never served partial: see `completeSettings`.
  */
-export const FACTORY_SETTINGS: DeploymentSettings = {
-  max_sessions: 256,
-  max_agent_bytes: 50_000_000,
-  max_members: 200,
-  default_agent_limit: 1,
-  max_upload_bytes: {
-    text: 1_000_000,
-    pdf: 8_000_000,
-    image: 10_000_000,
-    audio: 25_000_000,
-  },
-  max_thumbnail_bytes: 2_000_000,
-  max_tool_rounds: 6,
-  message_page: 30,
-  max_message_page: 200,
-  session_page: 30,
-  agent_page: 30,
-  max_agent_page: 100,
-  voice_note_limit: 1500,
-  max_files_per_message: 4,
-  max_session_page: 200,
-
-  models: [],
-  default_model: "",
-  system_prompt: "",
-  config_defaults: {},
-  mcp_catalog: [],
-  mcp_templates: [],
-  field_options: {},
-};
-
-/** A stored override document: only the fields this deployment has decided for itself. */
-export type SettingsPatch = Partial<DeploymentSettings>;
+export type StoredSettings = Partial<DeploymentSettings>;
 
 /**
  * One field, as the admin CLI needs to draw and check it.
@@ -238,10 +191,10 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
   INT("max_files_per_message", 1, 100, "attachments one message may carry"),
   INT("max_session_page", 1, 10_000, "largest session page a caller may ask for"),
 
-  { key: "models", kind: "json", doc: "models the settings page offers: [{id,label,vision}]; empty uses MODELS" },
-  { key: "default_model", kind: "string", doc: "model a new agent is seeded with; empty uses MODEL" },
-  { key: "system_prompt", kind: "string", doc: "line every agent is told first; empty uses the built-in" },
-  { key: "config_defaults", kind: "json", doc: `starting values for: ${SETTABLE_CONFIG_KEYS.join(", ")}` },
+  { key: "models", kind: "json", doc: "models the settings page offers: [{id,label,vision}], at least one" },
+  { key: "default_model", kind: "string", doc: "model a new agent is seeded with" },
+  { key: "system_prompt", kind: "string", doc: "line every agent is told first; blank says nothing" },
+  { key: "config_defaults", kind: "json", doc: `starting values for every one of: ${SETTABLE_CONFIG_KEYS.join(", ")}` },
   { key: "mcp_catalog", kind: "json", doc: "MCP providers offered: [{id,name,url,auth,letter?,color?}]" },
   { key: "mcp_templates", kind: "json", doc: "built-in preset ids offered; empty means every preset" },
   {
@@ -254,20 +207,48 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
 const FIELD_BY_KEY = new Map(SETTINGS_FIELDS.map((f) => [f.key as string, f]));
 
 /**
- * The document in force: the factory values with this deployment's overrides on top.
+ * Every field the stored document does not have yet, as dotted paths.
  *
- * `max_upload_bytes` and `config_defaults` merge per key rather than replacing, so
- * raising the PDF ceiling does not silently reset the other three.
+ * Nested ones are named per key (`max_upload_bytes.pdf`, `config_defaults.cap_mcp`)
+ * so the refusal says exactly what to set, not just which object is short.
  */
-export function effectiveSettings(patch: SettingsPatch | null | undefined): DeploymentSettings {
-  if (!patch) return { ...FACTORY_SETTINGS };
-  return {
-    ...FACTORY_SETTINGS,
-    ...patch,
-    max_upload_bytes: { ...FACTORY_SETTINGS.max_upload_bytes, ...(patch.max_upload_bytes ?? {}) },
-    config_defaults: { ...FACTORY_SETTINGS.config_defaults, ...(patch.config_defaults ?? {}) },
-    field_options: { ...FACTORY_SETTINGS.field_options, ...(patch.field_options ?? {}) },
-  };
+export function missingSettings(stored: StoredSettings): string[] {
+  const missing: string[] = [];
+  for (const field of SETTINGS_FIELDS) {
+    if (stored[field.key] === undefined) missing.push(field.key);
+  }
+  if (stored.max_upload_bytes) {
+    for (const kind of UPLOAD_KINDS) {
+      if (stored.max_upload_bytes[kind] === undefined) missing.push(`max_upload_bytes.${kind}`);
+    }
+  }
+  if (stored.config_defaults) {
+    for (const key of SETTABLE_CONFIG_KEYS) {
+      if (stored.config_defaults[key] === undefined) missing.push(`config_defaults.${key}`);
+    }
+  }
+  if (stored.models && !stored.models.length) missing.push("models");
+  if (stored.default_model !== undefined && !stored.default_model.trim()) {
+    missing.push("default_model");
+  }
+  return missing;
+}
+
+/** What a deployment with an incomplete settings document answers with. */
+export class SettingsIncompleteError extends Error {
+  constructor(readonly missing: string[]) {
+    super(
+      `This deployment's settings are incomplete: ${missing.join(", ")} not set. ` +
+        "Set them with the admin CLI — `npm run init` in admin-cli writes the shipped defaults for every field not yet set."
+    );
+  }
+}
+
+/** The stored document as the full settings, or a refusal naming what is missing. */
+export function completeSettings(stored: StoredSettings): DeploymentSettings {
+  const missing = missingSettings(stored);
+  if (missing.length) throw new SettingsIncompleteError(missing);
+  return structuredClone(stored) as DeploymentSettings;
 }
 
 /** What a rejected patch says. Thrown, so every caller reports it the same way. */
@@ -289,34 +270,30 @@ function requireInt(key: string, value: unknown, min: number, max: number): numb
  *
  * Unknown keys are refused rather than ignored: a typo in `max_session` that silently
  * did nothing would look exactly like a limit that does not work, and the owner has
- * no log to find out which. `null` for a known key removes that override, which is
- * how a field is put back to the factory value.
+ * no log to find out which. `null` is refused too: every field is required, so there
+ * is nothing for "unset" to fall back to.
  */
 export function validateSettingsPatch(
   input: unknown,
-  current: SettingsPatch
-): SettingsPatch {
+  current: StoredSettings
+): StoredSettings {
   if (!isObject(input)) throw new SettingsError("a settings object is required");
-  const next: SettingsPatch = { ...current };
+  const next: StoredSettings = { ...current };
 
   for (const [key, value] of Object.entries(input)) {
     const field = FIELD_BY_KEY.get(key);
     if (!field) throw new SettingsError(`unknown setting: ${key}`);
 
-    // Explicit null is "stop deciding this one", which is not the same as setting it
-    // to the factory number: a later release that moves the factory value moves this
-    // deployment with it again.
-    if (value === null) {
-      delete next[field.key];
-      continue;
+    if (value === null || value === undefined) {
+      throw new SettingsError(`${key} cannot be unset: every setting is required`);
     }
 
     switch (field.key) {
       case "max_upload_bytes": {
         if (!isObject(value)) throw new SettingsError("max_upload_bytes must be an object");
-        const merged = { ...effectiveSettings(next).max_upload_bytes };
+        const merged: Partial<UploadLimits> = { ...next.max_upload_bytes };
         for (const [kind, bytes] of Object.entries(value)) {
-          if (!(kind in FACTORY_SETTINGS.max_upload_bytes)) {
+          if (!(UPLOAD_KINDS as readonly string[]).includes(kind)) {
             throw new SettingsError(`unknown upload kind: ${kind}`);
           }
           merged[kind as keyof UploadLimits] = requireInt(
@@ -326,18 +303,19 @@ export function validateSettingsPatch(
             100_000_000_000
           );
         }
-        next.max_upload_bytes = merged;
+        next.max_upload_bytes = merged as UploadLimits;
         break;
       }
       case "models": {
-        if (!Array.isArray(value)) throw new SettingsError("models must be an array");
+        if (!Array.isArray(value) || !value.length) {
+          throw new SettingsError("models must be an array of at least one model");
+        }
         next.models = value.map((m, i) => {
           if (!isObject(m)) throw new SettingsError(`models[${i}] must be an object`);
           const id = String(m.id ?? "").trim();
           if (!id) throw new SettingsError(`models[${i}].id is required`);
           const label = String(m.label ?? id).trim() || id;
-          // Absent means yes, as in `MODELS`: only a model that cannot be sent an
-          // image has to say so.
+          // Absent means yes: only a model that cannot be sent an image has to say so.
           return { id, label, vision: m.vision === undefined ? true : !!m.vision };
         });
         break;
@@ -365,7 +343,7 @@ export function validateSettingsPatch(
       }
       case "field_options": {
         if (!isObject(value)) throw new SettingsError("field_options must be an object");
-        const merged: Record<string, string[]> = { ...effectiveSettings(next).field_options };
+        const merged: Record<string, string[]> = { ...next.field_options };
         for (const [column, ids] of Object.entries(value)) {
           if (!(CHOICE_FIELD_KEYS as readonly string[]).includes(column)) {
             throw new SettingsError(
@@ -398,7 +376,7 @@ export function validateSettingsPatch(
       }
       case "config_defaults": {
         if (!isObject(value)) throw new SettingsError("config_defaults must be an object");
-        const merged: Record<string, unknown> = { ...effectiveSettings(next).config_defaults };
+        const merged: Record<string, unknown> = { ...next.config_defaults };
         for (const [column, setting] of Object.entries(value)) {
           if (!(SETTABLE_CONFIG_KEYS as readonly string[]).includes(column)) {
             throw new SettingsError(
@@ -406,18 +384,23 @@ export function validateSettingsPatch(
             );
           }
           if (setting === null) {
-            delete merged[column];
-            continue;
+            throw new SettingsError(`config_defaults.${column} cannot be unset: every setting is required`);
           }
           merged[column] = validateConfigDefault(column as SettableConfigKey, setting);
         }
-        next.config_defaults = merged as Partial<Pick<Config, SettableConfigKey>>;
+        next.config_defaults = merged as Pick<Config, SettableConfigKey>;
         break;
       }
-      case "default_model":
+      case "default_model": {
+        if (typeof value !== "string" || !value.trim()) {
+          throw new SettingsError("default_model must be a model id");
+        }
+        next.default_model = value.trim();
+        break;
+      }
       case "system_prompt": {
         if (typeof value !== "string") throw new SettingsError(`${key} must be a string`);
-        next[field.key] = value;
+        next.system_prompt = value;
         break;
       }
       default: {
@@ -428,15 +411,17 @@ export function validateSettingsPatch(
 
   // A page default above its own ceiling would clamp to the ceiling on every read,
   // which reads as the default being ignored. Refuse instead of silently winning.
-  const merged = effectiveSettings(next);
-  if (merged.message_page > merged.max_message_page) {
-    throw new SettingsError("message_page cannot exceed max_message_page");
-  }
-  if (merged.agent_page > merged.max_agent_page) {
-    throw new SettingsError("agent_page cannot exceed max_agent_page");
-  }
-  if (merged.session_page > merged.max_session_page) {
-    throw new SettingsError("session_page cannot exceed max_session_page");
+  // Checked once both halves of a pair are set; until then there is nothing to compare.
+  for (const [page, max] of [
+    ["message_page", "max_message_page"],
+    ["agent_page", "max_agent_page"],
+    ["session_page", "max_session_page"],
+  ] as const) {
+    const size = next[page];
+    const ceiling = next[max];
+    if (size !== undefined && ceiling !== undefined && size > ceiling) {
+      throw new SettingsError(`${page} cannot exceed ${max}`);
+    }
   }
 
   return next;
@@ -472,15 +457,18 @@ function validateConfigDefault(column: SettableConfigKey, value: unknown): numbe
   return id;
 }
 
-/** Read a stored patch back, tolerating the row never having been written. */
-export function parseSettingsPatch(json: string): SettingsPatch {
+/**
+ * Read the stored document back, tolerating the row never having been written.
+ *
+ * A row nobody can parse reads as empty, which `completeSettings` then refuses field
+ * by field — the owner sees what to set rather than a parse error.
+ */
+export function parseStoredSettings(json: string): StoredSettings {
   if (!json) return {};
   try {
     const parsed = JSON.parse(json);
-    return isObject(parsed) ? (parsed as SettingsPatch) : {};
+    return isObject(parsed) ? (parsed as StoredSettings) : {};
   } catch {
-    // A document nobody can read is not worth failing every request over; the factory
-    // values are a working deployment, which is more than a 500 on every route is.
     return {};
   }
 }
@@ -515,22 +503,26 @@ function directoryStub(env: Env) {
 /**
  * The deployment's settings, cached for `SETTINGS_TTL`.
  *
- * Use this everywhere a ceiling or a default is needed. It never throws: a directory
- * that cannot be reached yields the factory values, because a deployment running on
- * its shipped defaults is a working deployment and a 500 on every route is not.
+ * Use this everywhere a ceiling or a default is needed. Throws
+ * `SettingsIncompleteError` while any field is unset — an incomplete document is never
+ * cached, so the request after the owner fills it in is served. A directory that
+ * cannot be reached keeps the last complete copy this isolate read, if it has one;
+ * with none, the error goes to the caller, because there is nothing else to serve.
  */
 export async function deploymentSettings(env: Env): Promise<DeploymentSettings> {
   const now = Date.now();
   if (cached && now - cached.at < SETTINGS_TTL) return cached.value;
+  let stored: StoredSettings;
   try {
-    const value = await directoryStub(env).settings();
-    cached = { at: now, value };
-    return value;
-  } catch {
-    const value = cached?.value ?? { ...FACTORY_SETTINGS };
-    cached = { at: now, value };
-    return value;
+    stored = await directoryStub(env).storedSettings();
+  } catch (err) {
+    if (!cached) throw err;
+    cached = { at: now, value: cached.value };
+    return cached.value;
   }
+  const value = completeSettings(stored);
+  cached = { at: now, value };
+  return value;
 }
 
 /**

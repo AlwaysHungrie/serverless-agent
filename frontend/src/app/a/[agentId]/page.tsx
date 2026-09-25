@@ -7,8 +7,6 @@ import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
 import { Welcome } from "@/components/Welcome";
 import {
-  MESSAGE_PAGE,
-  SESSION_PAGE,
   telegramLink,
   whatsappLink,
   type AgentRow,
@@ -133,7 +131,7 @@ export default function AgentPage({
   const loadSessions = useCallback(async () => {
     const payload = await readJson<SessionPage>(
       await apiFetch(
-        `/api/agents/${encodeURIComponent(agentId)}/sessions?limit=${SESSION_PAGE}`,
+        `/api/agents/${encodeURIComponent(agentId)}/sessions`,
       ),
     );
     setSessions(payload?.sessions ?? []);
@@ -149,8 +147,8 @@ export default function AgentPage({
     if (!sessionCursor.more || !sessionCursor.cursor) return;
     const payload = await readJson<SessionPage>(
       await apiFetch(
-        `/api/agents/${encodeURIComponent(agentId)}/sessions?limit=${SESSION_PAGE}` +
-          `&cursor=${encodeURIComponent(sessionCursor.cursor)}`,
+        `/api/agents/${encodeURIComponent(agentId)}/sessions` +
+          `?cursor=${encodeURIComponent(sessionCursor.cursor)}`,
       ),
     );
     if (!payload) return;
@@ -188,7 +186,7 @@ export default function AgentPage({
     if (!selected) return;
     void (async () => {
       const res = await apiFetch(
-        `/api/sessions/${encodeURIComponent(selected)}/messages?limit=${MESSAGE_PAGE}`,
+        `/api/sessions/${encodeURIComponent(selected)}/messages`,
       );
       const payload = await readJson<TranscriptPage>(res);
       if (!payload) return;
@@ -212,7 +210,7 @@ export default function AgentPage({
       if (!selected) return null;
       const res = await apiFetch(
         `/api/sessions/${encodeURIComponent(selected)}/messages` +
-          `?limit=${MESSAGE_PAGE}&before=${encodeURIComponent(beforeId)}`,
+          `?before=${encodeURIComponent(beforeId)}`,
       );
       return await readJson<TranscriptPage>(res);
     },

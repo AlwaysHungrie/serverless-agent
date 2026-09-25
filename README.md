@@ -10,6 +10,7 @@ memories and sessions. The home page lists them; each one has a page of its own.
 ```
 agent/      Cloudflare Worker + Durable Objects (the agent itself)
 frontend/   Next.js app (AI SDK useChat, streaming, cost display)
+admin-cli/  Owner dashboard: counts, limit requests, deployment settings + their defaults
 ```
 
 New here? [docs/architecture.md](docs/architecture.md) explains the Cloudflare primitives
@@ -33,6 +34,18 @@ The frontend is pnpm.
 optional, and a deployment without one simply has one fewer way in. There is no
 deployment-wide OpenRouter key: every agent is given its own under Settings, and an
 agent without one cannot answer. See `.dev.vars.example`.
+
+The worker answers every request with **503** until its deployment settings are set
+(see [Deployment settings](#deployment-settings) below). On a fresh local worker, once
+`npm run dev` is up:
+
+```bash
+cd admin-cli && npm run init -- --dev         # writes the shipped defaults
+```
+
+`admin-cli/.env` holds the URL and `API_SECRET` for each target — `AGENT_URL` /
+`API_SECRET` for production, the `_DEV` and `_STAGING` pairs for the others. See
+`admin-cli/.env.example`.
 
 ```bash
 # 2. the frontend
@@ -63,6 +76,69 @@ localStorage.API_EMAIL  = "whoever@example.com"
 Reload and you are them. Nothing in the app writes either key — devtools is the only way
 in. The frontend never holds the secret; it lives in one browser and in the worker. See
 `agent/README.md`.
+
+## Deployment settings
+
+Every limit and default the worker uses is a runtime setting: sessions per agent, file
+storage, upload sizes, page sizes, tool rounds, the model list, the model a new agent
+starts on, the system prompt, the starting value of each capability, and so on. They are
+stored in the deployment and edited from `admin-cli` (`npm start`, then `s`), with no
+redeploy.
+
+The worker has no built-in values for any of them. Their defaults ship with the admin
+CLI, in [admin-cli/defaults.json](admin-cli/defaults.json), and have to be written to
+each deployment before it will serve.
+
+What that means in practice:
+
+- **A worker with any setting unset returns 503** to every request except
+  `/api/admin/settings` and `/api/admin/stats`, with the names of the unset fields in
+  the response. This applies to a brand-new deployment, a fresh local `wrangler dev`
+  database, and a deployment whose stored settings are partial.
+- **`npm run init`** in `admin-cli` writes the default from `defaults.json` for every
+  field that is unset. Fields already set are left alone. Add `-- --dev` or
+  `-- --staging` to target those.
+- **`npm run check`** in `admin-cli` exits 1 and lists the unset fields, or exits 0 when
+  everything is set.
+- **The admin CLI dashboard** opens on the settings screen when anything is unset. Unset
+  rows are marked `!`; `i` fills them with the defaults, `r` sets one row to its
+  default, `R` sets every row to its default.
+- **Settings cannot be unset or reset.** `PATCH /api/admin/settings` refuses `null`, and
+  there is no `DELETE`. Change a value by setting a new one.
+
+### Deploying
+
+`npm run deploy` (and `deploy:staging`) in `agent/`:
+
+1. typechecks and runs the test suite,
+2. runs the preflight, which calls `admin-cli check` against the live deployment and
+   **refuses to deploy if any setting is unset**,
+3. runs `wrangler deploy`,
+4. runs `admin-cli init` against the deployment it just shipped.
+
+Step 4 covers a release that adds a new setting: the previous worker rejects keys it
+does not know, so a new setting can only be written after the release that defines it
+is live. `init` writes its default straight away.
+
+If the preflight refuses, run `npm run init` (or `npm run init -- --staging`) in
+`admin-cli`, then deploy again. This works against the worker that is currently live,
+including one older than this change.
+
+### First deploy onto a worker older than deployment settings
+
+A live worker from before the settings route answers `/api/admin/settings` with 401,
+because the route falls through to the sign-in check. `check` detects this — the same
+secret still opens `/api/admin/stats` — and exits **2** instead of 1. The preflight
+allows exit 2, the deploy installs the settings route, and step 4 writes the defaults.
+The new worker returns 503 for the few seconds between `wrangler deploy` and `init`.
+
+A wrong `API_SECRET` fails on both routes and still exits 1, so it cannot pass as this
+case.
+
+### Adding a setting
+
+Add the field to `agent/src/settings.ts` and its default to `admin-cli/defaults.json`.
+A test fails if the two disagree.
 
 ## What the UI shows
 

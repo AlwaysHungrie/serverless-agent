@@ -1,5 +1,5 @@
 import type { Config, Memory, SessionRegistry } from "./registry";
-import { FACTORY_SETTINGS, type DeploymentSettings } from "./settings";
+import type { DeploymentSettings } from "./settings";
 import {
   McpClient,
   McpUnauthorized,
@@ -445,15 +445,6 @@ export type ToolSpec = {
 };
 
 const str = (v: unknown, fallback = "") => (typeof v === "string" ? v : fallback);
-
-/**
- * How much text one voice note may carry, as this Worker ships. A spoken minute is
- * about 150 words, so this is roughly two minutes — past which a note stops being a
- * note, and every character is billed as audio on the way out.
- *
- * The number enforced is `ctx.settings.voice_note_limit`, which starts here.
- */
-const VOICE_NOTE_LIMIT = FACTORY_SETTINGS.voice_note_limit;
 
 /** What the speaking model is told, so it reads the words instead of replying to them. */
 const SPEAK_PROMPT =

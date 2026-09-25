@@ -3,11 +3,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_CONFIG,
   sessionIdForChat,
-  MAX_AGENT_BYTES,
-  MAX_SESSIONS,
   sessionLimitMessage,
   thisMonth,
 } from "../src/registry";
+import { SHIPPED } from "./shipped";
+
+const SEED = SHIPPED.config_defaults;
+const MAX_AGENT_BYTES = SHIPPED.max_agent_bytes;
+const MAX_SESSIONS = SHIPPED.max_sessions;
 
 /**
  * `SessionRegistry` — one agent's own object: its settings, its access list, its
@@ -43,34 +46,34 @@ beforeEach(() => {
 
 describe("config", () => {
   it("seeds from the Worker's default model on first read", async () => {
-    const config = await reg.config("vendor/default");
+    const config = await reg.config("vendor/default", SEED);
     expect(config.model).toBe("vendor/default");
-    expect(config.temperature).toBe(DEFAULT_CONFIG.temperature);
+    expect(config.temperature).toBe(SEED.temperature);
   });
 
   it("keeps the seeded row rather than re-seeding on later reads", async () => {
-    await reg.config("vendor/first");
+    await reg.config("vendor/first", SEED);
     // The default changing in wrangler.jsonc must not silently re-point an agent
     // somebody has already configured.
-    expect((await reg.config("vendor/second")).model).toBe("vendor/first");
+    expect((await reg.config("vendor/second", SEED)).model).toBe("vendor/first");
   });
 
   it("applies a partial patch and leaves everything else alone", async () => {
-    await reg.config("vendor/default");
-    const patched = await reg.setConfig({ temperature: 0.1 }, "vendor/default");
+    await reg.config("vendor/default", SEED);
+    const patched = await reg.setConfig({ temperature: 0.1 }, "vendor/default", SEED);
     expect(patched.temperature).toBe(0.1);
     expect(patched.model).toBe("vendor/default");
     expect(patched.system_prompt).toBe(DEFAULT_CONFIG.system_prompt);
   });
 
   it("persists a patch across reads", async () => {
-    await reg.setConfig({ agent_name: "Ada" }, "vendor/default");
-    expect((await reg.config("vendor/default")).agent_name).toBe("Ada");
+    await reg.setConfig({ agent_name: "Ada" }, "vendor/default", SEED);
+    expect((await reg.config("vendor/default", SEED)).agent_name).toBe("Ada");
   });
 
   it("round-trips every capability flag", async () => {
-    await reg.setConfig({ cap_web_search: 1, cap_memory: 1 }, "vendor/default");
-    const config = await reg.config("vendor/default");
+    await reg.setConfig({ cap_web_search: 1, cap_memory: 1 }, "vendor/default", SEED);
+    const config = await reg.config("vendor/default", SEED);
     expect(config.cap_web_search).toBe(1);
     expect(config.cap_memory).toBe(1);
     expect(config.cap_vision).toBe(0);
@@ -134,14 +137,14 @@ describe("access", () => {
 
 describe("storage accounting", () => {
   it("starts empty and reports the ceiling", async () => {
-    expect(await reg.storageState()).toEqual({ bytes: 0, limit: MAX_AGENT_BYTES });
+    expect(await reg.storageState(MAX_AGENT_BYTES)).toEqual({ bytes: 0, limit: MAX_AGENT_BYTES });
   });
 
   it("adds and subtracts bytes", async () => {
     await reg.addStorageBytes(1000);
     await reg.addStorageBytes(500);
     await reg.addStorageBytes(-200);
-    expect((await reg.storageState()).bytes).toBe(1300);
+    expect((await reg.storageState(MAX_AGENT_BYTES)).bytes).toBe(1300);
   });
 
   it("clamps at zero rather than going negative", async () => {
@@ -149,7 +152,7 @@ describe("storage accounting", () => {
     await reg.addStorageBytes(-500);
     // The total is a running estimate that can drift; going negative would hand the
     // agent more headroom than the ceiling allows.
-    expect((await reg.storageState()).bytes).toBe(0);
+    expect((await reg.storageState(MAX_AGENT_BYTES)).bytes).toBe(0);
   });
 
   it("ignores values that are not usable numbers", async () => {
@@ -157,17 +160,17 @@ describe("storage accounting", () => {
     await reg.addStorageBytes(0);
     await reg.addStorageBytes(NaN);
     await reg.addStorageBytes(Infinity);
-    expect((await reg.storageState()).bytes).toBe(1000);
+    expect((await reg.storageState(MAX_AGENT_BYTES)).bytes).toBe(1000);
   });
 
   it("reports the room left", async () => {
     await reg.addStorageBytes(1_000_000);
-    expect(await reg.storageRoom()).toBe(MAX_AGENT_BYTES - 1_000_000);
+    expect(await reg.storageRoom(MAX_AGENT_BYTES)).toBe(MAX_AGENT_BYTES - 1_000_000);
   });
 
   it("never reports negative room once over the ceiling", async () => {
     await reg.addStorageBytes(MAX_AGENT_BYTES + 5_000_000);
-    expect(await reg.storageRoom()).toBe(0);
+    expect(await reg.storageRoom(MAX_AGENT_BYTES)).toBe(0);
   });
 });
 
@@ -203,26 +206,26 @@ describe("spend accounting", () => {
 
 describe("sessions", () => {
   it("creates and reads back a session", async () => {
-    const created = await reg.create("s1", "First", "obj1");
+    const created = await reg.create("s1", "First", "obj1", undefined, MAX_SESSIONS);
     expect(created.id).toBe("s1");
     expect((await reg.get("s1"))?.title).toBe("First");
   });
 
   it("counts sessions", async () => {
-    await reg.create("s1", "one", "o1");
-    await reg.create("s2", "two", "o2");
+    await reg.create("s1", "one", "o1", undefined, MAX_SESSIONS);
+    await reg.create("s2", "two", "o2", undefined, MAX_SESSIONS);
     expect(await reg.sessionCount()).toBe(2);
   });
 
   it("treats a repeated id as an update, not a second session", async () => {
-    await reg.create("s1", "one", "o1");
-    await reg.create("s1", "renamed", "o1");
+    await reg.create("s1", "one", "o1", undefined, MAX_SESSIONS);
+    await reg.create("s1", "renamed", "o1", undefined, MAX_SESSIONS);
     expect(await reg.sessionCount()).toBe(1);
     expect((await reg.get("s1"))?.title).toBe("renamed");
   });
 
   it("renames and deletes", async () => {
-    await reg.create("s1", "one", "o1");
+    await reg.create("s1", "one", "o1", undefined, MAX_SESSIONS);
     await reg.rename("s1", "two");
     expect((await reg.get("s1"))?.title).toBe("two");
     await reg.remove("s1");
@@ -234,9 +237,9 @@ describe("sessions", () => {
   });
 
   it("lists newest first", async () => {
-    await reg.create("s1", "one", "o1");
+    await reg.create("s1", "one", "o1", undefined, MAX_SESSIONS);
     nextMs();
-    await reg.create("s2", "two", "o2");
+    await reg.create("s2", "two", "o2", undefined, MAX_SESSIONS);
     const page = await reg.list(10);
     expect(page.sessions.map((s) => s.id)).toEqual(["s2", "s1"]);
   });
@@ -244,8 +247,8 @@ describe("sessions", () => {
   it("breaks a tie on id so the order is total", async () => {
     // Two sessions written in the same millisecond must still come back in a fixed
     // order, or the keyset cursor cannot page them without skipping or repeating.
-    await reg.create("b", "b", "ob");
-    await reg.create("a", "a", "oa");
+    await reg.create("b", "b", "ob", undefined, MAX_SESSIONS);
+    await reg.create("a", "a", "oa", undefined, MAX_SESSIONS);
     // "a" is written second, so it wins on `updated_at DESC` when the clock moved and
     // on `id ASC` when it did not. Same answer either way, which is the point: the
     // order does not depend on timing.
@@ -253,7 +256,7 @@ describe("sessions", () => {
   });
 
   it("pages with a cursor rather than an offset", async () => {
-    for (let i = 0; i < 5; i++) await reg.create(`s${i}`, `t${i}`, `o${i}`);
+    for (let i = 0; i < 5; i++) await reg.create(`s${i}`, `t${i}`, `o${i}`, undefined, MAX_SESSIONS);
     const first = await reg.list(2);
     expect(first.sessions).toHaveLength(2);
     expect(first.cursor).toBeTruthy();
@@ -266,16 +269,16 @@ describe("sessions", () => {
   });
 
   it("ends paging with an empty cursor", async () => {
-    await reg.create("s1", "one", "o1");
+    await reg.create("s1", "one", "o1", undefined, MAX_SESSIONS);
     expect((await reg.list(10)).cursor).toBe("");
   });
 
   it("refuses a new session past the ceiling", async () => {
-    for (let i = 0; i < MAX_SESSIONS; i++) await reg.create(`s${i}`, `t${i}`, `o${i}`);
+    for (let i = 0; i < MAX_SESSIONS; i++) await reg.create(`s${i}`, `t${i}`, `o${i}`, undefined, MAX_SESSIONS);
     // Caught rather than asserted through `.rejects`: a Durable Object RPC stub
     // surfaces the rejection to the runtime as well as to the caller, and `.rejects`
     // leaves the runtime's copy unhandled.
-    const refusal = await reg.create("overflow", "t", "o").then(
+    const refusal = await reg.create("overflow", "t", "o", undefined, MAX_SESSIONS).then(
       () => null,
       (err: unknown) => (err instanceof Error ? err.message : String(err))
     );
@@ -283,10 +286,10 @@ describe("sessions", () => {
   });
 
   it("still allows updating an existing session at the ceiling", async () => {
-    for (let i = 0; i < MAX_SESSIONS; i++) await reg.create(`s${i}`, `t${i}`, `o${i}`);
+    for (let i = 0; i < MAX_SESSIONS; i++) await reg.create(`s${i}`, `t${i}`, `o${i}`, undefined, MAX_SESSIONS);
     // Otherwise renaming the oldest session starts failing the moment an agent fills
     // up, which is precisely when someone is trying to tidy it.
-    await expect(reg.create("s0", "renamed", "o0")).resolves.toMatchObject({ id: "s0" });
+    await expect(reg.create("s0", "renamed", "o0", undefined, MAX_SESSIONS)).resolves.toMatchObject({ id: "s0" });
   });
 });
 
@@ -300,7 +303,7 @@ describe("telegram chat sessions", () => {
   });
 
   it("finds the session for a chat", async () => {
-    await reg.create("s1", "chat", "o1", origin("999"));
+    await reg.create("s1", "chat", "o1", origin("999"), MAX_SESSIONS);
     expect((await reg.forChat("999"))?.id).toBe("s1");
   });
 
@@ -309,8 +312,8 @@ describe("telegram chat sessions", () => {
   });
 
   it("keeps a forum topic separate from its group", async () => {
-    await reg.create("group", "g", "o1", origin("999"));
-    await reg.create("topic", "t", "o2", origin("999", "7"));
+    await reg.create("group", "g", "o1", origin("999"), MAX_SESSIONS);
+    await reg.create("topic", "t", "o2", origin("999", "7"), MAX_SESSIONS);
     // A group's own session must never answer for a topic inside it, or two
     // conversations share one transcript.
     expect((await reg.forChat("999"))?.id).toBe("group");
@@ -318,7 +321,7 @@ describe("telegram chat sessions", () => {
   });
 
   it("detaches a chat so the session stops answering for it", async () => {
-    await reg.create("s1", "chat", "o1", origin("999"));
+    await reg.create("s1", "chat", "o1", origin("999"), MAX_SESSIONS);
     await reg.detachChat("s1");
     expect(await reg.forChat("999")).toBeUndefined();
   });
@@ -485,7 +488,7 @@ describe("schema ladder", () => {
     // columns, and it will never run the baseline again. Reproduced by winding a
     // finished database back to where such an agent actually stands — the columns
     // gone, the recorded version one rung short of the end.
-    await reg.config("vendor/default");
+    await reg.config("vendor/default", SEED);
     await runInDurableObject(reg, (instance, ctx) => {
       for (const col of whatsappColumns) {
         ctx.storage.sql.exec(`ALTER TABLE config DROP COLUMN ${col}`);
@@ -498,7 +501,7 @@ describe("schema ladder", () => {
 
     // Every read of the settings names every column, so this is the call that was
     // throwing `no such column: cap_whatsapp` — including from deleting the agent.
-    const config = await reg.config("vendor/default");
+    const config = await reg.config("vendor/default", SEED);
     expect(config.cap_whatsapp).toBe(0);
     expect(config.whatsapp_number).toBe("");
   });
@@ -506,12 +509,12 @@ describe("schema ladder", () => {
   it("leaves an agent that already has the columns alone", async () => {
     // The deploy that first shipped WhatsApp put these columns in the baseline, so
     // agents created under it have them and still have the new rung to run.
-    await reg.config("vendor/default");
+    await reg.config("vendor/default", SEED);
     await runInDurableObject(reg, (instance, ctx) => {
       ctx.storage.sql.exec(`UPDATE schema_migrations SET version = 2 WHERE id = 1`);
       (instance as unknown as { ready: boolean }).ready = false;
     });
-    await reg.setConfig({ whatsapp_number: "+15550001111" }, "vendor/default");
-    expect((await reg.config("vendor/default")).whatsapp_number).toBe("+15550001111");
+    await reg.setConfig({ whatsapp_number: "+15550001111" }, "vendor/default", SEED);
+    expect((await reg.config("vendor/default", SEED)).whatsapp_number).toBe("+15550001111");
   });
 });

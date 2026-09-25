@@ -59,7 +59,9 @@ import { mcpServerReady, withMcpAuth } from "./capabilities";
 import { clerkEmail } from "./clerk";
 import {
   SETTINGS_FIELDS,
+  SettingsIncompleteError,
   deploymentSettings,
+  missingSettings,
   forgetCachedSettings,
   type DeploymentSettings,
 } from "./settings";
@@ -116,12 +118,12 @@ function directory(env: Env) {
  *
  * Every route that wants a config goes through here rather than calling
  * `readConfig(env, reg)`, because the model a new agent starts on and the values its
- * columns start at are both deployment settings now, and a route that passed only
- * `env.MODEL` would quietly seed the agent from the factory values instead.
+ * columns start at are both deployment settings, and a route that skipped them would
+ * seed the agent with nothing.
  */
 async function readConfig(env: Env, reg: ReturnType<typeof registry>) {
   const settings = await deploymentSettings(env);
-  return await reg.config(settings.default_model || env.MODEL, settings.config_defaults);
+  return await reg.config(settings.default_model, settings.config_defaults);
 }
 
 /** As `readConfig`, writing a patch over it. */
@@ -131,7 +133,7 @@ async function writeConfig(
   patch: Parameters<ReturnType<typeof registry>["setConfig"]>[0]
 ) {
   const settings = await deploymentSettings(env);
-  return await reg.setConfig(patch, settings.default_model || env.MODEL, settings.config_defaults);
+  return await reg.setConfig(patch, settings.default_model, settings.config_defaults);
 }
 
 /**
@@ -1602,7 +1604,7 @@ async function handleFleets(
           fleet,
           meta: redactMeta(await stored()),
           // The catalogues the dialog picks from; it keeps no copy of its own.
-          models: modelCatalog(env, await deploymentSettings(env)),
+          models: modelCatalog(await deploymentSettings(env)),
           capabilities: CAPABILITIES,
         })
       );
@@ -1683,7 +1685,7 @@ async function handleFleets(
         ? body.allowed_emails
         : (body.allowed_emails ?? "").split(/[\n,;]/)
     )
-      .map((entry) => normalizeEmails([entry]))
+      .map((entry) => normalizeEmails([entry], 1))
       .filter(Boolean);
     if (!members.length) {
       return withCors(Response.json({ error: "at least one email is required" }, { status: 400 }));
@@ -1988,7 +1990,7 @@ async function handleAgents(
           ? body.allowed_emails
           : (body.allowed_emails ?? "").split(/[\n,;]/)
       )
-        .map((entry) => normalizeEmails([entry]))
+        .map((entry) => normalizeEmails([entry], 1))
         .filter(Boolean);
       const members = fleetName ? fleetMembers : [allowed];
       if (owned + members.length > limit) {
@@ -2051,7 +2053,7 @@ async function handleAgents(
     const settings = await deploymentSettings(env);
     return withCors(
       Response.json({
-        models: modelCatalog(env, settings),
+        models: modelCatalog(settings),
         capabilities: notedCapabilities(capabilitiesFor(DEFAULT_META, settings), settings),
       })
     );
@@ -2222,7 +2224,7 @@ async function handleAgents(
           // page shows it beside the list; the Worker is what actually refuses a
           // list that goes over.
           member_limit: meta.member_limit,
-          models: modelOptions(meta.models, modelCatalog(env, await deploymentSettings(env))),
+          models: modelOptions(meta.models, modelCatalog(await deploymentSettings(env))),
           capabilities: notedCapabilities(
             capabilitiesFor(meta, await deploymentSettings(env)),
             await deploymentSettings(env)
@@ -2325,7 +2327,7 @@ async function handleAgents(
           config: redact(await readConfig(env, reg)),
           // The catalogues the dialog picks from: it never keeps its own copy of
           // what models exist or what a capability's fields are.
-          models: modelCatalog(env, await deploymentSettings(env)),
+          models: modelCatalog(await deploymentSettings(env)),
           capabilities: CAPABILITIES,
           // What the agent has spent this month, so the ceiling beside it is set
           // against a number rather than a guess.
@@ -2866,6 +2868,24 @@ export default {
     const url = new URL(request.url);
     const segments = url.pathname.split("/").filter(Boolean);
 
+    // No settings, no service. This Worker holds no values of its own for its ceilings
+    // and defaults, so until every one is set it answers nothing but the two routes the
+    // admin CLI needs to set them: the settings themselves, and the stats it opens on.
+    const settingUp =
+      segments[0] === "api" &&
+      segments[1] === "admin" &&
+      (segments[2] === "settings" || segments[2] === "stats");
+    if (!settingUp) {
+      try {
+        await deploymentSettings(env);
+      } catch (err) {
+        if (!(err instanceof SettingsIncompleteError)) throw err;
+        return withCors(
+          Response.json({ error: err.message, missing: err.missing }, { status: 503 })
+        );
+      }
+    }
+
     // The provider's redirect. One fixed path for every agent, because the redirect
     // URI is registered with the provider and cannot carry an agent id — so it is
     // matched before anything else under /api/mcp, and the agent comes out of the
@@ -2911,24 +2931,25 @@ export default {
     // of their own, and none of this is any account's own data.
     //
     // GET returns three things, because the admin CLI needs all three and should not
-    // hold a copy of any of them: the document in force, the subset of it this
-    // deployment has actually decided (so a dialog can show what is default and what
-    // is not), and the field descriptors — key, kind, range, one line of prose — so a
-    // field added to `settings.ts` appears in the CLI without a second edit.
+    // hold a copy of any of them: the stored document, which fields it is still missing
+    // (the deployment refuses to serve until that list is empty), and the field
+    // descriptors — key, kind, range, one line of prose — so a field added to
+    // `settings.ts` appears in the CLI without a second edit.
     //
-    // PATCH merges. A key set to null stops being an override, which puts that field
-    // back on the factory value and keeps it there as the factory value moves. DELETE
-    // does that for every field at once.
+    // PATCH merges. There is no unset and no reset: every field is required, and the
+    // values a fresh deployment starts from ship with the admin CLI, not with this
+    // Worker.
     if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "settings") {
       if (!trustedCaller(request, env)) {
         return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
       }
       const dir = directory(env);
       if (request.method === "GET") {
+        const settings = await dir.storedSettings();
         return withCors(
           Response.json({
-            settings: await dir.settings(),
-            overrides: await dir.settingsPatch(),
+            settings,
+            missing: missingSettings(settings),
             fields: SETTINGS_FIELDS,
           })
         );
@@ -2943,11 +2964,6 @@ export default {
         // the cached copy, and it costs one read.
         forgetCachedSettings();
         return withCors(Response.json({ ...saved, fields: SETTINGS_FIELDS }));
-      }
-      if (request.method === "DELETE") {
-        const settings = await dir.resetSettings();
-        forgetCachedSettings();
-        return withCors(Response.json({ settings, overrides: {}, fields: SETTINGS_FIELDS }));
       }
       return withCors(Response.json({ error: "method not allowed" }, { status: 405 }));
     }
@@ -3148,7 +3164,7 @@ export default {
             whatsapp: "GET|POST /whatsapp/webhook/:agentId  -> GET verifies the subscription, POST delivers a message",
             admin: "POST /api/admin/business-account { email, agent_limit }, GET /api/admin/stats  -> owner only, via API_SECRET",
             settings:
-              "GET /api/admin/settings -> { settings, overrides, fields }; PATCH /api/admin/settings { <field>: value | null }; DELETE /api/admin/settings -> owner only, via API_SECRET",
+              "GET /api/admin/settings -> { settings, missing, fields }; PATCH /api/admin/settings { <field>: value } -> owner only, via API_SECRET",
             business_requests: "POST /api/business-requests { increase } -> signed-in caller; GET /api/admin/business-requests, POST .../:id/approve, DELETE .../:id -> owner only, via API_SECRET",
           },
           note: "A session id is `<agentId>~<local>`; every /agents/session-agent route takes that whole id.",

@@ -14,9 +14,15 @@
   catalogue) is one runtime document — no deploy needed.
 - Defined in `agent/src/settings.ts`, stored in `AgentDirectory`, edited from the
   `admin-cli` settings screen (`s` on the list screen).
-- Routes: `GET|PATCH|DELETE /api/admin/settings`, same `x-api-secret` gate as below.
-- Only overrides are stored: a field nobody set keeps tracking `FACTORY_SETTINGS`, and
-  `null` on a field removes the override rather than pinning the current number.
+- Routes: `GET|PATCH /api/admin/settings`, same `x-api-secret` gate as below.
+- No hardcoded fallbacks: every field is required. Until the stored document is complete
+  the Worker 503s every route except `/api/admin/settings` and `/api/admin/stats`, and
+  `npm run deploy` refuses (preflight runs `admin-cli check`). Deploy scripts run
+  `admin-cli init` after `wrangler deploy`; `check` exits 2 (allowed) only when the
+  live Worker predates the settings route — the one-time bootstrap.
+- Shipped defaults live in `admin-cli/defaults.json`; `npm run init` in `admin-cli`
+  writes them for every unset field. Adding a setting = field in `settings.ts` + its
+  default in `defaults.json` (a test checks the two agree).
 
 # Admin: business account limits
 

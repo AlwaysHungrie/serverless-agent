@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 /**
- * Refuse to deploy a Worker that would come up unguarded.
+ * Refuse to deploy a Worker that would come up unguarded, or unconfigured.
  *   node scripts/preflight.mjs [--env <name>]
+ *
+ * Unconfigured means the deployment settings: the Worker ships no ceilings or defaults
+ * of its own and refuses every request until each one is set, so a deploy onto an
+ * incomplete document is a deploy onto a Worker that answers nothing. The check is the
+ * admin CLI's own (`admin-cli check`), against the live deployment.
  *
  * Runs ahead of `wrangler deploy`, because the version that matters is the one that
  * is already live. The Worker itself also refuses to serve without `API_SECRET` — see
@@ -95,6 +100,31 @@ if (!vars.CLERK_ISSUER && !secrets.includes("CLERK_ISSUER")) {
     "Add it to `vars` in wrangler.jsonc — it is a public URL, not a secret:",
     "",
     '    "CLERK_ISSUER": "https://<subdomain>.clerk.accounts.dev"',
+  ]);
+}
+
+// The deployment settings, as the live Worker holds them. The admin CLI reads its own
+// `.env` for the URL and secret — `--staging` picks that environment's pair.
+//
+// Exit 2 is the one-time bootstrap: the live Worker predates settings, so there is no
+// document to check and no route to write one through until this deploy installs it.
+// Let through; the deploy script runs `admin-cli init` straight after `wrangler deploy`.
+try {
+  execFileSync(
+    process.execPath,
+    [join(root, "..", "admin-cli", "index.mjs"), "check", ...(targetEnv ? [`--${targetEnv}`] : [])],
+    { stdio: "inherit" }
+  );
+} catch (err) {
+  if (err.status === 2) {
+    console.log("  preflight: bootstrapping deployment settings — `init` runs after the deploy.");
+  } else fail([
+    "The deployment settings are incomplete, or could not be read (see above).",
+    "",
+    "The Worker has no values of its own for its ceilings and defaults, and refuses",
+    "every request until each one is set. From admin-cli:",
+    "",
+    `    npm run init${targetEnv ? ` -- --${targetEnv}` : ""}      # write the shipped defaults for every unset field`,
   ]);
 }
 

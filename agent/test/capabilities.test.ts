@@ -13,6 +13,7 @@ import {
   type ToolSpec,
 } from "../src/capabilities";
 import { DEFAULT_CONFIG, type Config } from "../src/registry";
+import { SHIPPED } from "./shipped";
 
 /**
  * What the agent is allowed to do on a given turn.
@@ -25,6 +26,7 @@ import { DEFAULT_CONFIG, type Config } from "../src/registry";
 
 const config = (patch: Partial<Config> = {}): Config => ({
   model: "vendor/model",
+  ...SHIPPED.config_defaults,
   ...DEFAULT_CONFIG,
   ...patch,
 });
@@ -222,13 +224,13 @@ describe("the capability catalogue itself", () => {
     // A flag with no column is a switch that silently does nothing.
     for (const capability of CAPABILITIES) {
       if (capability.alwaysOn) continue;
-      expect(Object.keys(DEFAULT_CONFIG)).toContain(capability.flag);
+      expect(Object.keys(config())).toContain(capability.flag);
     }
   });
 
   it("names a config column for every credential field", () => {
     for (const field of CAPABILITIES.flatMap((c) => c.fields)) {
-      expect(Object.keys(DEFAULT_CONFIG)).toContain(field.key);
+      expect(Object.keys(config())).toContain(field.key);
     }
   });
 

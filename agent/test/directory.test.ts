@@ -1,6 +1,8 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_AGENT_LIMIT } from "../src/registry";
+import { SHIPPED } from "./shipped";
+
+const DEFAULT_AGENT_LIMIT = SHIPPED.default_agent_limit;
 
 /**
  * `AgentDirectory` — the one object that knows which agents exist, who administers
@@ -17,8 +19,10 @@ function directory() {
 }
 
 let dir: ReturnType<typeof directory>;
-beforeEach(() => {
+beforeEach(async () => {
   dir = directory();
+  // A fresh directory holds no settings, and the agent ceiling is one of them.
+  await dir.setSettings(SHIPPED);
 });
 
 describe("creating agents", () => {

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   AGENT_SEPARATOR,
-  MAX_MEMBERS,
   agentIdOf,
   emailAllowed,
   normalizeEmails,
@@ -10,6 +9,9 @@ import {
   splitEmails,
   thisMonth,
 } from "../src/registry";
+import { SHIPPED } from "./shipped";
+
+const MAX_MEMBERS = SHIPPED.max_members;
 
 /**
  * The functions that decide who someone is and what they may open.
@@ -89,41 +91,41 @@ describe("access lists", () => {
 
 describe("normalizeEmails", () => {
   it("accepts commas, semicolons and newlines as separators", () => {
-    expect(normalizeEmails("a@x.com, b@x.com; c@x.com")).toBe("a@x.com\nb@x.com\nc@x.com");
+    expect(normalizeEmails("a@x.com, b@x.com; c@x.com", MAX_MEMBERS)).toBe("a@x.com\nb@x.com\nc@x.com");
   });
 
   it("lowercases and de-duplicates", () => {
-    expect(normalizeEmails(["A@x.com", "a@X.COM", "b@x.com"])).toBe("a@x.com\nb@x.com");
+    expect(normalizeEmails(["A@x.com", "a@X.COM", "b@x.com"], MAX_MEMBERS)).toBe("a@x.com\nb@x.com");
   });
 
   it("drops entries that are not addresses", () => {
     // The box is free text a person pastes into, so prose reaching the list is the
     // ordinary failure, not an exotic one.
-    expect(normalizeEmails("please add bob, bob@x.com")).toBe("bob@x.com");
-    expect(normalizeEmails("not-an-email")).toBe("");
-    expect(normalizeEmails("a@b")).toBe("");
+    expect(normalizeEmails("please add bob, bob@x.com", MAX_MEMBERS)).toBe("bob@x.com");
+    expect(normalizeEmails("not-an-email", MAX_MEMBERS)).toBe("");
+    expect(normalizeEmails("a@b", MAX_MEMBERS)).toBe("");
   });
 
   it("returns an empty list for empty input rather than throwing", () => {
-    expect(normalizeEmails("")).toBe("");
-    expect(normalizeEmails([])).toBe("");
+    expect(normalizeEmails("", MAX_MEMBERS)).toBe("");
+    expect(normalizeEmails([], MAX_MEMBERS)).toBe("");
   });
 
   it("refuses a list longer than the ceiling", () => {
     const tooMany = Array.from({ length: MAX_MEMBERS + 1 }, (_, i) => `u${i}@x.com`);
-    expect(() => normalizeEmails(tooMany)).toThrow(/at most/);
+    expect(() => normalizeEmails(tooMany, MAX_MEMBERS)).toThrow(/at most/);
   });
 
   it("allows a list exactly at the ceiling", () => {
     const exactly = Array.from({ length: MAX_MEMBERS }, (_, i) => `u${i}@x.com`);
-    expect(normalizeEmails(exactly).split("\n")).toHaveLength(MAX_MEMBERS);
+    expect(normalizeEmails(exactly, MAX_MEMBERS).split("\n")).toHaveLength(MAX_MEMBERS);
   });
 
   it("counts duplicates once against the ceiling", () => {
     // De-duplication happens before the check, so a paste with repeats is not refused
     // for a length it does not actually have.
     const dupes = Array.from({ length: MAX_MEMBERS + 10 }, () => "same@x.com");
-    expect(normalizeEmails(dupes)).toBe("same@x.com");
+    expect(normalizeEmails(dupes, MAX_MEMBERS)).toBe("same@x.com");
   });
 });
 

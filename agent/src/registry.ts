@@ -2,13 +2,15 @@ import { DurableObject } from "cloudflare:workers";
 import { McpTokenError, refreshToken, type McpAuth, type McpServerRow } from "./mcp";
 import { addColumnIfMissing, applyMigrations, type Migration } from "./schema";
 import {
-  effectiveSettings,
-  parseSettingsPatch,
+  completeSettings,
+  missingSettings,
+  parseStoredSettings,
   validateSettingsPatch,
-  FACTORY_SETTINGS,
   SettingsError,
+  SETTABLE_CONFIG_KEYS,
   type DeploymentSettings,
-  type SettingsPatch,
+  type SettableConfigKey,
+  type StoredSettings,
 } from "./settings";
 
 /**
@@ -114,41 +116,19 @@ export type Config = {
   whatsapp_number: string;
 };
 
-export const DEFAULT_CONFIG: Omit<Config, "model"> = {
+/**
+ * The per-agent columns every agent starts blank on: its name, its own instructions,
+ * its keys and its channel wiring. Everything else a new agent holds — the model and
+ * every column in `SETTABLE_CONFIG_KEYS` — is the deployment's `default_model` and
+ * `config_defaults`, not a value this code picks.
+ */
+export const DEFAULT_CONFIG: Omit<Config, "model" | SettableConfigKey> = {
   agent_name: "",
   system_prompt: "",
-  temperature: 0.7,
-  max_tokens: 0,
-  reasoning_effort: "off",
-  context_messages: 0,
-
-  cap_web_search: 0,
-  cap_url_fetch: 0,
-  cap_file_ingest: 0,
-  cap_vision: 0,
-  cap_image_generation: 0,
-  cap_audio_input: 0,
-  cap_voice_output: 0,
-  cap_scheduled_tasks: 0,
-  cap_memory: 0,
-  // On from the start: Telegram is how most agents are actually talked to, and the
-  // switch does nothing until a bot token is pasted anyway.
-  cap_telegram: 1,
-  // Off from the start, unlike Telegram: WhatsApp needs a Meta app, a business
-  // portfolio and a system-user token before it can do anything, so an agent that
-  // arrives with the switch on would show a section nobody asked for.
-  cap_whatsapp: 0,
-  // On from the start: an MCP server is only reachable once it has been added and
-  // connected, so the switch guards nothing the servers do not already guard.
-  cap_mcp: 1,
-
   openrouter_api_key: "",
   brave_api_key: "",
   searxng_url: "",
   searxng_token: "",
-  image_model: "google/gemini-2.5-flash-image",
-  transcription_model: "google/gemini-2.5-flash-lite",
-  voice_model: "openai/gpt-audio-mini",
   telegram_bot_token: "",
   telegram_bot_username: "",
   telegram_user_whitelist: "",
@@ -176,7 +156,7 @@ export const DEFAULT_CONFIG: Omit<Config, "model"> = {
 export type MetaSettings = {
   /**
    * The models the settings page may offer, typed in rather than picked: OpenRouter's
-   * catalogue is far larger than the handful a deployment names in `MODELS`, and an
+   * catalogue is far larger than the handful a deployment names in its `models` setting, and an
    * agent that wants one of the others should not need a release. Empty means the
    * deployment's own list.
    *
@@ -242,7 +222,7 @@ export type MetaSettings = {
   monthly_spend_limit: number;
   /**
    * How many addresses this agent's own access list may grow to. `0` is no ceiling
-   * beyond `MAX_MEMBERS`.
+   * beyond the deployment's `max_members`.
    *
    * A fleet agent is created with one member and its user may add more — that is
    * deliberate, they own the agent. This is the administrator's say in how far that
@@ -318,7 +298,11 @@ export const DEFAULT_META: MetaSettings = {
 };
 
 /** The config columns, in the order they are written, excluding the primary key. */
-const CONFIG_COLUMNS = ["model", ...Object.keys(DEFAULT_CONFIG)] as (keyof Config)[];
+const CONFIG_COLUMNS = [
+  "model",
+  ...SETTABLE_CONFIG_KEYS,
+  ...Object.keys(DEFAULT_CONFIG),
+] as (keyof Config)[];
 
 /** `ALTER TABLE` fragments for every column added after `config` first shipped. */
 const CONFIG_MIGRATIONS = [
@@ -338,8 +322,10 @@ const CONFIG_MIGRATIONS = [
   `cap_memory INTEGER NOT NULL DEFAULT 0`,
   `cap_telegram INTEGER NOT NULL DEFAULT 0`,
   `brave_api_key TEXT NOT NULL DEFAULT ''`,
-  `image_model TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.image_model}'`,
-  `transcription_model TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.transcription_model}'`,
+  // Backfill for rows that predate the column, frozen at what the column shipped with.
+  // A row written since always carries the deployment's `config_defaults`.
+  `image_model TEXT NOT NULL DEFAULT 'google/gemini-2.5-flash-image'`,
+  `transcription_model TEXT NOT NULL DEFAULT 'google/gemini-2.5-flash-lite'`,
   `telegram_bot_token TEXT NOT NULL DEFAULT ''`,
   `telegram_bot_username TEXT NOT NULL DEFAULT ''`,
   `telegram_user_whitelist TEXT NOT NULL DEFAULT ''`,
@@ -522,36 +508,11 @@ function safeChatId(chatId: string): string {
   return chatId.replace("-", "n").replace(/[^A-Za-z0-9_-]/g, "");
 }
 
-/** Sessions per page when the caller does not ask for a size. */
-export const SESSION_PAGE = FACTORY_SETTINGS.session_page;
-/** The largest page any caller may ask for, sessions or messages alike. */
+/**
+ * How many sessions the delete walk reads per page. Internal batching, not a page
+ * any caller is served — those are `session_page` / `max_session_page`.
+ */
 export const MAX_PAGE = 200;
-
-/**
- * How many sessions one agent may hold at once, as this Worker ships.
- *
- * The number actually enforced is `settings.max_sessions`, which starts here and is
- * whatever the owner has since set it to. Every path that makes a session goes through
- * `create` below and passes that number in — the web button, a fork, `!new`, and a
- * Telegram chat that has never been seen before.
- *
- * Still exported because the factory value is a real thing to test against, and
- * because a caller with no settings in hand is better off with this than with a
- * literal. It is not the live limit; do not compare against it to decide anything.
- */
-export const MAX_SESSIONS = FACTORY_SETTINGS.max_sessions;
-
-/**
- * How many bytes of uploaded and generated files one agent may hold, across every
- * session it has, as this Worker ships. `settings.max_agent_bytes` is the live one.
- *
- * Per agent rather than per session, because a session is free to make: an agent
- * with a ceiling on each of its sessions has no ceiling at all. Counted as a running
- * total in the registry — the bytes themselves live in each session's own object and
- * in R2, so totalling them on demand would mean opening every session to answer
- * every upload.
- */
-export const MAX_AGENT_BYTES = FACTORY_SETTINGS.max_agent_bytes;
 
 /**
  * What a refused upload says, wherever it was refused.
@@ -662,7 +623,7 @@ const SESSION_REGISTRY_MIGRATIONS: readonly Migration[] = [
       // turn. The sessions report what they spend here instead, which makes the
       // question one read of one row.
       // Uploaded and generated bytes, agent-wide. One row, moved by each session as it
-      // writes and deletes files. See `MAX_AGENT_BYTES`.
+      // writes and deletes files. See `max_agent_bytes` in settings.ts.
       sql.exec(
         `CREATE TABLE IF NOT EXISTS storage (
            id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -778,7 +739,7 @@ const SESSION_REGISTRY_MIGRATIONS: readonly Migration[] = [
       addColumnIfMissing(
         sql,
         "config",
-        `voice_model TEXT NOT NULL DEFAULT '${DEFAULT_CONFIG.voice_model}'`
+        `voice_model TEXT NOT NULL DEFAULT 'openai/gpt-audio-mini'`
       );
     },
   },
@@ -1047,10 +1008,9 @@ export class SessionRegistry extends DurableObject {
    * The ceiling is passed in for the same reason `config` takes the default model: an
    * agent's registry is not the object that decides deployment-wide numbers, and a
    * cross-object read on every upload would be an RPC hop per file. Callers get it
-   * from `deploymentSettings(env)`, which caches it. Omitting it falls back to the
-   * factory value, which is what a test with no deployment settings wants.
+   * from `deploymentSettings(env)`, which caches it.
    */
-  storageState(limit = FACTORY_SETTINGS.max_agent_bytes): { bytes: number; limit: number } {
+  storageState(limit: number): { bytes: number; limit: number } {
     this.ensureSchema();
     const row = this.ctx.storage.sql
       .exec(`SELECT bytes FROM storage WHERE id = 1 LIMIT 1`)
@@ -1059,7 +1019,7 @@ export class SessionRegistry extends DurableObject {
   }
 
   /** How many more bytes this agent may take. Never negative. */
-  storageRoom(limit = FACTORY_SETTINGS.max_agent_bytes): number {
+  storageRoom(limit: number): number {
     const { bytes } = this.storageState(limit);
     return Math.max(0, limit - bytes);
   }
@@ -1155,18 +1115,22 @@ export class SessionRegistry extends DurableObject {
    * because a default is where a setting starts, not what it is held to. Locking a
    * setting so the agent cannot move it is what `MetaSettings.locked` is for.
    */
-  config(defaultModel: string, seed: Partial<Config> = {}): Config {
+  config(defaultModel: string, seed: Pick<Config, SettableConfigKey>): Config {
     this.ensureSchema();
     const row = this.ctx.storage.sql
       .exec(`SELECT ${CONFIG_COLUMNS.join(", ")} FROM config WHERE id = 1`)
       .toArray()[0] as Config | undefined;
     if (row) return row;
-    const seeded: Config = { model: defaultModel, ...DEFAULT_CONFIG, ...seed };
+    const seeded: Config = { model: defaultModel, ...seed, ...DEFAULT_CONFIG };
     this.write(seeded);
     return seeded;
   }
 
-  setConfig(patch: Partial<Config>, defaultModel: string, seed: Partial<Config> = {}): Config {
+  setConfig(
+    patch: Partial<Config>,
+    defaultModel: string,
+    seed: Pick<Config, SettableConfigKey>
+  ): Config {
     const next = { ...this.config(defaultModel, seed), ...patch };
     this.write(next);
     return next;
@@ -1201,9 +1165,9 @@ export class SessionRegistry extends DurableObject {
     return row?.n ?? 0;
   }
 
-  list(limit = SESSION_PAGE, cursor = ""): SessionPage {
+  list(limit: number, cursor = ""): SessionPage {
     this.ensureSchema();
-    const size = Math.max(1, Math.min(limit, MAX_PAGE));
+    const size = Math.max(1, Math.trunc(limit));
     const after = parseCursor(cursor);
     // One row past the page: its existence is the only thing `has_more` needs, and
     // it is cheaper than a second COUNT over the table.
@@ -1237,7 +1201,7 @@ export class SessionRegistry extends DurableObject {
     };
   }
 
-  /** How many sessions this agent holds. What `MAX_SESSIONS` is measured against. */
+  /** How many sessions this agent holds. What `max_sessions` is measured against. */
   countSessions(): number {
     this.ensureSchema();
     const row = this.ctx.storage.sql
@@ -1261,7 +1225,7 @@ export class SessionRegistry extends DurableObject {
       chat_thread_id: "",
     },
     /** The deployment's `max_sessions`, passed in by the caller. See `storageState`. */
-    maxSessions = FACTORY_SETTINGS.max_sessions
+    maxSessions: number
   ): SessionRow {
     this.ensureSchema();
     // The ceiling, enforced here because here is where every path meets: the web
@@ -1521,12 +1485,6 @@ export type FleetRow = {
   created_at: number;
 };
 
-/** How many agents one page holds when the caller does not say. */
-export const AGENT_PAGE = FACTORY_SETTINGS.agent_page;
-
-/** The largest page a caller may ask for. */
-export const MAX_AGENT_PAGE = FACTORY_SETTINGS.max_agent_page;
-
 /**
  * Where a page stopped: the sort key of its last row, `<created_at>:<id>`.
  *
@@ -1546,26 +1504,6 @@ function decodeCursor(cursor: string): { created_at: number; id: string } | null
   if (!Number.isFinite(created) || !id) return null;
   return { created_at: created, id };
 }
-
-/**
- * How many addresses one agent's access list may hold.
- *
- * A ceiling rather than a storage limit — membership is rows now, not one column, so
- * this is only about keeping a pasted mailing list from turning into ten thousand
- * inserts. Going over is an error, not a truncation: silently dropping the addresses
- * past the cap is how someone adds a teammate, sees the save succeed, and finds out
- * weeks later that the teammate was never on the list.
- */
-export const MAX_MEMBERS = FACTORY_SETTINGS.max_members;
-
-/**
- * How many agents an ordinary account may administer — itself included.
- *
- * Everyone starts here. `account_limits` only ever holds the accounts this default
- * does not apply to, so raising a business account's ceiling is one row, not a
- * migration of everyone else's.
- */
-export const DEFAULT_AGENT_LIMIT = FACTORY_SETTINGS.default_agent_limit;
 
 /** How stale an agent's "last used" date may get before `touch` writes again. */
 const TOUCH_INTERVAL = 5 * 60 * 1000;
@@ -1593,13 +1531,10 @@ export function splitEmails(stored: string): string[] {
  * The stored form of an access list: lowercased, de-duplicated, one per line.
  *
  * Throws when there are more than `maxMembers` of them, so the caller can say so.
- * The ceiling is passed in because it is the deployment's, not this function's; the
- * factory value stands in for a caller that has no settings in hand.
+ * The ceiling is passed in because it is the deployment's `max_members`, not this
+ * function's.
  */
-export function normalizeEmails(
-  input: string | string[],
-  maxMembers = FACTORY_SETTINGS.max_members
-): string {
+export function normalizeEmails(input: string | string[], maxMembers: number): string {
   const raw = Array.isArray(input) ? input : input.split(/[\n,;]/);
   const seen = new Set<string>();
   for (const entry of raw) {
@@ -1712,7 +1647,7 @@ const AGENT_DIRECTORY_MIGRATIONS: readonly Migration[] = [
       );
 
       // Absence is the ordinary case: an account with no row here administers at most
-      // `DEFAULT_AGENT_LIMIT` agent. A row is only ever written by the owner's own
+      // `default_agent_limit` agent. A row is only ever written by the owner's own
       // admin route, so this table's whole contents are the deployment's business
       // accounts.
       sql.exec(
@@ -2186,29 +2121,28 @@ export class AgentDirectory extends DurableObject {
   }
 
   /**
-   * The deployment's own knobs: the factory values with this deployment's overrides
-   * merged on top. See `settings.ts` for why only the overrides are stored.
+   * The deployment's own knobs, complete — or `SettingsIncompleteError` naming what
+   * is not set yet. There are no shipped values to fill a gap with; see `settings.ts`.
    *
    * Every other object reads this through `deploymentSettings` in `settings.ts`,
    * which caches it per isolate — this method is one RPC hop and gets called on paths
    * that run per turn.
    */
   settings(): DeploymentSettings {
-    this.ensureSchema();
-    return effectiveSettings(this.settingsPatch());
+    return completeSettings(this.storedSettings());
   }
 
-  /** Just this deployment's overrides, for a dialog that has to show what is decided here. */
-  settingsPatch(): SettingsPatch {
+  /** The document as stored, complete or not. What the admin CLI reads and edits. */
+  storedSettings(): StoredSettings {
     this.ensureSchema();
     const row = this.ctx.storage.sql
       .exec(`SELECT json FROM deployment_settings WHERE id = 1`)
       .toArray()[0] as { json: string } | undefined;
-    return parseSettingsPatch(String(row?.json ?? ""));
+    return parseStoredSettings(String(row?.json ?? ""));
   }
 
   /**
-   * Merge a patch into the overrides and return the document now in force.
+   * Merge a patch into the stored document and return it, with what is still unset.
    *
    * Validation happens here rather than in the route so the stored document cannot be
    * made invalid by any caller, and so the merge and the cross-field checks
@@ -2222,11 +2156,11 @@ export class AgentDirectory extends DurableObject {
    */
   setSettings(
     patch: unknown
-  ): { settings: DeploymentSettings; overrides: SettingsPatch } | { error: string } {
+  ): { settings: StoredSettings; missing: string[] } | { error: string } {
     this.ensureSchema();
-    let overrides: SettingsPatch;
+    let next: StoredSettings;
     try {
-      overrides = validateSettingsPatch(patch, this.settingsPatch());
+      next = validateSettingsPatch(patch, this.storedSettings());
     } catch (err) {
       if (err instanceof SettingsError) return { error: err.message };
       throw err;
@@ -2234,17 +2168,19 @@ export class AgentDirectory extends DurableObject {
     this.ctx.storage.sql.exec(
       `INSERT INTO deployment_settings (id, json, updated_at) VALUES (1, ?, ?)
        ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
-      JSON.stringify(overrides),
+      JSON.stringify(next),
       Date.now()
     );
-    return { settings: effectiveSettings(overrides), overrides };
+    return { settings: next, missing: missingSettings(next) };
   }
 
-  /** Drop every override, putting the deployment back on the factory values. */
-  resetSettings(): DeploymentSettings {
+  /**
+   * Drop the stored document. Not routed: with nothing to fall back to, this leaves
+   * the deployment refusing every request, so it is for tests of exactly that.
+   */
+  clearSettings(): void {
     this.ensureSchema();
     this.ctx.storage.sql.exec(`DELETE FROM deployment_settings WHERE id = 1`);
-    return effectiveSettings({});
   }
 
   /**

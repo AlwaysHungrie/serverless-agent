@@ -5,15 +5,12 @@ A Cloudflare Agent built on the [Agents SDK](https://developers.cloudflare.com/a
 in the URL, so `/agents/session-agent/alice` and `/agents/session-agent/bob` are two
 isolated DOs with their own SQLite database and message history.
 
-The model is served through OpenRouter: `deepseek/deepseek-v4-flash`, overridable via the
-`MODEL` var in `wrangler.jsonc`.
-
-Which models an agent may be switched *between* is the `MODELS` var beside it — a JSON
-array of `{ "id", "label", "vision" }`. Nothing about that list lives in the code, so a
-deployment adds or drops a model without a release. `vision` is false for a model that
-cannot be sent an image, and leaving it out means it can; it is the one thing that
-cannot be looked up, and getting it wrong means a photo fails at the provider instead
-of at the upload. With `MODELS` unset the catalogue is just the `MODEL` above.
+Models are served through OpenRouter. Which model a new agent starts on, and which
+models an agent may be switched *between*, are the `default_model` and `models`
+deployment settings below — a JSON array of `{ "id", "label", "vision" }`. `vision` is
+false for a model that cannot be sent an image, and leaving it out means it can; it is
+the one thing that cannot be looked up, and getting it wrong means a photo fails at the
+provider instead of at the upload.
 
 Meta settings may go further and name any OpenRouter id at all, with its own answer to
 the same question — see the model list in that dialog.
@@ -37,16 +34,25 @@ and the browser's is the one the user meets first.
 
 It lives in `AgentDirectory`, is defined in `src/settings.ts`, and is reached over
 `/api/admin/settings` — or, in practice, from the `admin-cli` dashboard's settings
-screen (`s` on the list, `enter` to edit a row, `r` to put one back).
+screen (`s` on the list, `enter` to edit a row, `r` to set it to the shipped value).
 
-Only the fields the deployment has actually changed are stored. A field nobody touched
-keeps tracking the value in `FACTORY_SETTINGS`, so raising a default in a release
-reaches every deployment that never overrode it. `r` on a row is not "set it to the
-shipped number" but "stop deciding this one", which is the difference that keeps it
-tracking.
+Every field is required. The Worker has no values of its own to fall back on: until the
+stored document is complete it answers every request except `/api/admin/settings` and
+`/api/admin/stats` with a 503 naming the fields still unset, and `npm run deploy`
+refuses while the live deployment is in that state. The values a deployment starts from
+ship with the admin CLI, in `admin-cli/defaults.json`:
 
-`MODELS` still works and still needs no settings document. The stored `models` list
-wins where it is set, and `MODELS` stands underneath it.
+```bash
+cd admin-cli
+npm run init      # write the shipped default for every field not yet set
+npm run check     # exit 1, naming them, if any field is unset (what the deploy runs)
+```
+
+Both take `-- --staging` / `-- --dev`. `npm run deploy` runs `init` right after
+`wrangler deploy`, which covers the two cases a pre-deploy check cannot: a release that
+adds a setting (the live Worker refuses unknown keys, so it cannot be set beforehand),
+and the first deploy onto a Worker that predates settings altogether — `check` exits 2
+for that one and the preflight lets it through.
 
 ## Run locally
 
@@ -54,6 +60,13 @@ wins where it is set, and `MODELS` stands underneath it.
 cp .dev.vars.example .dev.vars   # then put your OpenRouter key in it
 npm install
 npm run dev                       # wrangler dev on http://localhost:8787
+```
+
+A fresh local database has no deployment settings, so every request returns 503 until
+they are written. With `npm run dev` running:
+
+```bash
+cd ../admin-cli && npm run init -- --dev
 ```
 
 Every agent needs an OpenRouter key of its own, pasted under **Settings**, and there is
@@ -106,9 +119,8 @@ curl -X POST http://localhost:8787/agents/session-agent/my-session/chat \
 | `GET\|POST /api/agents/:agentId/sessions` | List / create that agent's sessions. GET takes `?limit` (default 30, max 200) and `?cursor`, and answers `{ sessions, has_more, cursor }` |
 | `PATCH\|DELETE /api/sessions/:sessionId` | Rename / delete a session |
 | `POST /telegram/webhook/:agentId` | One route per agent, because one bot per agent |
-| `GET /api/admin/settings` | The deployment's settings: `{ settings, overrides, fields }`. Owner only, via `API_SECRET` |
-| `PATCH /api/admin/settings` | Merge a patch: `{ <field>: value }`, or `{ <field>: null }` to stop overriding it. Owner only |
-| `DELETE /api/admin/settings` | Drop every override, back to the shipped values. Owner only |
+| `GET /api/admin/settings` | The stored settings and what they still lack: `{ settings, missing, fields }`. Owner only, via `API_SECRET` |
+| `PATCH /api/admin/settings` | Merge a patch: `{ <field>: value }`. No field can be unset. Owner only |
 
 ## Agents
 
@@ -213,6 +225,13 @@ Two layers, because the one that matters is the version that is already live:
   noticing. Secrets are listable but not readable, which is all this needs.
 - **The Worker itself** refuses to serve, so a deploy made by running `wrangler deploy`
   directly still fails closed.
+
+The same two layers apply to the [deployment settings](#deployment-settings): the
+preflight runs `admin-cli check` and refuses while any setting is unset (exit 2, a live
+Worker older than the settings route, is let through once), and the Worker returns 503
+with the unset fields named until they are written. `npm run deploy` runs `admin-cli
+init` after `wrangler deploy`. The root [README](../README.md#deployment-settings) has
+the full sequence.
 
 Set the back door with `wrangler secret put API_SECRET`, or in `agent/.dev.vars` for
 `wrangler dev`. The frontend does not hold it: it is pasted into a single browser's

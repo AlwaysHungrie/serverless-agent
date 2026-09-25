@@ -1,6 +1,8 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_AGENT_LIMIT } from "../src/registry";
+import { SHIPPED } from "./shipped";
+
+const DEFAULT_AGENT_LIMIT = SHIPPED.default_agent_limit;
 
 /**
  * The Worker over HTTP — the same surface the browser and the CLI reach.

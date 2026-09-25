@@ -17,11 +17,7 @@ import {
 import { parseCommand, type Command, type CommandResult } from "./commands";
 import type { McpServerRow } from "./mcp";
 import { applyMigrations, type Migration } from "./schema";
-import {
-  deploymentSettings,
-  FACTORY_SETTINGS,
-  type DeploymentSettings,
-} from "./settings";
+import { deploymentSettings, type DeploymentSettings } from "./settings";
 import {
   DEFAULT_CONFIG,
   agentIdOf,
@@ -52,21 +48,6 @@ export type Env = {
   AgentDirectory: DurableObjectNamespace<AgentDirectory>;
   /** Object storage the workspace spills large files into: images, PDFs, clips. */
   FILES: R2Bucket;
-  MODEL: string;
-  /**
-   * The models this deployment offers, as JSON: `[{ "id", "label", "vision" }, …]`.
-   *
-   * A catalogue, not a constant. Which models are worth offering changes faster than
-   * this Worker does — a provider ships one, another deprecates one — and that is a
-   * question about the deployment, not about the code. Wrangler hands JSON `vars`
-   * back already parsed, so it may arrive as an array or as the string a secret or a
-   * `.dev.vars` line would give; both are read.
-   *
-   * `vision` is the part that cannot be guessed. A model that cannot be sent an
-   * image has to say so, or the first photo someone attaches fails at the provider
-   * with a message about a field they never filled in.
-   */
-  MODELS?: string | ModelOption[];
   /**
    * The impersonation back door, and nothing else.
    *
@@ -173,57 +154,12 @@ export type TranscriptPage = {
   total: number;
 };
 
-/**
- * Messages per page when the caller does not ask for a size, as this Worker ships.
- * `settings.message_page` is the live one; this is the fallback it starts from.
- */
-export const MESSAGE_PAGE = FACTORY_SETTINGS.message_page;
-/** The largest transcript page any caller may ask for, as shipped. See `settings.max_message_page`. */
-export const MAX_MESSAGE_PAGE = FACTORY_SETTINGS.max_message_page;
-
 /** A model the settings page may offer: what it is called, and whether it sees images. */
 export type ModelOption = { id: string; label: string; vision: boolean };
 
-/**
- * The models this deployment offers, read from `MODELS`.
- *
- * Nothing is hardcoded here. A deployment that has not said what it offers falls back
- * to the one model it must have named anyway — the `MODEL` every agent is seeded
- * with — rather than to a list baked in at some point in the past and quietly wrong
- * ever since. That model is assumed to see images for the same reason a custom id is:
- * see `modelSeesImages`.
- */
-export function modelCatalog(env: Env, settings?: DeploymentSettings): ModelOption[] {
-  // The deployment's own list wins when it has one, because it is the one an owner can
-  // change without a deploy. `MODELS` stays underneath it rather than being replaced:
-  // a deployment that already names its catalogue in `wrangler.jsonc` keeps working
-  // untouched, and only starts reading this once somebody sets it.
-  if (settings?.models.length) return settings.models.map((m) => ({ ...m }));
-  const fallback = [
-    { id: settings?.default_model || env.MODEL, label: settings?.default_model || env.MODEL, vision: true },
-  ];
-  const raw = env.MODELS;
-  if (!raw) return fallback;
-  let parsed: unknown = raw;
-  if (typeof raw === "string") {
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      // A catalogue nobody can read is not worth failing every request over.
-      return fallback;
-    }
-  }
-  if (!Array.isArray(parsed)) return fallback;
-  const models = parsed
-    .filter((m): m is Record<string, unknown> => !!m && typeof m === "object")
-    .map((m) => ({
-      id: String(m.id ?? "").trim(),
-      label: String(m.label ?? m.id ?? "").trim(),
-      // Absent means yes: only a model that cannot see images has to say so.
-      vision: m.vision === undefined ? true : !!m.vision,
-    }))
-    .filter((m) => m.id !== "");
-  return models.length ? models.map((m) => ({ ...m, label: m.label || m.id })) : fallback;
+/** The models this deployment offers: its `models` setting, copied. */
+export function modelCatalog(settings: DeploymentSettings): ModelOption[] {
+  return settings.models.map((m) => ({ ...m }));
 }
 
 /** Fallback per-token pricing, used when OpenRouter does not return a cost. */
@@ -231,21 +167,9 @@ const MODEL_FALLBACK_PRICE: Record<string, { prompt: number; completion: number 
   "deepseek/deepseek-v4-flash": { prompt: 0.000000088606, completion: 0.000000177212 },
 };
 
-/**
- * What every agent is told before its own `system_prompt`, as this Worker ships.
- * A deployment that wants to say something else sets `settings.system_prompt`.
- */
-const SYSTEM_PROMPT = "You are a concise assistant running inside a Cloudflare Durable Object.";
-
 /** Asked once, on the first turn, to turn the opening exchange into a sidebar title. */
 const TITLE_PROMPT =
   "Name this conversation in at most four words. Reply with the title only: no quotes, no punctuation at the end, no preamble.";
-
-/**
- * How many times a single turn may call tools before it must answer, as shipped.
- * The live number is `settings.max_tool_rounds`, read into `maxSteps` per turn.
- */
-const MAX_TOOL_ROUNDS = FACTORY_SETTINGS.max_tool_rounds;
 
 /**
  * What a scheduled task's user message is prefixed with. It is the only durable trace
@@ -259,15 +183,6 @@ const SCHEDULED_PREFIX = "[scheduled task] ";
  * or an ISO timestamp — the two forms `scheduleTask` reads back.
  */
 export type TaskHandover = { when: string; prompt: string };
-
-/**
- * Attachment ceilings, per kind. Bytes spill to R2, so the limits are about what each
- * kind costs downstream rather than what SQLite will hold.
- */
-const MAX_UPLOAD_BYTES = FACTORY_SETTINGS.max_upload_bytes;
-
-/** A first-page render at card width. Anything larger is not a thumbnail. */
-const MAX_THUMBNAIL_BYTES = FACTORY_SETTINGS.max_thumbnail_bytes;
 
 const TEXT_EXTENSIONS =
   /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|log|html?|xml|css|jsx?|tsx?|py|rb|go|rs|java|kt|c|h|cpp|sh|sql)$/i;
@@ -393,14 +308,6 @@ export class SessionAgent extends Think<Env> {
     r2: this.env.FILES,
     name: () => this.name,
   });
-
-  /**
-   * Tool rounds per turn. Starts at the shipped number and is re-read from the
-   * deployment's settings on every turn, in `loadConfig` — same reasoning as the
-   * config itself: an object can live for days between messages, and a ceiling that
-   * was raised yesterday should apply to today's turn.
-   */
-  override maxSteps = MAX_TOOL_ROUNDS;
 
   private schemaReady = false;
   private currentConfig: Config | undefined;
@@ -634,9 +541,11 @@ export class SessionAgent extends Think<Env> {
    */
   private async loadConfig() {
     this.currentSettings = await deploymentSettings(this.env);
+    // Tool rounds per turn, re-read every turn: an object can live for days between
+    // messages, and a ceiling raised yesterday should apply to today's turn.
     this.maxSteps = this.currentSettings.max_tool_rounds;
     this.currentConfig = await this.registry().config(
-      this.currentSettings.default_model || this.env.MODEL,
+      this.currentSettings.default_model,
       this.currentSettings.config_defaults
     );
     this.memories = enabled(this.currentConfig, "memory")
@@ -661,7 +570,7 @@ export class SessionAgent extends Think<Env> {
   private async modelSeesImages(model: string): Promise<boolean> {
     const chosen = (await this.registry().meta()).models.find((m) => m.id === model);
     if (chosen) return chosen.vision;
-    const known = modelCatalog(this.env, this.settings()).find((m) => m.id === model);
+    const known = modelCatalog(this.settings()).find((m) => m.id === model);
     return known ? known.vision : true;
   }
 
@@ -669,24 +578,22 @@ export class SessionAgent extends Think<Env> {
     const settings = this.settings();
     return (
       this.currentConfig ?? {
-        model: settings.default_model || this.env.MODEL,
-        ...DEFAULT_CONFIG,
+        model: settings.default_model,
         ...settings.config_defaults,
+        ...DEFAULT_CONFIG,
       }
     );
   }
 
   /**
-   * The deployment's ceilings and defaults.
-   *
-   * The shipped values stand in until the first `loadConfig`, which is the same shape
-   * `config()` has: a path that runs before a turn is loaded gets something coherent
-   * rather than nothing. Every path that enforces a ceiling runs inside a turn or
-   * inside a request that awaits `settingsNow()` first, so the fallback is a floor,
-   * not the usual case.
+   * The deployment's ceilings and defaults, as last read by `loadConfig` or
+   * `settingsNow()`. There is nothing to stand in before that: every path that reads a
+   * ceiling runs inside a turn or a request that loads them first, and one that does
+   * not is a bug this throw makes loud.
    */
   private settings(): DeploymentSettings {
-    return this.currentSettings ?? FACTORY_SETTINGS;
+    if (!this.currentSettings) throw new Error("deployment settings read before they were loaded");
+    return this.currentSettings;
   }
 
   /**
@@ -787,10 +694,9 @@ export class SessionAgent extends Think<Env> {
   }
 
   private systemPrompt(): string {
-    // The deployment's line if it set one, the shipped line otherwise. Blank is
-    // "nothing decided here", not "say nothing": an agent with no framing at all is a
-    // worse default than a generic one.
-    const parts = [this.settings().system_prompt.trim() || SYSTEM_PROMPT];
+    // The deployment's line first. Blank is the owner choosing to say nothing.
+    const deployment = this.settings().system_prompt.trim();
+    const parts = deployment ? [deployment] : [];
     // The name leads the custom instructions rather than living inside them: it is
     // set by renaming the agent, so it stays right when the name changes and cannot
     // be deleted by editing the instructions box.
@@ -2240,7 +2146,7 @@ export class SessionAgent extends Think<Env> {
    * a long session that returned whole would pay for its entire history on every
    * open. `before` walks backwards from the oldest message the client holds.
    */
-  private async transcript(limit = MESSAGE_PAGE, before = ""): Promise<TranscriptPage> {
+  private async transcript(limit: number, before = ""): Promise<TranscriptPage> {
     const { max_message_page } = this.settings();
     const visible = (await this.getMessages()).filter(
       (m) => m.role === "user" || m.role === "assistant"

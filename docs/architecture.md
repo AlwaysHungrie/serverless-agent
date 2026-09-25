@@ -162,8 +162,8 @@ to want in a SQLite row. Here that is `salt-agent-files`, bound as `FILES` in
 
 The bindings in [wrangler.jsonc](../agent/wrangler.jsonc) are how the Worker reaches any of
 this: three DO namespaces (`SessionAgent`, `SessionRegistry`, `AgentDirectory`), one R2
-bucket, and plain `vars` for the default `MODEL` and the `MODELS` catalogue the settings
-page offers. The `migrations` array there is Cloudflare's own class-registration mechanism
+bucket, and a plain `var` for `CLERK_ISSUER`. The model catalogue and every other
+ceiling and default are runtime deployment settings, not `vars`. The `migrations` array there is Cloudflare's own class-registration mechanism
 — `new_sqlite_classes` tells the platform a class exists and is SQLite-backed. It has
 nothing to do with table schemas; those are handled separately, and the difference matters
 later.
