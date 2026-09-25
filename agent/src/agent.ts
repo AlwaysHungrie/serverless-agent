@@ -9,12 +9,13 @@ import {
   mcpServerReady,
   mcpToolSpecs,
   enabled,
+  withMcpAuth,
   runTool,
   toolsFor,
   type ScheduledTask,
   type ToolContext,
 } from "./capabilities";
-import { parseCommand, type Command, type CommandResult } from "./commands";
+import { parseCommand, type Command, type CommandResult, type McpCommand } from "./commands";
 import type { McpServerRow } from "./mcp";
 import { applyMigrations, type Migration } from "./schema";
 import { deploymentSettings, type DeploymentSettings } from "./settings";
@@ -2366,6 +2367,7 @@ export class SessionAgent extends Think<Env> {
    * what `destroy` is for — the caller sends the reply and then calls `finishDelete`.
    */
   private async runCommand(command: Command): Promise<CommandResult> {
+    if (typeof command === "object") return await this.mcpCommand(command);
     // TEMP — remove with the `oom` command itself. Allocates a megabyte at a time
     // until the isolate is killed, to see what a session looks like on the way down
     // and what is left of it afterwards. The strings are held in an array so nothing
@@ -2440,6 +2442,59 @@ export class SessionAgent extends Think<Env> {
       text: "Deleted this session and everything in it. The next message starts over.",
       destroy: true,
     };
+  }
+
+  /**
+   * `!enable-mcp` / `!disable-mcp`. Enabling switches every tool back on and re-reads
+   * the server's tool list, so a server that cannot be reached says so here rather
+   * than on the next turn. Disabling leaves the tool selection alone.
+   */
+  private async mcpCommand({ mcp, server }: McpCommand): Promise<CommandResult> {
+    const reg = this.registry();
+    const wanted = server.toLowerCase();
+    const row = (await reg.mcpServers()).find((s) => s.name.toLowerCase() === wanted);
+    if (mcp === "disable") {
+      const done = row && (await reg.updateMcpServer(row.id, { enabled: 0 }));
+      return {
+        text: done
+          ? "Disabled. You can also partially enable a few tools that are required from the web UI."
+          : "Error disabling MCP server, please visit the web UI.",
+        destroy: false,
+      };
+    }
+    if (!row) return { text: `No MCP server named "${server}".`, destroy: false };
+    const updated = await reg.updateMcpServer(row.id, { enabled: 1, disabled_tools: "[]" });
+    if (!updated || !mcpServerReady(updated)) {
+      return {
+        text: `${row.name} is not connected. Connect it from the web UI.`,
+        destroy: false,
+      };
+    }
+    try {
+      const tools = await withMcpAuth(updated, reg, (client) => client.listTools());
+      await reg.updateMcpServer(row.id, {
+        tools_json: JSON.stringify(tools),
+        tools_synced_at: Date.now(),
+        last_error: "",
+      });
+      await this.loadConfig();
+      if (!enabled(this.config(), "mcp")) {
+        return {
+          text: `${row.name} is enabled, but MCP is switched off for this agent. Turn it on from the web UI.`,
+          destroy: false,
+        };
+      }
+      return {
+        text:
+          `${row.name} enabled with all ${tools.length} tools. This can sharply raise token use — ` +
+          `disable it when not needed, or switch off unused tools from the web UI.`,
+        destroy: false,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await reg.noteMcpError(row.id, message);
+      return { text: `Error connecting to ${row.name}: ${message}`, destroy: false };
+    }
   }
 
   /**
