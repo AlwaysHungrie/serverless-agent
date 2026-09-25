@@ -10,7 +10,7 @@
 
 - Every hard limit (sessions, file storage, access-list size, agents per account, upload
   ceilings, tool rounds, page sizes, voice-note length) and every soft default (model
-  catalogue, seeded model, system prompt, per-column starting values, MCP templates and
+  catalogue, seeded model, system prompt, per-column starting values, MCP template
   catalogue) is one runtime document — no deploy needed.
 - Defined in `agent/src/settings.ts`, stored in `AgentDirectory`, edited from the
   `admin-cli` Defaults and Limits tabs.

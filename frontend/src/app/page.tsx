@@ -17,6 +17,7 @@ import {
   type Capability,
   type FleetRow,
   type MetaSettings,
+  type McpCatalogEntry,
   type ModelOption,
 } from "@/lib/agent";
 
@@ -723,6 +724,7 @@ function NewAgent({
   const [fleetEmails, setFleetEmails] = useState("");
   const [meta, setMeta] = useState<MetaSettings>(EMPTY_META);
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [mcpCatalog, setMcpCatalog] = useState<McpCatalogEntry[]>([]);
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [error, setError] = useState<string | null>(null);
   const field = useRef<HTMLInputElement>(null);
@@ -738,9 +740,11 @@ function NewAgent({
       const res = await apiFetch("/api/agents/catalog", { cache: "no-store" });
       const payload = (await res.json().catch(() => null)) as {
         models?: ModelOption[];
+        mcp_catalog?: McpCatalogEntry[];
         capabilities?: Capability[];
       } | null;
       setModels(payload?.models ?? []);
+      setMcpCatalog(payload?.mcp_catalog ?? []);
       setCapabilities(payload?.capabilities ?? []);
     })();
   }, []);
@@ -808,6 +812,7 @@ function NewAgent({
               meta={meta}
               onChange={setMeta}
               models={models}
+              mcpCatalog={mcpCatalog}
               capabilities={capabilities}
               onlyOpenrouter={!fleet}
             />
@@ -977,6 +982,7 @@ function FleetSettingsDialog({
 }) {
   const [meta, setMeta] = useState<MetaSettings | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [mcpCatalog, setMcpCatalog] = useState<McpCatalogEntry[]>([]);
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [error, setError] = useState<string | null>(null);
   /** Whether the "this overwrites N agents" question is up. */
@@ -993,6 +999,7 @@ function FleetSettingsDialog({
       const payload = (await res.json().catch(() => null)) as {
         meta?: MetaSettings;
         models?: ModelOption[];
+        mcp_catalog?: McpCatalogEntry[];
         capabilities?: Capability[];
         error?: string;
       } | null;
@@ -1002,6 +1009,7 @@ function FleetSettingsDialog({
       }
       setMeta({ ...EMPTY_META, ...payload.meta });
       setModels(payload.models ?? []);
+      setMcpCatalog(payload.mcp_catalog ?? []);
       setCapabilities(payload.capabilities ?? []);
     })();
   }, [base]);
@@ -1080,6 +1088,7 @@ function FleetSettingsDialog({
               meta={meta}
               onChange={setMeta}
               models={models}
+              mcpCatalog={mcpCatalog}
               capabilities={capabilities}
             />
 

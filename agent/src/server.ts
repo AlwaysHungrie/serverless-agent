@@ -901,14 +901,12 @@ async function handleMcp(
         // back here rather than being read off `/meta`, which is the admin's route
         // and answers nobody else.
         //
-        // Three answers, nearest first: this agent's own admin decided it, or the
-        // deployment decided it, or the frontend's built-in strip stands. An agent's
-        // administrator is closer to the agent than the deployment's owner is, so their
-        // answer wins where they gave one — the deployment's is a default for every
-        // agent nobody has said anything about, which is most of them.
-        templates: mcp.templates.length ? mcp.templates : settings.mcp_templates,
-        // Templates provisioned from outside this deployment. They replace the
-        // built-in strip rather than filtering it — see `MetaSettings.mcp.catalog`.
+        // Which of the templates this agent's admin chose to offer; empty is all.
+        templates: mcp.templates,
+        // The templates themselves: this agent's own list if its admin gave one, else
+        // the deployment's. The frontend ships none of its own. An agent's list
+        // replaces the deployment's rather than adding to it — see
+        // `MetaSettings.mcp.catalog`.
         catalog: mcp.catalog.length ? mcp.catalog : settings.mcp_catalog,
         user_servers: mcp.user_servers,
       })
@@ -1156,32 +1154,28 @@ function notedCapabilities(list: Capability[], settings: DeploymentSettings): Ca
 }
 
 /**
- * The capability list with the fixed-choice model menus widened.
+ * The capability list with the fixed-choice model menus filled in.
  *
- * Two sources, nearest first: this agent's own meta document, then the deployment's.
- * An agent's administrator is closer to the agent than the deployment's owner is, so a
- * column they answered wins outright — the deployment's list is the menu for every
- * agent nobody has said anything about.
+ * The menu is the deployment's `field_options` — the code ships none. This agent's own
+ * meta document may answer a column with its own list of ids, which wins outright: an
+ * agent's administrator is closer to the agent than the deployment's owner is. An id
+ * the deployment names keeps its name there; one it does not is shown as the id.
  */
 function capabilitiesFor(meta: MetaSettings, settings: DeploymentSettings): Capability[] {
-  const widened = Object.entries({ ...settings.field_options, ...meta.field_options }).filter(
-    ([, v]) => v.length > 0
-  );
-  if (!widened.length) return CAPABILITIES;
-  const options = new Map(widened);
+  const menus = settings.field_options as Record<string, { id: string; label: string }[]>;
   return CAPABILITIES.map((capability) => {
-    if (!capability.fields.some((f) => options.has(String(f.key)))) return capability;
+    if (!capability.fields.some((f) => f.options)) return capability;
     return {
       ...capability,
       fields: capability.fields.map((field) => {
-        const values = options.get(String(field.key));
-        if (!values) return field;
+        if (!field.options) return field;
+        const menu = menus[String(field.key)] ?? [];
+        const own = meta.field_options[String(field.key)] ?? [];
         return {
           ...field,
-          options: values.map((value) => ({
-            value,
-            label: field.options?.find((o) => o.value === value)?.label ?? value,
-          })),
+          options: own.length
+            ? own.map((id) => ({ value: id, label: menu.find((o) => o.id === id)?.label ?? id }))
+            : menu.map((o) => ({ value: o.id, label: o.label })),
         };
       }),
     };
@@ -1605,7 +1599,8 @@ async function handleFleets(
           meta: redactMeta(await stored()),
           // The catalogues the dialog picks from; it keeps no copy of its own.
           models: modelCatalog(await deploymentSettings(env)),
-          capabilities: CAPABILITIES,
+          capabilities: capabilitiesFor(DEFAULT_META, await deploymentSettings(env)),
+          mcp_catalog: (await deploymentSettings(env)).mcp_catalog,
         })
       );
     }
@@ -2055,6 +2050,7 @@ async function handleAgents(
       Response.json({
         models: modelCatalog(settings),
         capabilities: notedCapabilities(capabilitiesFor(DEFAULT_META, settings), settings),
+        mcp_catalog: settings.mcp_catalog,
       })
     );
   }
@@ -2328,7 +2324,11 @@ async function handleAgents(
           // The catalogues the dialog picks from: it never keeps its own copy of
           // what models exist or what a capability's fields are.
           models: modelCatalog(await deploymentSettings(env)),
-          capabilities: CAPABILITIES,
+          // The deployment's menus, not this agent's narrowed ones: the dialog is where
+          // the narrowing is chosen from them.
+          capabilities: capabilitiesFor(DEFAULT_META, await deploymentSettings(env)),
+          // The MCP templates the deployment offers, for the picker that narrows them.
+          mcp_catalog: (await deploymentSettings(env)).mcp_catalog,
           // What the agent has spent this month, so the ceiling beside it is set
           // against a number rather than a guess.
           spend: await reg.spendState(),

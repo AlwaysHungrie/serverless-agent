@@ -170,15 +170,43 @@ describe("validating a patch", () => {
   });
 
   it("refuses a field_options entry that is not a model id", () => {
-    expect(() => validateSettingsPatch({ field_options: { voice_model: ["not a model"] } }, {})).toThrow(
-      /not an OpenRouter model id/
+    expect(() =>
+      validateSettingsPatch({ field_options: { voice_model: [{ id: "not a model", label: "X" }] } }, {})
+    ).toThrow(/not an OpenRouter model id/);
+  });
+
+  it("refuses a field_options menu that is empty, unset, or bare ids", () => {
+    for (const menu of [[], null, ["openai/gpt-audio"]]) {
+      expect(() => validateSettingsPatch({ field_options: { voice_model: menu } }, {})).toThrow();
+    }
+  });
+
+  it("names each model on a menu, the id standing in for a missing label", () => {
+    const next = validateSettingsPatch(
+      { field_options: { voice_model: [{ id: "openai/gpt-audio" }, { id: "openai/gpt-audio" }] } },
+      {}
     );
+    expect(next.field_options).toEqual({ voice_model: [{ id: "openai/gpt-audio", label: "openai/gpt-audio" }] });
+  });
+
+  it("counts a menu column as unset while it is absent or still holds bare ids", () => {
+    const stored = {
+      ...SHIPPED,
+      field_options: { image_model: SHIPPED.field_options.image_model, voice_model: ["openai/gpt-audio"] },
+    } as never;
+    expect(missingSettings(stored)).toEqual(["field_options.transcription_model", "field_options.voice_model"]);
   });
 
   it("refuses an MCP catalogue entry that names no url", () => {
     expect(() => validateSettingsPatch({ mcp_catalog: [{ id: "x", name: "X" }] }, {})).toThrow(
       /needs an id, a name and a url/
     );
+  });
+
+  it("refuses mcp_templates, and drops it from a document saved before its removal", () => {
+    expect(() => validateSettingsPatch({ mcp_templates: [] }, {})).toThrow(/unknown setting/);
+    const stored = { max_sessions: 5, mcp_templates: ["notion"] } as never;
+    expect(validateSettingsPatch({ max_sessions: 6 }, stored)).toEqual({ max_sessions: 6 });
   });
 });
 
@@ -350,6 +378,18 @@ describe("a setting the owner changed is the one enforced", () => {
     expect(body.models).toEqual([{ id: "owner/model", label: "Owner's", vision: false }]);
   });
 
+  it("offers the MCP templates from the settings, Notion among the shipped ones", async () => {
+    expect(SHIPPED.mcp_catalog.map((t) => t.id)).toContain("notion");
+    const mine = { id: "linear", name: "Linear", url: "https://mcp.linear.app/mcp", auth: "oauth" };
+    await patch({ mcp_catalog: [mine] });
+    const res = await SELF.fetch(
+      `${BASE}/api/agents/catalog`,
+      asOwner({ headers: { "x-user-email": "catalog@x.com" } })
+    );
+    const body = await res.json<{ mcp_catalog: unknown[] }>();
+    expect(body.mcp_catalog).toEqual([mine]);
+  });
+
   it("hands the composer the ceilings it has to enforce before it sends", async () => {
     // The browser refuses first, so its number has to be the deployment's number — a
     // page holding its own copy is a limit that drifts from the one that matters.
@@ -375,19 +415,19 @@ describe("a setting the owner changed is the one enforced", () => {
     expect(body.limits.max_upload_bytes.image).toBe(4_000_000);
   });
 
-  it("offers the voice models the owner listed, in place of the shipped menu", async () => {
-    await patch({ field_options: { voice_model: ["openai/gpt-audio"] } });
+  it("offers the voice models the owner listed, under the names given", async () => {
+    await patch({ field_options: { voice_model: [{ id: "openai/gpt-audio", label: "Owner's voice" }] } });
     const res = await SELF.fetch(
       `${BASE}/api/agents/catalog`,
       asOwner({ headers: { "x-user-email": "catalog@x.com" } })
     );
     const body = await res.json<{
-      capabilities: { id: string; fields: { key: string; options?: { value: string }[] }[] }[];
+      capabilities: { id: string; fields: { key: string; options?: { value: string; label: string }[] }[] }[];
     }>();
     const field = body.capabilities
       .flatMap((c) => c.fields)
       .find((f) => f.key === "voice_model");
-    expect(field?.options?.map((o) => o.value)).toEqual(["openai/gpt-audio"]);
+    expect(field?.options).toEqual([{ value: "openai/gpt-audio", label: "Owner's voice" }]);
   });
 
   it("quotes the owner's own upload ceilings in the capability note", async () => {

@@ -16,33 +16,11 @@ export type McpPreset = {
   logo: React.ReactNode;
 };
 
-const NotionMark = (
-  <svg
-    viewBox="0 0 24 24"
-    width="26"
-    height="26"
-    fill="currentColor"
-    aria-hidden="true"
-  >
-    <path d="M4.459 4.208c.746.606 1.026.56 2.428.466l13.215-.793c.28 0 .047-.28-.046-.326L17.86 1.968c-.42-.326-.98-.7-2.055-.607L3.01 2.295c-.466.046-.56.28-.374.466zm.793 3.08v13.904c0 .747.373 1.027 1.214.98l14.523-.84c.841-.046.935-.56.935-1.167V6.354c0-.606-.233-.933-.748-.887l-15.177.887c-.56.047-.747.327-.747.933zm14.337.745c.093.42 0 .84-.42.888l-.7.14v10.264c-.608.327-1.168.514-1.635.514-.748 0-.935-.234-1.495-.933l-4.577-7.186v6.952L12.21 19s0 .84-1.168.84l-3.222.186c-.093-.186 0-.653.327-.746l.84-.233V9.854L7.822 9.76c-.094-.42.14-1.026.793-1.073l3.456-.233 4.764 7.279v-6.44l-1.215-.139c-.093-.514.28-.887.747-.933zM1.936 1.035l13.31-.98c1.634-.14 2.055-.047 3.082.7l4.249 2.986c.7.513.934.653.934 1.213v16.378c0 1.026-.373 1.634-1.68 1.726l-15.458.934c-.98.047-1.448-.093-1.962-.747l-3.129-4.06c-.56-.747-.793-1.306-.793-1.96V2.667c0-.839.374-1.54 1.447-1.632z" />
-  </svg>
-);
-
-export const MCP_PRESETS: McpPreset[] = [
-  {
-    id: "notion",
-    name: "Notion",
-    url: "https://mcp.notion.com/mcp",
-    auth: "oauth",
-    logo: NotionMark,
-  },
-];
-
 /**
- * A provisioned template as a tile: the same shape a built-in preset has, with a
- * letter mark standing in for the logo this deployment does not ship.
+ * A catalogue entry as a tile, with a letter mark standing in for a logo: templates
+ * come from the deployment's settings, and the frontend ships none of its own.
  */
-function toPreset(entry: McpCatalogEntry): McpPreset {
+export function toPreset(entry: McpCatalogEntry): McpPreset {
   const letter = (entry.letter || entry.name).trim().charAt(0).toUpperCase();
   return {
     id: entry.id,
@@ -80,13 +58,9 @@ export function McpPresetStrip({
   catalog = [],
 }: {
   onPick: (preset: McpPreset) => void;
-  /** Preset ids to show. Empty shows every preset. */
+  /** Template ids to show. Empty shows every one in the catalogue. */
   only?: string[];
-  /**
-   * Templates provisioned for this agent. When there are any they ARE the strip —
-   * whoever provisioned it named the providers it should offer, and the ones compiled
-   * in here are this deployment's own suggestion, not an addition to theirs.
-   */
+  /** The templates on offer: the agent's own, or else the deployment's. */
   catalog?: McpCatalogEntry[];
 }) {
   const track = useRef<HTMLDivElement>(null);
@@ -131,18 +105,17 @@ export function McpPresetStrip({
   // One preset would leave most of the strip empty, so the list is repeated until it
   // is wide enough to look like a strip at all — and then doubled, for the wrap.
   // An agent's meta settings may narrow the catalogue; a list that narrowed it to
-  // nothing is treated as no restriction, so the strip is never an empty rail.
-  const provisioned = catalog.map(toPreset);
-  const builtIn = only.length
-    ? MCP_PRESETS.filter((p) => only.includes(p.id))
-    : MCP_PRESETS;
-  const offered = provisioned.length ? provisioned : builtIn;
-  const presets = offered.length ? offered : MCP_PRESETS;
+  // nothing is treated as no restriction.
+  const all = catalog.map(toPreset);
+  const narrowed = only.length ? all.filter((p) => only.includes(p.id)) : all;
+  const presets = narrowed.length ? narrowed : all;
   const filled = Array.from(
-    { length: Math.max(1, Math.ceil(8 / presets.length)) },
+    { length: presets.length ? Math.ceil(8 / presets.length) : 0 },
     () => presets,
   ).flat();
   const tiles = [...filled, ...filled];
+
+  if (!presets.length) return null;
 
   return (
     <div

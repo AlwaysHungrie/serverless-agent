@@ -124,7 +124,7 @@ function missingOf(doc) {
   for (const { key } of doc.fields ?? []) {
     if (stored[key] === undefined) {
       out.push(key);
-    } else if (NESTED.includes(key)) {
+    } else if (key === "max_upload_bytes" || key === "config_defaults") {
       for (const sub of Object.keys(DEFAULTS[key] ?? {})) {
         if (stored[key][sub] === undefined) out.push(`${key}.${sub}`);
       }
@@ -185,6 +185,18 @@ function parseValue(name, kind, text) {
     if (!raw || !Number.isFinite(n)) throw new Error(`${name} wants a number`);
     return n;
   }
+  // A model menu: `id = label` pairs, comma-separated. A bare id is its own label.
+  if (kind === "menu") {
+    return raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const at = item.indexOf("=");
+        if (at < 0) return { id: item, label: item };
+        return { id: item.slice(0, at).trim(), label: item.slice(at + 1).trim() };
+      });
+  }
   if (kind === "json") {
     try {
       return JSON.parse(raw);
@@ -200,10 +212,10 @@ function parseValue(name, kind, text) {
 const PAGE = 20;
 const TABS = ["Overview", "Users", "Requests", "Defaults", "Limits"];
 /**
- * The two settings that are objects of fixed keys, each merged key by key on the
- * Worker — so each key gets a row of its own rather than one row of JSON.
+ * The settings that are objects, each merged key by key on the Worker — so each key
+ * gets a row of its own rather than one row of JSON.
  */
-const NESTED = ["max_upload_bytes", "config_defaults"];
+const NESTED = ["max_upload_bytes", "config_defaults", "field_options"];
 
 /** A list the Worker serves a page at a time. */
 const pager = (pathname, key) => ({
@@ -404,16 +416,26 @@ function settingRow(field, sub) {
   const name = sub ? `${field.key}.${sub}` : field.key;
   const value = sub ? state.settings?.[field.key]?.[sub] : state.settings?.[field.key];
   const shipped = sub ? DEFAULTS[field.key]?.[sub] : DEFAULTS[field.key];
-  // A nested key is typed like the value it replaces: a number stays a number.
-  const kind = sub ? (typeof (value ?? shipped) === "number" ? "number" : "string") : field.kind;
+  // A nested key is typed like the value it replaces: a number stays a number, and a
+  // model menu is edited as `id = label` pairs.
+  const sample = value ?? shipped;
+  const kind = !sub
+    ? field.kind
+    : Array.isArray(sample)
+      ? "menu"
+      : typeof sample === "number"
+        ? "number"
+        : "string";
+  const pairs = (v) => v.map((o) => (o.label && o.label !== o.id ? `${o.id} = ${o.label}` : o.id)).join(", ");
+  const show = (v) => (kind === "menu" && Array.isArray(v) ? pairs(v) : showValue(v));
   const wrap = (v) => (sub ? { [field.key]: { [sub]: v } } : { [field.key]: v });
   const range = field.min !== undefined ? ` (${field.min}–${field.max})` : "";
   return {
-    cells: [name, showValue(value)],
+    cells: [name, kind === "menu" && Array.isArray(value) ? value.map((o) => o.label ?? o).join(", ") : show(value)],
     unset: state.missing.some((m) => m === name || m === field.key || m.startsWith(`${name}.`)),
-    note: `${field.doc}${range}${shipped === undefined ? "" : `  ·  shipped: ${showValue(shipped)}`}`,
+    note: `${field.doc}${range}${shipped === undefined ? "" : `  ·  shipped: ${show(shipped)}`}`,
     enter: () =>
-      startEdit(name, showValue(value), (text) =>
+      startEdit(name, show(value), (text) =>
         saveSettings(wrap(parseValue(name, kind, text)), `${name} saved`)
       ),
     reset:

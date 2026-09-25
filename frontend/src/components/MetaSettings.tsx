@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Lock, LockOpen, Plus, X } from "lucide-react";
 import { ChipList, Field, Toggle } from "@/components/CapabilitySection";
-import { MCP_PRESETS } from "@/components/McpPresets";
+import { toPreset } from "@/components/McpPresets";
 import { McpServers } from "@/components/McpServers";
 import {
   EMPTY_META,
@@ -12,6 +12,7 @@ import {
   type CapabilityField,
   type Config,
   type McpAuth,
+  type McpCatalogEntry,
   type MetaMcpServer,
   type MetaSettings,
   type SpendState,
@@ -339,10 +340,13 @@ export function MetaSettingsForm({
   agentId,
   onlyOpenrouter = false,
   spend,
+  mcpCatalog = [],
 }: {
   meta: MetaSettings;
   onChange: (next: MetaSettings) => void;
   models: ModelOption[];
+  /** The deployment's MCP templates, which this agent's own catalogue replaces when it has one. */
+  mcpCatalog?: McpCatalogEntry[];
   capabilities: Capability[];
   /**
    * The agent's own settings, once there is an agent. Null in the create dialog,
@@ -789,7 +793,7 @@ export function MetaSettingsForm({
         hint="MCP templates provide easier way to the user to add an MCP server. If none are selected, all of them are presented to the user."
       >
         <div className="flex flex-wrap gap-2">
-          {MCP_PRESETS.map((preset) => {
+          {(meta.mcp.catalog.length ? meta.mcp.catalog : mcpCatalog).map(toPreset).map((preset) => {
             const on = meta.mcp.templates.includes(preset.id);
             return (
               <button
@@ -879,6 +883,7 @@ export function MetaSettingsDialog({
    */
   const [changed, setChanged] = useState<Partial<Config>>({});
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [mcpCatalog, setMcpCatalog] = useState<McpCatalogEntry[]>([]);
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   /** What the agent has spent this month, shown beside the ceiling it is set against. */
   const [spend, setSpend] = useState<SpendState | null>(null);
@@ -898,6 +903,7 @@ export function MetaSettingsDialog({
         meta: MetaSettings;
         config: Config;
         models: ModelOption[];
+        mcp_catalog?: McpCatalogEntry[];
         capabilities: Capability[];
         spend?: SpendState;
         error?: string;
@@ -909,6 +915,7 @@ export function MetaSettingsDialog({
       setMeta({ ...EMPTY_META, ...payload.meta });
       setConfig(payload.config);
       setModels(payload.models);
+      setMcpCatalog(payload.mcp_catalog ?? []);
       setCapabilities(payload.capabilities);
       setSpend(payload.spend ?? null);
     })();
@@ -999,6 +1006,7 @@ export function MetaSettingsDialog({
               meta={meta}
               onChange={setMeta}
               models={models}
+              mcpCatalog={mcpCatalog}
               capabilities={capabilities}
               config={config}
               onConfigChange={editConfig}

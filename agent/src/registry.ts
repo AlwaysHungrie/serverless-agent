@@ -183,17 +183,15 @@ export type MetaSettings = {
    */
   field_options: Record<string, string[]>;
   mcp: {
-    /** Preset ids offered on the capabilities page. Empty means every preset. */
+    /** Template ids offered on the capabilities page, out of the catalogue. Empty means every one. */
     templates: string[];
     /**
      * Templates supplied by whoever provisioned this agent, shown on the capabilities
-     * page in place of the ones the Worker ships.
+     * page in place of the deployment's `mcp_catalog`.
      *
-     * The strip's built-in presets are compiled into this deployment's frontend, so an
-     * owner running their own connector catalogue elsewhere cannot reach them with
-     * `templates` — an id it does not hold renders nothing. A definition carries what a
-     * tile actually needs (a name, a url, how it authenticates), which is what lets a
-     * catalogue live outside this repo. Empty leaves the built-in presets alone.
+     * A definition carries what a tile actually needs (a name, a url, how it
+     * authenticates), which is what lets a catalogue live outside this repo. Empty
+     * leaves the deployment's catalogue in force.
      */
     catalog: McpCatalogEntry[];
     /** Servers added to the agent when the defaults are applied, matched by name. */
@@ -232,12 +230,11 @@ export type MetaSettings = {
 };
 
 /**
- * One provider on the capabilities page's strip, described by whoever provisioned the
- * agent rather than by this deployment.
+ * One provider on the capabilities page's strip — from the deployment's `mcp_catalog`,
+ * or from whoever provisioned the agent.
  *
- * The same four things a built-in preset is, minus the logo: a mark drawn from `letter`
- * and `color` needs no asset shipped, and an SVG from outside would be markup this
- * Worker has no business rendering.
+ * No logo: a mark drawn from `letter` and `color` needs no asset shipped, and an SVG
+ * from outside would be markup this Worker has no business rendering.
  */
 export type McpCatalogEntry = {
   id: string;

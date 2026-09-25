@@ -49,7 +49,29 @@
     "cap_whatsapp": 0,
     "cap_mcp": 1
   },
-  "mcp_catalog": [],
-  "mcp_templates": [],
-  "field_options": {}
+  "mcp_catalog": [
+    { "id": "notion", "name": "Notion", "url": "https://mcp.notion.com/mcp", "auth": "oauth", "letter": "N", "color": "#000000" }
+  ],
+  "field_options": {
+    "image_model": [
+      { "id": "google/gemini-3.1-flash-lite-image", "label": "Nano Banana 2 Lite — cheapest" },
+      { "id": "google/gemini-2.5-flash-image", "label": "Nano Banana (Gemini 2.5 Flash)" },
+      { "id": "google/gemini-3.1-flash-image", "label": "Nano Banana 2 (Gemini 3.1 Flash)" },
+      { "id": "google/gemini-3-pro-image", "label": "Nano Banana Pro — best quality" },
+      { "id": "openai/gpt-5-image-mini", "label": "GPT-5 Image Mini" },
+      { "id": "openai/gpt-5-image", "label": "GPT-5 Image" }
+    ],
+    "transcription_model": [
+      { "id": "google/gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash Lite — cheapest" },
+      { "id": "google/gemini-3.1-flash-lite", "label": "Gemini 3.1 Flash Lite" },
+      { "id": "google/gemini-3.5-flash-lite", "label": "Gemini 3.5 Flash Lite" },
+      { "id": "mistralai/voxtral-small-24b-2507", "label": "Voxtral Small 24B — speech-native" },
+      { "id": "openai/gpt-audio-mini", "label": "GPT Audio Mini" },
+      { "id": "google/gemini-3.8-flash", "label": "Gemini 3.8 Flash — best quality" }
+    ],
+    "voice_model": [
+      { "id": "openai/gpt-audio-mini", "label": "GPT Audio Mini — cheapest" },
+      { "id": "openai/gpt-audio", "label": "GPT Audio — best quality" }
+    ]
+  }
 }

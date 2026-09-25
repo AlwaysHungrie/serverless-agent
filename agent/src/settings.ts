@@ -63,18 +63,21 @@ export const SETTABLE_CONFIG_KEYS = [
 export type SettableConfigKey = (typeof SETTABLE_CONFIG_KEYS)[number];
 
 /**
- * The config columns whose *list of choices* a deployment may widen.
+ * The config columns whose *list of choices* the deployment sets.
  *
  * These three are the fixed-choice fields on the capabilities page: the page offers a
  * menu rather than a text box, because most OpenRouter ids would fail outright for the
- * modality the capability needs. Which ids are on that menu is still a question about
- * the deployment, so it is answerable here — `MetaSettings.field_options` answers the
- * same question one agent at a time, and wins where it has an answer.
+ * modality the capability needs. Which ids are on that menu is a question about the
+ * deployment, so it is answered here and nowhere in the code — `MetaSettings.field_options`
+ * narrows it one agent at a time, and wins where it has an answer.
  *
  * Named here rather than read off `CAPABILITIES` so this module does not import
  * `capabilities.ts`, which imports this one.
  */
 export const CHOICE_FIELD_KEYS = ["image_model", "transcription_model", "voice_model"] as const;
+
+/** One entry on a fixed-choice menu: an OpenRouter id, and the name it is shown under. */
+export type ChoiceOption = { id: string; label: string };
 
 export type DeploymentSettings = {
   /* ---- hard limits ---- */
@@ -127,20 +130,15 @@ export type DeploymentSettings = {
   /** Starting values for the tuning and capability columns — every one of them. */
   config_defaults: Pick<Config, SettableConfigKey>;
   /**
-   * MCP providers offered on the capabilities page, in place of the ones the frontend
-   * ships. Empty leaves the built-in presets alone.
+   * MCP providers offered as templates on the capabilities page. The frontend ships
+   * none of its own, so empty offers none.
    */
   mcp_catalog: McpCatalogEntry[];
-  /** Which built-in preset ids are offered. Empty means every preset. */
-  mcp_templates: string[];
   /**
-   * Extra choices for the fixed-choice model fields, by config column — one of
-   * `CHOICE_FIELD_KEYS`. They replace the menu the Worker ships for that field rather
-   * than adding to it, which is the rule `MetaSettings.field_options` already follows,
-   * so a deployment that wants the shipped ids plus one lists all of them. An absent
-   * or empty list leaves the shipped menu alone.
+   * The menu for each fixed-choice model field, by config column — every one of
+   * `CHOICE_FIELD_KEYS`, at least one entry each. The Worker ships no menu of its own.
    */
-  field_options: Record<string, string[]>;
+  field_options: Record<(typeof CHOICE_FIELD_KEYS)[number], ChoiceOption[]>;
 };
 
 /**
@@ -197,12 +195,11 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
   { key: "default_model", kind: "string", doc: "model a new agent is seeded with", group: "default" },
   { key: "system_prompt", kind: "string", doc: "line every agent is told first; blank says nothing", group: "default" },
   { key: "config_defaults", kind: "json", doc: `starting values for every one of: ${SETTABLE_CONFIG_KEYS.join(", ")}`, group: "default" },
-  { key: "mcp_catalog", kind: "json", doc: "MCP providers offered: [{id,name,url,auth,letter?,color?}]", group: "default" },
-  { key: "mcp_templates", kind: "json", doc: "built-in preset ids offered; empty means every preset", group: "default" },
+  { key: "mcp_catalog", kind: "json", doc: "MCP templates offered: [{id,name,url,auth,letter?,color?}]; empty offers none", group: "default" },
   {
     key: "field_options",
     kind: "json",
-    doc: `model menus, by column: ${CHOICE_FIELD_KEYS.join(", ")} — e.g. {"voice_model":["openai/gpt-audio"]}`,
+    doc: `models each fixed-choice field offers (${CHOICE_FIELD_KEYS.join(", ")}): [{id,label}], at least one`,
     group: "default",
   },
 ];
@@ -228,6 +225,16 @@ export function missingSettings(stored: StoredSettings): string[] {
   if (stored.config_defaults) {
     for (const key of SETTABLE_CONFIG_KEYS) {
       if (stored.config_defaults[key] === undefined) missing.push(`config_defaults.${key}`);
+    }
+  }
+  if (stored.field_options) {
+    // A column still holding bare ids is from before menus carried their names, so it
+    // is as good as unset: `init` writes the shipped menu over it.
+    for (const key of CHOICE_FIELD_KEYS) {
+      const menu = stored.field_options[key] as unknown;
+      if (!Array.isArray(menu) || !menu.length || menu.some((o) => !isObject(o))) {
+        missing.push(`field_options.${key}`);
+      }
     }
   }
   if (stored.models && !stored.models.length) missing.push("models");
@@ -281,7 +288,11 @@ export function validateSettingsPatch(
   current: StoredSettings
 ): StoredSettings {
   if (!isObject(input)) throw new SettingsError("a settings object is required");
-  const next: StoredSettings = { ...current };
+  // A key this Worker no longer has a field for is dropped on the way through, so a
+  // setting removed from the code leaves the stored document on its next save.
+  const next: StoredSettings = Object.fromEntries(
+    Object.entries(current).filter(([key]) => FIELD_BY_KEY.has(key))
+  );
 
   for (const [key, value] of Object.entries(input)) {
     const field = FIELD_BY_KEY.get(key);
@@ -346,35 +357,32 @@ export function validateSettingsPatch(
       }
       case "field_options": {
         if (!isObject(value)) throw new SettingsError("field_options must be an object");
-        const merged: Record<string, string[]> = { ...next.field_options };
-        for (const [column, ids] of Object.entries(value)) {
+        const merged: Record<string, ChoiceOption[]> = { ...next.field_options };
+        for (const [column, menu] of Object.entries(value)) {
           if (!(CHOICE_FIELD_KEYS as readonly string[]).includes(column)) {
             throw new SettingsError(
               `field_options.${column} is not a choice field; one of: ${CHOICE_FIELD_KEYS.join(", ")}`
             );
           }
-          if (ids === null) {
-            delete merged[column];
-            continue;
+          if (!Array.isArray(menu) || !menu.length) {
+            throw new SettingsError(`field_options.${column} must be a list of at least one model`);
           }
-          if (!Array.isArray(ids)) {
-            throw new SettingsError(`field_options.${column} must be an array`);
-          }
-          const cleaned = ids.map((id) => String(id).trim()).filter(Boolean);
-          for (const id of cleaned) {
+          const seen = new Set<string>();
+          merged[column] = menu.flatMap((entry, i) => {
+            if (!isObject(entry)) {
+              throw new SettingsError(`field_options.${column}[${i}] must be {id, label}`);
+            }
+            const id = String(entry.id ?? "").trim();
             // Same shape check the meta route applies: a provider id, not prose.
             if (!/^[\w.-]+\/[\w.\-:]+$/.test(id)) {
               throw new SettingsError(`not an OpenRouter model id: ${id}`);
             }
-          }
-          merged[column] = [...new Set(cleaned)];
+            if (seen.has(id)) return [];
+            seen.add(id);
+            return [{ id, label: String(entry.label ?? id).trim() || id }];
+          });
         }
-        next.field_options = merged;
-        break;
-      }
-      case "mcp_templates": {
-        if (!Array.isArray(value)) throw new SettingsError("mcp_templates must be an array");
-        next.mcp_templates = value.map((id) => String(id).trim()).filter(Boolean);
+        next.field_options = merged as DeploymentSettings["field_options"];
         break;
       }
       case "config_defaults": {

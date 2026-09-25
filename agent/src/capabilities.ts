@@ -50,6 +50,9 @@ export type CapabilityField = {
    * When present the field is a fixed choice, not free text. Every model this app can
    * pick is an OpenRouter model, and OpenRouter's catalogue is far too large and too
    * uneven to type an id into: most ids would fail for the capability at hand.
+   *
+   * Empty in `CAPABILITIES`: the menu is the deployment's `field_options`, written in
+   * by `capabilitiesFor` before a capability list leaves the Worker.
    */
   options?: { value: string; label: string }[];
   /**
@@ -92,39 +95,6 @@ export type Capability = {
   tools: string[];
   fields: CapabilityField[];
 };
-
-/**
- * The model choices offered on the capabilities page: OpenRouter ids filtered by the
- * modality each capability needs — image output, audio input — because a model without
- * it fails at the API call, not at the setting. Cheapest first.
- */
-const IMAGE_MODELS = [
-  { value: "google/gemini-3.1-flash-lite-image", label: "Nano Banana 2 Lite — cheapest" },
-  { value: "google/gemini-2.5-flash-image", label: "Nano Banana (Gemini 2.5 Flash)" },
-  { value: "google/gemini-3.1-flash-image", label: "Nano Banana 2 (Gemini 3.1 Flash)" },
-  { value: "google/gemini-3-pro-image", label: "Nano Banana Pro — best quality" },
-  { value: "openai/gpt-5-image-mini", label: "GPT-5 Image Mini" },
-  { value: "openai/gpt-5-image", label: "GPT-5 Image" },
-];
-
-/**
- * Models that can speak. Audio *output* is rare on OpenRouter — these are the two
- * chat models that have it — so this list is short by the catalogue's doing, not by
- * choice. Cheapest first.
- */
-const VOICE_MODELS = [
-  { value: "openai/gpt-audio-mini", label: "GPT Audio Mini — cheapest" },
-  { value: "openai/gpt-audio", label: "GPT Audio — best quality" },
-];
-
-const TRANSCRIPTION_MODELS = [
-  { value: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite — cheapest" },
-  { value: "google/gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
-  { value: "google/gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
-  { value: "mistralai/voxtral-small-24b-2507", label: "Voxtral Small 24B — speech-native" },
-  { value: "openai/gpt-audio-mini", label: "GPT Audio Mini" },
-  { value: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash — best quality" },
-];
 
 /**
  * What the whitelists start out as the first time Telegram is switched on. A list
@@ -208,7 +178,8 @@ export const CAPABILITIES: Capability[] = [
         label: "Image model",
         secret: false,
         required: true,
-        options: IMAGE_MODELS,
+        // Filled from the deployment's `field_options`: the code ships no menu.
+        options: [],
       },
     ],
   },
@@ -224,7 +195,8 @@ export const CAPABILITIES: Capability[] = [
         label: "Transcription model",
         secret: false,
         required: true,
-        options: TRANSCRIPTION_MODELS,
+        // Filled from the deployment's `field_options`: the code ships no menu.
+        options: [],
       },
     ],
   },
@@ -241,7 +213,8 @@ export const CAPABILITIES: Capability[] = [
         label: "Voice model",
         secret: false,
         required: true,
-        options: VOICE_MODELS,
+        // Filled from the deployment's `field_options`: the code ships no menu.
+        options: [],
       },
     ],
   },
