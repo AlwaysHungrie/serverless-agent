@@ -2229,12 +2229,20 @@ export class AgentDirectory extends DurableObject {
    * the deployment holds. Sessions come from the cached per-agent counter rather
    * than from the session registries, which is what keeps this to a single read.
    */
-  counts(): { users: number; agents: number; sessions: number } {
+  counts(): {
+    users: number;
+    agents: number;
+    sessions: number;
+    business_accounts: number;
+    open_requests: number;
+  } {
     this.ensureSchema();
     const row = this.ctx.storage.sql
       .exec(
         `SELECT
            (SELECT COUNT(*) FROM agents) AS agents,
+           (SELECT COUNT(*) FROM account_limits) AS business_accounts,
+           (SELECT COUNT(*) FROM business_requests) AS open_requests,
            (SELECT COALESCE(SUM(MAX(session_count, 0)), 0) FROM agents) AS sessions,
            (SELECT COUNT(*) FROM (
               SELECT admin_email AS email FROM agents WHERE admin_email != ''
@@ -2242,11 +2250,82 @@ export class AgentDirectory extends DurableObject {
               SELECT email FROM agent_members
             )) AS users`
       )
-      .toArray()[0] as { users: number; agents: number; sessions: number } | undefined;
+      .toArray()[0] as
+      | {
+          users: number;
+          agents: number;
+          sessions: number;
+          business_accounts: number;
+          open_requests: number;
+        }
+      | undefined;
     return {
       users: row?.users ?? 0,
       agents: row?.agents ?? 0,
       sessions: row?.sessions ?? 0,
+      business_accounts: row?.business_accounts ?? 0,
+      open_requests: row?.open_requests ?? 0,
+    };
+  }
+
+  /**
+   * One page of every address the deployment knows — each admin and each member — in
+   * email order, narrowed to those containing `query` when there is one. Admin CLI only.
+   *
+   * `cursor` is the last email of the previous page: the list is keyed on the address
+   * itself, so a user added mid-scroll cannot make a page skip or repeat a row.
+   */
+  listUsers(limit = 20, cursor = "", query = ""): UserPage {
+    this.ensureSchema();
+    const size = Math.max(1, Math.min(limit, 100));
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT u.email AS email,
+                (SELECT COUNT(*) FROM agents a WHERE a.admin_email = u.email) AS agents
+           FROM (SELECT admin_email AS email FROM agents WHERE admin_email != ''
+                 UNION
+                 SELECT email FROM agent_members) u
+          WHERE u.email > ? AND instr(u.email, ?) > 0
+          ORDER BY u.email ASC LIMIT ?`,
+        cursor,
+        query.trim().toLowerCase(),
+        size + 1
+      )
+      .toArray() as unknown as { email: string; agents: number }[];
+    const page = rows.slice(0, size);
+    return {
+      users: page,
+      has_more: rows.length > size,
+      cursor: rows.length > size ? page[page.length - 1].email : "",
+    };
+  }
+
+  /**
+   * One address's view for the admin CLI: its agent limit, and every agent it
+   * administers or may open, with that agent's session count.
+   */
+  userDetail(email: string): UserDetail {
+    this.ensureSchema();
+    const wanted = email.trim().toLowerCase();
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT id, name, admin_email, MAX(session_count, 0) AS sessions FROM agents
+          WHERE admin_email = ?
+             OR id IN (SELECT agent_id FROM agent_members WHERE email = ?)
+          ORDER BY created_at ASC, id ASC`,
+        wanted,
+        wanted
+      )
+      .toArray() as unknown as { id: string; name: string; admin_email: string; sessions: number }[];
+    return {
+      email: wanted,
+      agent_limit: this.getAgentLimit(wanted),
+      agents: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        role: r.admin_email === wanted ? "admin" : "member",
+        sessions: r.sessions,
+      })),
     };
   }
 
@@ -2403,6 +2482,20 @@ export class AgentDirectory extends DurableObject {
     return { email: row.email, agent_limit };
   }
 }
+
+/** One page of the deployment's addresses, with the cursor that continues it. */
+export type UserPage = {
+  users: { email: string; agents: number }[];
+  has_more: boolean;
+  cursor: string;
+};
+
+/** One address as the admin CLI shows it. */
+export type UserDetail = {
+  email: string;
+  agent_limit: number;
+  agents: { id: string; name: string; role: "admin" | "member"; sessions: number }[];
+};
 
 /** One page of pending asks, with the cursor that continues it. */
 export type BusinessRequestPage = {

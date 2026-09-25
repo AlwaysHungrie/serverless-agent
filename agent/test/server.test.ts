@@ -124,6 +124,11 @@ describe("the identity gate", () => {
     expect((await SELF.fetch(`${BASE}/api/admin/stats`)).status).toBe(401);
   });
 
+  it("refuses an anonymous caller on the owner's user list", async () => {
+    expect((await SELF.fetch(`${BASE}/api/admin/users`)).status).toBe(401);
+    expect((await SELF.fetch(`${BASE}/api/admin/users/a%40x.com`)).status).toBe(401);
+  });
+
   it("refuses an anonymous caller on the owner's request queue", async () => {
     expect((await SELF.fetch(`${BASE}/api/admin/business-requests`)).status).toBe(401);
   });
@@ -309,6 +314,31 @@ describe("the owner's admin switch", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { agents: number };
     expect(body.agents).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("users over HTTP", () => {
+  it("finds a user by search and opens their agents", async () => {
+    const email = someone("listed");
+    await createAgent(email, "Listed Agent");
+    const list = await SELF.fetch(
+      `${BASE}/api/admin/users?q=${encodeURIComponent(email)}`,
+      asOwner()
+    );
+    expect(list.status).toBe(200);
+    expect(((await list.json()) as { users: { email: string }[] }).users).toEqual([
+      { email, agents: 1 },
+    ]);
+    const detail = await SELF.fetch(
+      `${BASE}/api/admin/users/${encodeURIComponent(email)}`,
+      asOwner()
+    );
+    const body = (await detail.json()) as {
+      agent_limit: number;
+      agents: { name: string; role: string }[];
+    };
+    expect(body.agent_limit).toBe(DEFAULT_AGENT_LIMIT);
+    expect(body.agents.map((a) => [a.name, a.role])).toEqual([["Listed Agent", "admin"]]);
   });
 });
 

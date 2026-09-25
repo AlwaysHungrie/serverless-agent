@@ -206,13 +206,19 @@ describe("the admin settings route", () => {
     const body = (await res.json()) as {
       settings: Record<string, unknown>;
       missing: string[];
-      fields: { key: string; kind: string; doc: string }[];
+      fields: { key: string; kind: string; doc: string; group: string }[];
     };
     expect(body.settings.max_sessions).toBe(SHIPPED.max_sessions);
     expect(body.missing).toEqual([]);
     // The CLI draws itself from this, so every setting has to be described by it.
     expect(body.fields.map((f) => f.key)).toContain("max_upload_bytes");
     expect(body.fields.every((f) => f.doc.length > 0)).toBe(true);
+    // And sorted onto its limits or defaults tab.
+    const group = Object.fromEntries(body.fields.map((f) => [f.key, f.group]));
+    expect(group.max_sessions).toBe("limit");
+    expect(group.max_upload_bytes).toBe("limit");
+    expect(group.system_prompt).toBe("default");
+    expect(group.config_defaults).toBe("default");
   });
 
   it("saves a setting and reports what is now in force", async () => {

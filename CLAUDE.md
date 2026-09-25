@@ -13,7 +13,7 @@
   catalogue, seeded model, system prompt, per-column starting values, MCP templates and
   catalogue) is one runtime document — no deploy needed.
 - Defined in `agent/src/settings.ts`, stored in `AgentDirectory`, edited from the
-  `admin-cli` settings screen (`s` on the list screen).
+  `admin-cli` Defaults and Limits tabs.
 - Routes: `GET|PATCH /api/admin/settings`, same `x-api-secret` gate as below.
 - No hardcoded fallbacks: every field is required. Until the stored document is complete
   the Worker 503s every route except `/api/admin/settings` and `/api/admin/stats`, and

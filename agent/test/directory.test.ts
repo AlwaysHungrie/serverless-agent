@@ -329,6 +329,17 @@ describe("deployment counts", () => {
     expect(counts.agents).toBe(2);
     expect(counts.sessions).toBe(7);
     expect(counts.users).toBe(2);
+    expect(counts.business_accounts).toBe(0);
+    expect(counts.open_requests).toBe(0);
+  });
+
+  it("counts business accounts and open requests", async () => {
+    await dir.setAgentLimit("biz@x.com", 5);
+    await dir.fileBusinessRequest("a@x.com", 2);
+    await dir.fileBusinessRequest("b@x.com", 3);
+    const counts = await dir.counts();
+    expect(counts.business_accounts).toBe(1);
+    expect(counts.open_requests).toBe(2);
   });
 
   it("counts an address administering several agents once", async () => {
@@ -344,5 +355,54 @@ describe("deployment counts", () => {
     expect(await dir.unmeasuredAgents()).toEqual(["a1"]);
     await dir.setSessionCount("a1", 0);
     expect(await dir.unmeasuredAgents()).toEqual([]);
+  });
+});
+
+describe("users for the admin CLI", () => {
+  it("lists admins and members once each, in email order", async () => {
+    await dir.create("a1", "One", "b@x.com\nc@x.com", "a@x.com");
+    await dir.create("a2", "Two", "c@x.com", "c@x.com");
+    const page = await dir.listUsers(10);
+    expect(page.users).toEqual([
+      { email: "a@x.com", agents: 1 },
+      { email: "b@x.com", agents: 0 },
+      { email: "c@x.com", agents: 1 },
+    ]);
+    expect(page.has_more).toBe(false);
+  });
+
+  it("pages by email without skipping or repeating", async () => {
+    for (const n of [1, 2, 3, 4, 5]) await dir.create(`a${n}`, "A", `u${n}@x.com`, `u${n}@x.com`);
+    const first = await dir.listUsers(2);
+    expect(first.users.map((u) => u.email)).toEqual(["u1@x.com", "u2@x.com"]);
+    expect(first.has_more).toBe(true);
+    const second = await dir.listUsers(2, first.cursor);
+    expect(second.users.map((u) => u.email)).toEqual(["u3@x.com", "u4@x.com"]);
+    const third = await dir.listUsers(2, second.cursor);
+    expect(third.users.map((u) => u.email)).toEqual(["u5@x.com"]);
+    expect(third.has_more).toBe(false);
+    expect(third.cursor).toBe("");
+  });
+
+  it("narrows to addresses containing the search, case-insensitively", async () => {
+    await dir.create("a1", "One", "alice@acme.com", "alice@acme.com");
+    await dir.create("a2", "Two", "bob@other.com", "bob@other.com");
+    const page = await dir.listUsers(10, "", "ACME");
+    expect(page.users.map((u) => u.email)).toEqual(["alice@acme.com"]);
+  });
+
+  it("opens one address: its limit, and every agent it administers or uses", async () => {
+    await dir.create("a1", "Mine", "", "u@x.com");
+    await dir.create("a2", "Shared", "u@x.com", "other@x.com");
+    await dir.create("a3", "Not mine", "other@x.com", "other@x.com");
+    await dir.setSessionCount("a1", 4);
+    await dir.setAgentLimit("u@x.com", 3);
+    const detail = await dir.userDetail("U@x.com");
+    expect(detail.email).toBe("u@x.com");
+    expect(detail.agent_limit).toBe(3);
+    expect(detail.agents).toEqual([
+      { id: "a1", name: "Mine", role: "admin", sessions: 4 },
+      { id: "a2", name: "Shared", role: "member", sessions: 0 },
+    ]);
   });
 });

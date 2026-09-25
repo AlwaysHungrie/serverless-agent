@@ -3048,6 +3048,31 @@ export default {
       return withCors(Response.json(await dir.counts()));
     }
 
+    // Every address the deployment knows, paged and searchable, and one address
+    // opened up: its agent limit and its agents. Same gate as the stats above.
+    if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "users") {
+      if (!trustedCaller(request, env)) {
+        return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
+      }
+      if (request.method !== "GET") {
+        return withCors(Response.json({ error: "method not allowed" }, { status: 405 }));
+      }
+      const dir = directory(env);
+      if (segments[3]) {
+        return withCors(Response.json(await dir.userDetail(decodeURIComponent(segments[3]))));
+      }
+      const limit = Number(url.searchParams.get("limit") ?? 20);
+      return withCors(
+        Response.json(
+          await dir.listUsers(
+            Number.isFinite(limit) ? limit : 20,
+            url.searchParams.get("cursor") ?? "",
+            url.searchParams.get("q") ?? ""
+          )
+        )
+      );
+    }
+
     // Everything past this point has to be somebody. Not "came from the app" — that
     // was the old gate, and a shared secret is a poor answer to a question about
     // identity — but an address this Worker is willing to stand behind: one out of a

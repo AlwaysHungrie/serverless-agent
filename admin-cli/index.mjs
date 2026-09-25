@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 // Interactive CLI dashboard for the salt-agent deployment.
 //
-// Three screens: the deployment's three counts with the queue of accounts asking for a
-// higher agent limit, the detail screen where a request is approved or rejected, and
-// the settings screen — every ceiling this deployment enforces and every value an agent
-// starts out holding, editable in place.
+// Five tabs, each a list of rows — a row either holds a value that `enter` edits, or
+// is information only:
 //
-// The field list, the ranges it refuses and the prose beside each row all come from
-// `/api/admin/settings`, so a field added to the Worker's `settings.ts` shows up here
-// with no edit at all. What this package does hold is `defaults.json`: the values a
-// deployment starts from. The Worker ships none of its own and refuses to serve until
-// every field is set, so these are the only defaults there are.
+//   1 Overview   the deployment's counts
+//   2 Users      every address, paged and searchable; `enter` opens one — its agent
+//                limit (editable) and its agents with their session counts
+//   3 Requests   the queue of accounts asking for a higher agent limit
+//   4 Defaults   the values every agent starts out holding
+//   5 Limits     every ceiling the deployment enforces
+//
+// The settings rows, the ranges the Worker refuses and the prose beside each row all
+// come from `/api/admin/settings`, so a field added to the Worker's `settings.ts` shows
+// up here with no edit at all. What this package does hold is `defaults.json`: the
+// values a deployment starts from. The Worker ships none of its own and refuses to
+// serve until every field is set, so these are the only defaults there are.
 //
 // Two non-interactive commands, for scripts and the deploy preflight:
 //
@@ -82,7 +87,10 @@ if (!API_SECRET) {
   process.exit(1);
 }
 
-/** A call against the deployment, with the owner's secret attached. */
+/**
+ * A call against the deployment, with the owner's secret attached. A refusal throws
+ * with the Worker's own `error` line as its message, which is what the status bar shows.
+ */
 async function call(pathname, init = {}) {
   const res = await fetch(`${BASE_URL}${pathname}`, {
     ...init,
@@ -90,54 +98,15 @@ async function call(pathname, init = {}) {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    const err = new Error(`${res.status} ${res.statusText}${body ? `: ${body}` : ""}`);
+    let reason = body;
+    try {
+      reason = JSON.parse(body).error ?? body;
+    } catch {}
+    const err = new Error(reason || `${res.status} ${res.statusText}`);
     err.status = res.status;
     throw err;
   }
   return res.json();
-}
-
-const PAGE = 20;
-
-const state = {
-  counts: null,
-  requests: [],
-  cursor: "",
-  hasMore: true,
-  loading: false,
-  selected: 0,
-  /** Index into `requests`, or -1 while the list itself is on screen. */
-  detail: -1,
-  choice: 0, // 0 approve, 1 reject
-  top: 0, // first visible row, moved only when the selection would leave the window
-  status: "",
-
-  /** "requests" or "settings". The detail screen is a mode of the first. */
-  screen: "requests",
-  /** The stored document, the fields it is still missing, and the field list. */
-  settings: null,
-  missing: [],
-  fields: [],
-  settingsSelected: 0,
-  settingsTop: 0,
-  /** Non-null while a value is being typed: `{ key, buffer }`. */
-  editing: null,
-};
-
-/** Fetch the settings document and the field descriptors that describe it. */
-async function loadSettings() {
-  state.loading = true;
-  render();
-  try {
-    const doc = await call("/api/admin/settings");
-    state.settings = doc.settings;
-    state.missing = missingOf(doc);
-    state.fields = doc.fields ?? [];
-  } catch (err) {
-    state.status = `could not load settings — ${err.message}`;
-  }
-  state.loading = false;
-  render();
 }
 
 /**
@@ -155,7 +124,7 @@ function missingOf(doc) {
   for (const { key } of doc.fields ?? []) {
     if (stored[key] === undefined) {
       out.push(key);
-    } else if (key === "max_upload_bytes" || key === "config_defaults") {
+    } else if (NESTED.includes(key)) {
       for (const sub of Object.keys(DEFAULTS[key] ?? {})) {
         if (stored[key][sub] === undefined) out.push(`${key}.${sub}`);
       }
@@ -193,40 +162,6 @@ function defaultsFor(missing) {
   return patch;
 }
 
-/**
- * Every field back on the shipped value. `field_options` merges per column on the
- * Worker, so a column the defaults do not list is sent as null to drop it.
- */
-function allDefaults(fields, current) {
-  const patch = {};
-  for (const { key } of fields) if (key in DEFAULTS) patch[key] = DEFAULTS[key];
-  if (patch.field_options) {
-    const dropped = Object.keys(current?.field_options ?? {}).filter(
-      (column) => !(column in DEFAULTS.field_options)
-    );
-    patch.field_options = {
-      ...DEFAULTS.field_options,
-      ...Object.fromEntries(dropped.map((column) => [column, null])),
-    };
-  }
-  return patch;
-}
-
-/** Send a patch from the settings screen and show what came back. */
-async function saveSettings(patch, done) {
-  state.status = "saving…";
-  render();
-  try {
-    const doc = await patchSettings(patch);
-    state.settings = doc.settings;
-    state.missing = missingOf(doc);
-    state.status = done;
-  } catch (err) {
-    state.status = err.message.replace(/^\d+ [^:]*: /, "");
-  }
-  render();
-}
-
 /** How a value is shown on a row, and what `enter` starts editing. */
 function showValue(value) {
   if (value === undefined) return "";
@@ -243,215 +178,462 @@ function showValue(value) {
  * Anything the Worker will not take comes back as its own error message, which is the
  * only validation this CLI needs to know about.
  */
-function parseValue(field, text) {
+function parseValue(name, kind, text) {
   const raw = text.trim();
-  if (field.kind === "int" || field.kind === "number") {
+  if (kind === "int" || kind === "number") {
     const n = Number(raw);
-    if (!Number.isFinite(n)) throw new Error(`${field.key} wants a number`);
+    if (!raw || !Number.isFinite(n)) throw new Error(`${name} wants a number`);
     return n;
   }
-  if (field.kind === "json") {
+  if (kind === "json") {
     try {
       return JSON.parse(raw);
     } catch {
-      throw new Error(`${field.key} wants JSON — e.g. {"pdf": 16000000}`);
+      throw new Error(`${name} wants JSON`);
     }
   }
   return text;
 }
 
-/** Fetch the next page, appending it. Called on startup and as the cursor nears the end. */
-async function loadMore() {
-  if (state.loading || !state.hasMore) return;
-  state.loading = true;
-  render();
+/* ------------------------------------------------------------------ dashboard */
+
+const PAGE = 20;
+const TABS = ["Overview", "Users", "Requests", "Defaults", "Limits"];
+/**
+ * The two settings that are objects of fixed keys, each merged key by key on the
+ * Worker — so each key gets a row of its own rather than one row of JSON.
+ */
+const NESTED = ["max_upload_bytes", "config_defaults"];
+
+/** A list the Worker serves a page at a time. */
+const pager = (pathname, key) => ({
+  pathname,
+  key,
+  rows: [],
+  cursor: "",
+  hasMore: true,
+  loading: false,
+  /** Bumped on every reset, so a page still in flight for the old list is dropped. */
+  gen: 0,
+  query: "",
+  sel: 0,
+  top: 0,
+});
+
+const state = {
+  tab: 0,
+  counts: null,
+  /** The stored settings document, the fields it is still missing, and the field list. */
+  settings: null,
+  missing: [],
+  fields: [],
+  users: pager("/api/admin/users", "users"),
+  requests: pager("/api/admin/business-requests", "requests"),
+  /** The user opened from the Users tab, or null while the list is showing. */
+  user: null,
+  /** Selection and scroll for the tabs that are not paged lists. */
+  pos: { 0: { sel: 0, top: 0 }, 3: { sel: 0, top: 0 }, 4: { sel: 0, top: 0 } },
+  /** Non-null while a value is being typed: `{ label, buffer, submit(text) }`. */
+  edit: null,
+  /** Non-null while a y/n is pending: `{ prompt, run() }`. */
+  confirm: null,
+  status: "",
+};
+
+async function loadCounts() {
   try {
-    const page = await call(
-      `/api/admin/business-requests?limit=${PAGE}${state.cursor ? `&cursor=${encodeURIComponent(state.cursor)}` : ""}`
-    );
-    state.requests.push(...page.requests);
-    state.cursor = page.cursor;
-    state.hasMore = page.has_more;
+    state.counts = await call("/api/admin/stats");
   } catch (err) {
-    state.status = `could not load requests — ${err.message}`;
-    state.hasMore = false;
+    state.status = `could not load counts — ${err.message}`;
   }
-  state.loading = false;
   render();
 }
+
+async function loadSettings() {
+  try {
+    const doc = await call("/api/admin/settings");
+    state.settings = doc.settings;
+    state.missing = missingOf(doc);
+    state.fields = doc.fields ?? [];
+  } catch (err) {
+    state.status = `could not load settings — ${err.message}`;
+  }
+  render();
+}
+
+/** Fetch the next page, appending it. Called on startup and as the cursor nears the end. */
+async function loadMore(p) {
+  if (p.loading || !p.hasMore) return;
+  const gen = p.gen;
+  p.loading = true;
+  render();
+  const params = new URLSearchParams({ limit: String(PAGE) });
+  if (p.cursor) params.set("cursor", p.cursor);
+  if (p.query) params.set("q", p.query);
+  try {
+    const page = await call(`${p.pathname}?${params}`);
+    if (gen !== p.gen) return;
+    p.rows.push(...page[p.key]);
+    p.cursor = page.cursor;
+    p.hasMore = page.has_more;
+  } catch (err) {
+    if (gen !== p.gen) return;
+    state.status = `could not load ${p.key} — ${err.message}`;
+    p.hasMore = false;
+  }
+  p.loading = false;
+  render();
+}
+
+function resetPager(p) {
+  Object.assign(p, { rows: [], cursor: "", hasMore: true, loading: false, sel: 0, top: 0 });
+  p.gen++;
+}
+
+/** Send a settings patch and show what came back. */
+async function saveSettings(patch, done) {
+  state.status = "saving…";
+  render();
+  try {
+    const doc = await patchSettings(patch);
+    state.settings = doc.settings;
+    state.missing = missingOf(doc);
+    state.status = done;
+  } catch (err) {
+    state.status = err.message;
+  }
+  render();
+}
+
+async function fillUnset() {
+  const patch = defaultsFor(state.missing);
+  if (!Object.keys(patch).length) {
+    state.status = `no shipped value for: ${state.missing.join(", ")}`;
+    return render();
+  }
+  await saveSettings(patch, "unset settings filled with the shipped values");
+  await loadCounts();
+}
+
+/** Open a line editor on the status bar, starting from the value in force. */
+function startEdit(label, value, submit) {
+  state.edit = { label, buffer: value, submit };
+  state.status = "";
+  render();
+}
+
+async function openUser(email) {
+  state.status = "loading…";
+  render();
+  try {
+    const detail = await call(`/api/admin/users/${encodeURIComponent(email)}`);
+    state.user = { ...detail, sel: 0, top: 0 };
+    state.status = "";
+  } catch (err) {
+    state.status = err.message;
+  }
+  render();
+}
+
+async function setAgentLimit(email, text) {
+  const agent_limit = parseValue("agent limit", "int", text);
+  const res = await call("/api/admin/business-account", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, agent_limit }),
+  });
+  if (state.user?.email === res.email) state.user.agent_limit = res.agent_limit;
+  state.status = `${res.email} may now administer ${res.agent_limit} agent${res.agent_limit === 1 ? "" : "s"}`;
+  render();
+}
+
+/** Approve or reject one request, once confirmed; either way it leaves the queue. */
+function resolveRequest(r, approve) {
+  state.confirm = {
+    prompt: `${approve ? "Approve" : "Reject"} ${r.email} +${r.requested_increase}?`,
+    run: async () => {
+      state.status = approve ? "approving…" : "rejecting…";
+      render();
+      try {
+        if (approve) {
+          const res = await call(`/api/admin/business-requests/${r.id}/approve`, { method: "POST" });
+          state.status = `approved — ${res.email} now has a limit of ${res.agent_limit}`;
+        } else {
+          await call(`/api/admin/business-requests/${r.id}`, { method: "DELETE" });
+          state.status = `rejected ${r.email}`;
+        }
+        const p = state.requests;
+        p.rows = p.rows.filter((row) => row.id !== r.id);
+        p.sel = Math.max(0, Math.min(p.sel, p.rows.length - 1));
+      } catch (err) {
+        state.status = err.message;
+      }
+      await loadCounts();
+    },
+  };
+  state.status = "";
+  render();
+}
+
+/* ------------------------------------------------------------------ views */
+
+const fmtDate = (ms) => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+
+/** Which tab a settings field sits on. A Worker older than `group` gets it guessed. */
+const groupOf = (field) =>
+  field.group ?? (field.kind === "int" || field.key === "max_upload_bytes" ? "limit" : "default");
+
+/** One row per setting — one per key for the nested ones. */
+function settingRows(group) {
+  const rows = [];
+  for (const field of state.fields.filter((f) => groupOf(f) === group)) {
+    if (NESTED.includes(field.key)) {
+      const keys = new Set([
+        ...Object.keys(DEFAULTS[field.key] ?? {}),
+        ...Object.keys(state.settings?.[field.key] ?? {}),
+      ]);
+      for (const sub of keys) rows.push(settingRow(field, sub));
+    } else {
+      rows.push(settingRow(field));
+    }
+  }
+  return rows;
+}
+
+function settingRow(field, sub) {
+  const name = sub ? `${field.key}.${sub}` : field.key;
+  const value = sub ? state.settings?.[field.key]?.[sub] : state.settings?.[field.key];
+  const shipped = sub ? DEFAULTS[field.key]?.[sub] : DEFAULTS[field.key];
+  // A nested key is typed like the value it replaces: a number stays a number.
+  const kind = sub ? (typeof (value ?? shipped) === "number" ? "number" : "string") : field.kind;
+  const wrap = (v) => (sub ? { [field.key]: { [sub]: v } } : { [field.key]: v });
+  const range = field.min !== undefined ? ` (${field.min}–${field.max})` : "";
+  return {
+    cells: [name, showValue(value)],
+    unset: state.missing.some((m) => m === name || m === field.key || m.startsWith(`${name}.`)),
+    note: `${field.doc}${range}${shipped === undefined ? "" : `  ·  shipped: ${showValue(shipped)}`}`,
+    enter: () =>
+      startEdit(name, showValue(value), (text) =>
+        saveSettings(wrap(parseValue(name, kind, text)), `${name} saved`)
+      ),
+    reset:
+      shipped === undefined ? undefined : () => saveSettings(wrap(shipped), `${name} set to the shipped value`),
+  };
+}
+
+/**
+ * What the current tab shows: its columns, its rows, where the selection is, and the
+ * keys it answers to beyond moving and `enter`.
+ */
+function view() {
+  switch (state.tab) {
+    case 0: {
+      const c = state.counts;
+      const rows = c
+        ? [
+            ["users", c.users],
+            ["agents", c.agents],
+            ["sessions", c.sessions],
+            ["business accounts", c.business_accounts],
+            ["open limit requests", c.open_requests],
+          ].map(([k, v]) => ({ cells: [k, String(v ?? "—")] }))
+        : [];
+      if (c && state.settings) {
+        rows.push({
+          cells: [
+            "settings",
+            state.missing.length
+              ? `${state.missing.length} unset — the deployment is refusing requests`
+              : "complete",
+          ],
+          unset: state.missing.length > 0,
+        });
+      }
+      return { columns: [["", 22], ["", 0]], rows, pos: state.pos[0], empty: "loading…" };
+    }
+
+    case 1: {
+      const u = state.user;
+      if (u) {
+        return {
+          title: u.email,
+          columns: [["", 30], ["", 8], ["", 0]],
+          rows: [
+            {
+              cells: ["agent limit", String(u.agent_limit), ""],
+              enter: () => startEdit("agent limit", String(u.agent_limit), (t) => setAgentLimit(u.email, t)),
+            },
+            ...u.agents.map((a) => ({
+              cells: [a.name, a.role, `${a.sessions} session${a.sessions === 1 ? "" : "s"}`],
+            })),
+          ],
+          pos: u,
+          hint: "enter edit limit   esc back",
+          keys: {
+            "\x1b": () => {
+              state.user = null;
+              state.status = "";
+              render();
+            },
+          },
+        };
+      }
+      const p = state.users;
+      return {
+        title: p.query ? `search: ${p.query}` : "",
+        columns: [["email", 44], ["agents", 0]],
+        rows: p.rows.map((r) => ({ cells: [r.email, String(r.agents)], enter: () => openUser(r.email) })),
+        pos: p,
+        pager: p,
+        empty: p.loading ? "loading…" : p.query ? "no match." : "no users.",
+        hint: `enter open   / search${p.query ? "   esc clear search" : ""}`,
+        keys: {
+          "/": () =>
+            startEdit("search", p.query, async (text) => {
+              p.query = text.trim();
+              resetPager(p);
+              await loadMore(p);
+            }),
+          "\x1b": async () => {
+            if (!p.query) return;
+            p.query = "";
+            resetPager(p);
+            await loadMore(p);
+          },
+        },
+      };
+    }
+
+    case 2: {
+      const p = state.requests;
+      return {
+        columns: [["email", 34], ["agents", 8], ["limit", 12], ["filed", 0]],
+        rows: p.rows.map((r) => ({
+          cells: [
+            r.email,
+            String(r.current_agents),
+            `${r.current_limit} → ${r.current_limit + r.requested_increase}`,
+            fmtDate(r.created_at),
+          ],
+          request: r,
+        })),
+        pos: p,
+        pager: p,
+        empty: p.loading ? "loading…" : "none open.",
+        hint: "a approve   x reject",
+        keys: {
+          a: (row) => row && resolveRequest(row.request, true),
+          x: (row) => row && resolveRequest(row.request, false),
+        },
+      };
+    }
+
+    default: {
+      const group = state.tab === 3 ? "default" : "limit";
+      return {
+        columns: [["setting", 36], ["value", 0]],
+        rows: settingRows(group),
+        pos: state.pos[state.tab],
+        empty: state.fields.length ? "none." : "loading…",
+        showNote: true,
+        hint: "enter edit   d shipped value",
+        keys: { d: (row) => row?.reset?.() },
+      };
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ drawing */
 
 const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
 const INV = "\x1b[7m";
 const OFF = "\x1b[0m";
 
-const pad = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s.padEnd(n));
-const fmtDate = (ms) => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+const pad = (s, n) => (s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s.padEnd(n));
 
-/** How many list rows fit under the header, leaving room for the footer. */
-function viewport() {
-  return Math.max(3, (process.stdout.rows ?? 24) - 10);
+/** One row's text, full width, columns padded; the last column takes what is left. */
+function rowText(cells, columns, width) {
+  let text = "";
+  columns.forEach(([, w], i) => {
+    text += w ? `${pad(cells[i] ?? "", w)} ` : (cells[i] ?? "");
+  });
+  return pad(text, width);
 }
 
 function render() {
+  const width = Math.max(40, (process.stdout.columns ?? 80) - 1);
+  const size = Math.max(3, (process.stdout.rows ?? 24) - 11);
+  const v = view();
   const out = [];
-  out.push(`${BOLD}salt-agent${OFF} ${DIM}${BASE_URL}${TARGET ? `  [${TARGET.toLowerCase()}]` : ""}${OFF}`);
-  out.push("");
-  const c = state.counts;
-  out.push(
-    c
-      ? `users ${BOLD}${c.users}${OFF}   agents ${BOLD}${c.agents}${OFF}   sessions ${BOLD}${c.sessions}${OFF}`
-      : `${DIM}loading counts…${OFF}`
-  );
-  out.push("");
 
-  if (state.screen === "settings") {
-    renderSettings(out);
-    process.stdout.write(`\x1b[2J\x1b[H${out.join("\n")}\n`);
-    return;
-  }
-
-  if (state.detail >= 0) {
-    const r = state.requests[state.detail];
-    out.push(`${BOLD}limit increase request${OFF} ${DIM}${r.id}${OFF}`);
-    out.push("");
-    out.push(`  user                ${r.email}`);
-    out.push(`  current agents      ${r.current_agents}`);
-    out.push(`  current limit       ${r.current_limit}`);
-    out.push(`  requested increase  +${r.requested_increase}  ${DIM}→ ${r.current_limit + r.requested_increase}${OFF}`);
-    out.push(`  filed               ${fmtDate(r.created_at)}`);
-    out.push("");
-    const buttons = ["  Approve  ", "  Reject  "].map((label, i) =>
-      i === state.choice ? `${INV}${label}${OFF}` : `${DIM}${label}${OFF}`
+  out.push(`${BOLD}salt-agent${OFF} ${DIM}${TARGET ? TARGET.toLowerCase() : "production"} · ${BASE_URL}${OFF}`);
+  out.push("");
+  const unsetIn = (group) =>
+    state.fields.some(
+      (f) => groupOf(f) === group && state.missing.some((m) => m === f.key || m.startsWith(`${f.key}.`))
     );
-    out.push(`  ${buttons.join("  ")}`);
-    out.push("");
-    out.push(`${DIM}←/→ choose   enter confirm   esc back   q quit${OFF}`);
-    if (state.status) out.push(`${DIM}${state.status}${OFF}`);
-  } else {
-    out.push(`${BOLD}limit increase requests${OFF}`);
-    if (!state.requests.length) {
-      out.push("");
-      out.push(state.loading ? `${DIM}loading…${OFF}` : `${DIM}none open.${OFF}`);
-    } else {
-      const size = viewport();
-      // The window follows the selection only when it would otherwise fall off an
-      // edge, so the list scrolls a row at a time instead of jumping a page.
-      if (state.selected < state.top) state.top = state.selected;
-      if (state.selected > state.top + size - 1) state.top = state.selected - size + 1;
-      state.top = Math.max(0, Math.min(state.top, Math.max(0, state.requests.length - size)));
-      const top = state.top;
-      const rows = state.requests.slice(top, top + size);
-      out.push(`${DIM}${pad("email", 34)} ${pad("limit", 7)} ${pad("wants", 7)} ${pad("filed", 17)}${OFF}`);
-      rows.forEach((r, i) => {
-        const idx = top + i;
-        const line = `${pad(r.email, 34)} ${pad(String(r.current_limit), 7)} ${pad(`+${r.requested_increase}`, 7)} ${pad(fmtDate(r.created_at), 17)}`;
-        out.push(idx === state.selected ? `${INV}${line}${OFF}` : line);
-      });
-      if (state.loading) out.push(`${DIM}loading more…${OFF}`);
-      else if (state.hasMore) out.push(`${DIM}scroll for more${OFF}`);
-    }
-    out.push("");
-    out.push(`${DIM}↑/↓ move   enter open   s settings   q quit${OFF}`);
-    if (state.status) out.push(`${DIM}${state.status}${OFF}`);
+  out.push(
+    TABS.map((name, i) => {
+      let label = ` ${i + 1} ${name}`;
+      if (i === 2 && state.counts?.open_requests) label += ` (${state.counts.open_requests})`;
+      if ((i === 3 && unsetIn("default")) || (i === 4 && unsetIn("limit"))) label += " !";
+      label += " ";
+      return i === state.tab ? `${INV}${BOLD}${label}${OFF}` : label;
+    }).join(" ")
+  );
+  out.push(`${DIM}${"─".repeat(width)}${OFF}`);
+
+  if (v.title) out.push(`${BOLD}  ${v.title}${OFF}`);
+  if (v.columns.some(([t]) => t)) {
+    out.push(`${DIM}  ${rowText(v.columns.map(([t]) => t), v.columns, width - 2)}${OFF}`);
   }
+
+  const pos = v.pos;
+  pos.sel = Math.max(0, Math.min(pos.sel, v.rows.length - 1));
+  if (!v.rows.length) {
+    out.push(`${DIM}  ${v.empty ?? ""}${OFF}`);
+  } else {
+    // The window follows the selection only when it would otherwise fall off an
+    // edge, so the list scrolls a row at a time instead of jumping a page.
+    if (pos.sel < pos.top) pos.top = pos.sel;
+    if (pos.sel > pos.top + size - 1) pos.top = pos.sel - size + 1;
+    pos.top = Math.max(0, Math.min(pos.top, Math.max(0, v.rows.length - size)));
+    v.rows.slice(pos.top, pos.top + size).forEach((row, i) => {
+      const text = `${row.unset ? "!" : " "} ${rowText(row.cells, v.columns, width - 2)}`;
+      out.push(pos.top + i === pos.sel ? `${INV}${text}${OFF}` : text);
+    });
+    if (v.pager?.loading) out.push(`${DIM}  loading more…${OFF}`);
+    else if (v.pager?.hasMore || pos.top + size < v.rows.length) out.push(`${DIM}  ↓ more${OFF}`);
+  }
+
+  out.push(`${DIM}${"─".repeat(width)}${OFF}`);
+  if (state.edit) {
+    // The cursor is drawn rather than moved: the screen is repainted whole on every
+    // keypress, so a real cursor position would be lost on the next paint.
+    out.push(`  ${BOLD}${state.edit.label}${OFF} ${state.edit.buffer}${INV} ${OFF}`);
+    out.push(`${DIM}  enter save   esc cancel${OFF}`);
+  } else if (state.confirm) {
+    out.push(`  ${BOLD}${state.confirm.prompt}${OFF}`);
+    out.push(`${DIM}  y confirm   any other key cancel${OFF}`);
+  } else {
+    const selected = v.rows[pos.sel];
+    if (v.showNote && selected?.note) out.push(`${DIM}  ${pad(selected.note, width - 2)}${OFF}`);
+    const hints = [
+      "↑/↓ move",
+      v.hint,
+      state.missing.length ? "i fill unset" : "",
+      "←/→ tab",
+      "q quit",
+    ].filter(Boolean);
+    out.push(`${DIM}  ${hints.join("   ")}${OFF}`);
+  }
+  if (state.status) out.push(`  ${state.status}`);
 
   process.stdout.write(`\x1b[2J\x1b[H${out.join("\n")}\n`);
 }
 
-/**
- * Every ceiling and default, one per row.
- *
- * A row marked `!` is not set, or not wholly — the deployment refuses to serve while
- * any row is. `i` fills every such row with the shipped default.
- */
-function renderSettings(out) {
-  out.push(
-    state.missing.length
-      ? `${BOLD}deployment settings${OFF}   ${BOLD}! ${state.missing.length} unset — the deployment is refusing requests${OFF}`
-      : `${BOLD}deployment settings${OFF}   ${DIM}all set${OFF}`
-  );
-  out.push("");
-  if (!state.fields.length) {
-    out.push(state.loading ? `${DIM}loading…${OFF}` : `${DIM}none available.${OFF}`);
-    out.push("");
-    out.push(`${DIM}esc back   q quit${OFF}`);
-    if (state.status) out.push(`${DIM}${state.status}${OFF}`);
-    return;
-  }
-
-  const size = Math.max(3, (process.stdout.rows ?? 24) - 12);
-  if (state.settingsSelected < state.settingsTop) state.settingsTop = state.settingsSelected;
-  if (state.settingsSelected > state.settingsTop + size - 1) {
-    state.settingsTop = state.settingsSelected - size + 1;
-  }
-  state.settingsTop = Math.max(
-    0,
-    Math.min(state.settingsTop, Math.max(0, state.fields.length - size))
-  );
-  const rows = state.fields.slice(state.settingsTop, state.settingsTop + size);
-
-  out.push(`${DIM}  ${pad("setting", 22)} ${pad("value", 44)}${OFF}`);
-  rows.forEach((field, i) => {
-    const idx = state.settingsTop + i;
-    const unset = state.missing.some((m) => m === field.key || m.startsWith(`${field.key}.`));
-    const value = showValue(state.settings?.[field.key]);
-    const line = `${unset ? "!" : " "} ${pad(field.key, 22)} ${pad(value, 44)}`;
-    out.push(idx === state.settingsSelected ? `${INV}${line}${OFF}` : line);
-  });
-
-  const current = state.fields[state.settingsSelected];
-  out.push("");
-  if (current) {
-    const range =
-      current.min !== undefined && current.max !== undefined
-        ? `  ${DIM}(${current.min}–${current.max})${OFF}`
-        : "";
-    out.push(`  ${DIM}${current.doc}${range}${OFF}`);
-    const gaps = state.missing.filter((m) => m.startsWith(`${current.key}.`));
-    if (gaps.length) out.push(`  ${BOLD}unset: ${gaps.join(", ")}${OFF}`);
-    if (current.key in DEFAULTS) {
-      out.push(`  ${DIM}shipped: ${pad(showValue(DEFAULTS[current.key]), 70)}${OFF}`);
-    }
-  }
-  out.push("");
-  if (state.editing) {
-    // The cursor is drawn rather than moved: the screen is repainted whole on every
-    // keypress, so a real cursor position would be lost on the next paint.
-    out.push(`  ${BOLD}${state.editing.key}${OFF} ${state.editing.buffer}${INV} ${OFF}`);
-    out.push("");
-    out.push(`${DIM}enter save   esc cancel${OFF}`);
-  } else {
-    out.push(
-      `${DIM}↑/↓ move   enter edit   r shipped value   i fill unset   R all shipped   esc back   q quit${OFF}`
-    );
-  }
-  if (state.status) out.push(`${DIM}${state.status}${OFF}`);
-}
-
-/** Act on the open request, then drop it from the list — resolved either way. */
-async function resolve(approve) {
-  const r = state.requests[state.detail];
-  state.status = approve ? "approving…" : "rejecting…";
-  render();
-  try {
-    if (approve) {
-      const res = await call(`/api/admin/business-requests/${r.id}/approve`, { method: "POST" });
-      state.status = `approved — ${res.email} now has a limit of ${res.agent_limit}`;
-    } else {
-      await call(`/api/admin/business-requests/${r.id}`, { method: "DELETE" });
-      state.status = `rejected ${r.email}`;
-    }
-    state.requests.splice(state.detail, 1);
-    state.selected = Math.max(0, Math.min(state.selected, state.requests.length - 1));
-    state.detail = -1;
-    state.choice = 0;
-    if (approve) state.counts = await call("/api/admin/stats");
-  } catch (err) {
-    state.status = err.message;
-  }
-  render();
-}
+/* ------------------------------------------------------------------ keys */
 
 /**
  * Split one read into individual keypresses. A terminal usually delivers one at a
@@ -476,87 +658,37 @@ function keys(chunk) {
 }
 
 /**
- * The settings screen's keys, including the line editor.
- *
- * The editor is deliberately minimal — printable characters, backspace, enter, esc —
- * because every value here is short and the one that is not (a JSON list) is pasted
- * rather than typed, and a paste arrives as a run of printable characters that this
- * handles already.
+ * The line editor. Deliberately minimal — printable characters, backspace, enter,
+ * esc — because every value here is short and the one that is not (a JSON list) is
+ * pasted rather than typed, and a paste arrives as a run of printable characters.
  */
-async function onSettingsKey(key) {
-  if (state.editing) {
-    if (key === "\x1b") {
-      state.editing = null;
-      state.status = "";
-      return render();
-    }
-    if (key === "\r" || key === "\n") {
-      const field = state.fields.find((f) => f.key === state.editing.key);
-      const typed = state.editing.buffer;
-      state.editing = null;
-      try {
-        await saveSettings({ [field.key]: parseValue(field, typed) }, `${field.key} saved`);
-      } catch (err) {
-        state.status = err.message;
-        render();
-      }
-      return;
-    }
-    if (key === "\x7f" || key === "\b") {
-      state.editing.buffer = state.editing.buffer.slice(0, -1);
-      return render();
-    }
-    // Escape sequences (arrows, function keys) are not text; everything else is.
-    if (key.length === 1 && key >= " ") state.editing.buffer += key;
-    return render();
-  }
-
+async function onEditKey(key) {
+  const edit = state.edit;
   if (key === "\x1b") {
-    state.screen = "requests";
-    state.status = "";
+    state.edit = null;
     return render();
   }
-  if (key === "\x1b[A" || key === "k") {
-    state.settingsSelected = Math.max(0, state.settingsSelected - 1);
-    return render();
-  }
-  if (key === "\x1b[B" || key === "j") {
-    state.settingsSelected = Math.min(state.fields.length - 1, state.settingsSelected + 1);
-    return render();
-  }
-  const field = state.fields[state.settingsSelected];
-  if (!field) return render();
-
   if (key === "\r" || key === "\n") {
-    // Opens on the value in force, so an edit is a correction rather than a re-entry.
-    state.editing = { key: field.key, buffer: showValue(state.settings?.[field.key]) };
-    state.status = "";
-    return render();
-  }
-  if (key === "r") {
-    if (!(field.key in DEFAULTS)) {
-      state.status = `no shipped value for ${field.key} in defaults.json`;
-      return render();
+    state.edit = null;
+    try {
+      await edit.submit(edit.buffer);
+    } catch (err) {
+      state.status = err.message;
+      render();
     }
-    return await saveSettings({ [field.key]: DEFAULTS[field.key] }, `${field.key} set to the shipped value`);
+    return;
   }
-  if (key === "i") {
-    const patch = defaultsFor(state.missing);
-    if (!Object.keys(patch).length) {
-      state.status = state.missing.length
-        ? `no shipped value for: ${state.missing.join(", ")}`
-        : "nothing unset";
-      return render();
-    }
-    return await saveSettings(patch, "unset fields filled with the shipped values");
-  }
-  if (key === "R") {
-    return await saveSettings(
-      allDefaults(state.fields, state.settings),
-      "every setting set to the shipped values"
-    );
-  }
-  return render();
+  if (key === "\x7f" || key === "\b") edit.buffer = edit.buffer.slice(0, -1);
+  // Escape sequences (arrows, function keys) are not text; everything else is.
+  else if (key.length === 1 && key >= " ") edit.buffer += key;
+  render();
+}
+
+async function switchTab(tab) {
+  state.tab = (tab + TABS.length) % TABS.length;
+  state.status = "";
+  render();
+  if (state.tab === 0) await loadCounts();
 }
 
 function quit() {
@@ -566,43 +698,37 @@ function quit() {
 }
 
 async function onKey(key) {
-  // `q` types a letter while a value is being edited; everywhere else it quits.
-  if (!state.editing && (key === "q" || key === "\u0003")) quit();
   if (key === "\u0003") quit();
-
-  if (state.screen === "settings") return await onSettingsKey(key);
-
-  if (state.detail >= 0) {
-    if (key === "\x1b[D" || key === "h") state.choice = 0;
-    else if (key === "\x1b[C" || key === "l") state.choice = 1;
-    else if (key === "\x1b") {
-      state.detail = -1;
-      state.status = "";
-    } else if (key === "\r" || key === "\n") return resolve(state.choice === 0);
+  if (state.edit) return await onEditKey(key);
+  if (state.confirm) {
+    const { run } = state.confirm;
+    state.confirm = null;
+    if (key === "y" || key === "Y") return await run();
+    state.status = "cancelled";
     return render();
   }
+  if (key === "q") quit();
 
-  if (key === "\x1b[A" || key === "k") state.selected = Math.max(0, state.selected - 1);
-  else if (key === "\x1b[B" || key === "j")
-    state.selected = Math.min(state.requests.length - 1, state.selected + 1);
-  else if (key === "s") {
-    state.screen = "settings";
+  if (key >= "1" && key <= String(TABS.length)) return await switchTab(Number(key) - 1);
+  if (key === "\x1b[C" || key === "\t" || key === "l") return await switchTab(state.tab + 1);
+  if (key === "\x1b[D" || key === "\x1b[Z" || key === "h") return await switchTab(state.tab - 1);
+  if (key === "i" && state.missing.length) return await fillUnset();
+
+  const v = view();
+  const row = v.rows[v.pos.sel];
+  if (key === "\x1b[A" || key === "k") v.pos.sel = Math.max(0, v.pos.sel - 1);
+  else if (key === "\x1b[B" || key === "j") v.pos.sel = Math.max(0, Math.min(v.rows.length - 1, v.pos.sel + 1));
+  else if ((key === "\r" || key === "\n") && row?.enter) {
     state.status = "";
-    render();
-    if (!state.fields.length) await loadSettings();
-    return;
-  } else if (key === "\r" || key === "\n") {
-    if (state.requests.length) {
-      state.detail = state.selected;
-      state.choice = 0;
-      state.status = "";
-    }
-  }
+    return await row.enter();
+  } else if (v.keys?.[key]) return await v.keys[key](row);
   render();
   // Fetch ahead of the cursor rather than at the very last row, so the list keeps
   // moving while the next page is in flight.
-  if (state.selected >= state.requests.length - 5) await loadMore();
+  if (v.pager && v.pos.sel >= v.rows.length - 5) await loadMore(v.pager);
 }
+
+/* ------------------------------------------------------------------ commands */
 
 if (COMMAND === "init" || COMMAND === "check") {
   const where = `${BASE_URL}${TARGET ? ` [${TARGET.toLowerCase()}]` : ""}`;
@@ -620,7 +746,7 @@ if (COMMAND === "init" || COMMAND === "check") {
       console.error(
         `\n  ${where}: settings incomplete — the deployment refuses requests until these are set:\n\n` +
           missing.map((m) => `    ${m}`).join("\n") +
-          `\n\n  Run \`npm run init${TARGET ? ` -- --${TARGET.toLowerCase()}` : ""}\` in admin-cli to write the shipped defaults,\n  or set them from the dashboard (\`s\`).\n`
+          `\n\n  Run \`npm run init${TARGET ? ` -- --${TARGET.toLowerCase()}` : ""}\` in admin-cli to write the shipped defaults,\n  or set them from the dashboard's Defaults and Limits tabs.\n`
       );
       process.exit(1);
     }
@@ -670,17 +796,6 @@ try {
   console.error(`Could not reach ${BASE_URL}: ${err.message}`);
   process.exit(1);
 }
-render();
-await loadMore();
-
-// A deployment with settings unset refuses every ordinary request, so there is nothing
-// more urgent to show than the rows that need filling.
-await loadSettings();
-if (state.missing.length) {
-  state.screen = "settings";
-  state.status = "settings incomplete — press i to fill every unset row with the shipped value";
-  render();
-}
 
 if (process.stdin.isTTY) process.stdin.setRawMode(true);
 process.stdin.resume();
@@ -690,3 +805,10 @@ process.stdin.on("data", async (chunk) => {
 });
 process.stdout.on("resize", render);
 process.on("SIGINT", quit);
+
+await Promise.all([loadSettings(), loadMore(state.users), loadMore(state.requests)]);
+// A deployment with settings unset refuses every ordinary request, so say so first.
+if (state.missing.length) {
+  state.status = "settings incomplete — press i to fill every unset row with the shipped value";
+  render();
+}
