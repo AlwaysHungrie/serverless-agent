@@ -203,6 +203,33 @@ describe("validating a patch", () => {
     );
   });
 
+  it("stores an MCP template's SVG icon as a data URL, raw markup or not", () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>';
+    const entry = { id: "x", name: "X", url: "https://x.test/mcp", auth: "none" };
+    const raw = validateSettingsPatch({ mcp_catalog: [{ ...entry, icon: svg }] }, {});
+    const icon = raw.mcp_catalog![0].icon!;
+    expect(icon).toBe(`data:image/svg+xml;base64,${btoa(svg)}`);
+    const again = validateSettingsPatch({ mcp_catalog: [{ ...entry, icon }] }, {});
+    expect(again.mcp_catalog![0].icon).toBe(icon);
+  });
+
+  it("refuses an MCP icon that is not SVG, or past max_icon_bytes", () => {
+    const entry = { id: "x", name: "X", url: "https://x.test/mcp", auth: "none" };
+    expect(() =>
+      validateSettingsPatch({ mcp_catalog: [{ ...entry, icon: "data:image/png;base64,AAAA" }] }, {})
+    ).toThrow(/must be an SVG/);
+    const big = `<svg>${"x".repeat(100)}</svg>`;
+    expect(() =>
+      validateSettingsPatch({ max_icon_bytes: 50, mcp_catalog: [{ ...entry, icon: big }] }, {})
+    ).toThrow(/the most is 50/);
+  });
+
+  it("ships Notion with its own logo", () => {
+    const notion = SHIPPED.mcp_catalog.find((t) => t.id === "notion");
+    expect(notion?.icon).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(() => validateSettingsPatch({ mcp_catalog: SHIPPED.mcp_catalog }, SHIPPED as never)).not.toThrow();
+  });
+
   it("refuses mcp_templates, and drops it from a document saved before its removal", () => {
     expect(() => validateSettingsPatch({ mcp_templates: [] }, {})).toThrow(/unknown setting/);
     const stored = { max_sessions: 5, mcp_templates: ["notion"] } as never;

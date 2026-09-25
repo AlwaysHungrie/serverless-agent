@@ -17,8 +17,8 @@ export type McpPreset = {
 };
 
 /**
- * A catalogue entry as a tile, with a letter mark standing in for a logo: templates
- * come from the deployment's settings, and the frontend ships none of its own.
+ * A catalogue entry as a tile: its SVG icon, or a letter mark when it has none.
+ * Templates come from the deployment's settings; the frontend ships none of its own.
  */
 export function toPreset(entry: McpCatalogEntry): McpPreset {
   const letter = (entry.letter || entry.name).trim().charAt(0).toUpperCase();
@@ -27,7 +27,19 @@ export function toPreset(entry: McpCatalogEntry): McpPreset {
     name: entry.name,
     url: entry.url,
     auth: entry.auth,
-    logo: (
+    logo: entry.icon ? (
+      // A plain <img>, not next/image: the icon is a data URL with nothing to optimise,
+      // and <img> is what keeps any script inside the SVG from running.
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={entry.icon}
+        alt=""
+        aria-hidden="true"
+        width={26}
+        height={26}
+        className="h-[26px] w-[26px]"
+      />
+    ) : (
       <span
         aria-hidden="true"
         className="flex h-[26px] w-[26px] items-center justify-center rounded-lg text-[13px] font-semibold text-white"

@@ -20,6 +20,8 @@
   `npm run deploy` refuses (preflight runs `admin-cli check`). Deploy scripts run
   `admin-cli init` after `wrangler deploy`; `check` exits 2 (allowed) only when the
   live Worker predates the settings route — the one-time bootstrap.
+- Adding an MCP server to the catalogue (tiles on the capabilities page): follow
+  `docs/mcp-catalog.md`.
 - Shipped defaults live in `admin-cli/defaults.json`; `npm run init` in `admin-cli`
   writes them for every unset field. Adding a setting = field in `settings.ts` + its
   default in `defaults.json` (a test checks the two agree).

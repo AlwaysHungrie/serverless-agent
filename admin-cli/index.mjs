@@ -395,6 +395,32 @@ const fmtDate = (ms) => new Date(ms).toISOString().slice(0, 16).replace("T", " "
 const groupOf = (field) =>
   field.group ?? (field.kind === "int" || field.key === "max_upload_bytes" ? "limit" : "default");
 
+/**
+ * An MCP template's icon is a long data URL, so the catalogue row shows `"@keep"` in
+ * its place — and on save `"@keep"` puts the stored icon back, while `"@path.svg"`
+ * reads that file from disk, which is how an icon is uploaded.
+ */
+const keepIcons = (entry) => (entry?.icon ? { ...entry, icon: "@keep" } : entry);
+
+function loadIcons(catalog, stored) {
+  if (!Array.isArray(catalog)) return catalog;
+  return catalog.map((entry) => {
+    const ref = entry?.icon;
+    if (typeof ref !== "string" || !ref.startsWith("@")) return entry;
+    if (ref === "@keep") {
+      const kept = stored.find((s) => s.id === entry.id)?.icon;
+      if (!kept) throw new Error(`${entry.id} has no stored icon to keep`);
+      return { ...entry, icon: kept };
+    }
+    const file = path.resolve(ref.slice(1));
+    try {
+      return { ...entry, icon: readFileSync(file, "utf8") };
+    } catch {
+      throw new Error(`could not read ${file}`);
+    }
+  });
+}
+
 /** One row per setting — one per key for the nested ones. */
 function settingRows(group) {
   const rows = [];
@@ -427,7 +453,12 @@ function settingRow(field, sub) {
         ? "number"
         : "string";
   const pairs = (v) => v.map((o) => (o.label && o.label !== o.id ? `${o.id} = ${o.label}` : o.id)).join(", ");
-  const show = (v) => (kind === "menu" && Array.isArray(v) ? pairs(v) : showValue(v));
+  const show = (v) =>
+    kind === "menu" && Array.isArray(v)
+      ? pairs(v)
+      : field.key === "mcp_catalog" && Array.isArray(v)
+        ? showValue(v.map(keepIcons))
+        : showValue(v);
   const wrap = (v) => (sub ? { [field.key]: { [sub]: v } } : { [field.key]: v });
   const range = field.min !== undefined ? ` (${field.min}–${field.max})` : "";
   return {
@@ -436,7 +467,14 @@ function settingRow(field, sub) {
     note: `${field.doc}${range}${shipped === undefined ? "" : `  ·  shipped: ${show(shipped)}`}`,
     enter: () =>
       startEdit(name, show(value), (text) =>
-        saveSettings(wrap(parseValue(name, kind, text)), `${name} saved`)
+        saveSettings(
+          wrap(
+            field.key === "mcp_catalog"
+              ? loadIcons(parseValue(name, kind, text), value ?? [])
+              : parseValue(name, kind, text)
+          ),
+          `${name} saved`
+        )
       ),
     reset:
       shipped === undefined ? undefined : () => saveSettings(wrap(shipped), `${name} set to the shipped value`),

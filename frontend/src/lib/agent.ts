@@ -298,15 +298,16 @@ export type McpAuth = "none" | "headers" | "oauth";
  * One provider the capabilities page may offer, described by whoever provisioned this
  * agent rather than compiled into this app.
  *
- * What a tile needs to become a server: a name, a url and how it authenticates. No
- * logo — the mark is drawn from `letter` on `color`, because an SVG arriving as data
- * would be markup from outside rendered inside the page.
+ * What a tile needs to become a server: a name, a url and how it authenticates. The
+ * logo is `icon`, an SVG data URL drawn with `<img>` so no script inside it runs;
+ * without one the mark is `letter` on `color`.
  */
 export type McpCatalogEntry = {
   id: string;
   name: string;
   url: string;
   auth: McpAuth;
+  icon?: string;
   letter?: string;
   color?: string;
 };

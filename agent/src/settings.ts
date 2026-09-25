@@ -118,6 +118,8 @@ export type DeploymentSettings = {
   max_files_per_message: number;
   /** The largest session page any caller may ask for. */
   max_session_page: number;
+  /** The largest SVG icon an MCP template may carry, in bytes. */
+  max_icon_bytes: number;
 
   /* ---- soft defaults ---- */
 
@@ -190,12 +192,13 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
   INT("voice_note_limit", 1, 100_000, "characters one voice note may carry"),
   INT("max_files_per_message", 1, 100, "attachments one message may carry"),
   INT("max_session_page", 1, 10_000, "largest session page a caller may ask for"),
+  INT("max_icon_bytes", 1, 1_000_000, "largest SVG icon an MCP template may carry, in bytes"),
 
   { key: "models", kind: "json", doc: "models the settings page offers: [{id,label,vision}], at least one", group: "default" },
   { key: "default_model", kind: "string", doc: "model a new agent is seeded with", group: "default" },
   { key: "system_prompt", kind: "string", doc: "line every agent is told first; blank says nothing", group: "default" },
   { key: "config_defaults", kind: "json", doc: `starting values for every one of: ${SETTABLE_CONFIG_KEYS.join(", ")}`, group: "default" },
-  { key: "mcp_catalog", kind: "json", doc: "MCP templates offered: [{id,name,url,auth,letter?,color?}]; empty offers none", group: "default" },
+  { key: "mcp_catalog", kind: "json", doc: "MCP templates offered: [{id,name,url,auth,icon?,letter?,color?}], icon an SVG; empty offers none", group: "default" },
   {
     key: "field_options",
     kind: "json",
@@ -349,6 +352,7 @@ export function validateSettingsPatch(
             throw new SettingsError(`mcp_catalog[${i}].auth must be none, headers or oauth`);
           }
           const out: McpCatalogEntry = { id, name, url, auth };
+          if (entry.icon !== undefined) out.icon = svgIcon(entry.icon, `mcp_catalog[${i}].icon`);
           if (entry.letter !== undefined) out.letter = String(entry.letter).trim().slice(0, 1);
           if (entry.color !== undefined) out.color = String(entry.color).trim();
           return out;
@@ -435,6 +439,13 @@ export function validateSettingsPatch(
     }
   }
 
+  // Checked once the whole patch is in, so a catalogue and a lowered ceiling sent
+  // together are held to the new ceiling.
+  if (next.max_icon_bytes !== undefined) {
+    for (const entry of next.mcp_catalog ?? []) {
+      if (entry.icon) checkIconSize(entry.icon, next.max_icon_bytes, `mcp_catalog ${entry.id}`);
+    }
+  }
   return next;
 }
 
@@ -544,4 +555,40 @@ export async function deploymentSettings(env: Env): Promise<DeploymentSettings> 
  */
 export function forgetCachedSettings(): void {
   cached = null;
+}
+
+const SVG_DATA_URL = "data:image/svg+xml;base64,";
+
+/**
+ * An MCP template's icon, as the one form it is stored and served in: an SVG data URL.
+ *
+ * Raw `<svg>` markup is taken too and encoded here, so a caller can send the file as
+ * it is. Nothing but SVG is accepted. The page draws it with `<img>`, which runs no
+ * script an SVG carries — so the markup is never checked for any, only for being SVG.
+ */
+export function svgIcon(value: unknown, name: string): string {
+  if (typeof value !== "string") throw new SettingsError(`${name} must be an SVG`);
+  const raw = value.trim();
+  let markup: string;
+  if (raw.startsWith(SVG_DATA_URL)) {
+    try {
+      const binary = atob(raw.slice(SVG_DATA_URL.length));
+      markup = new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+    } catch {
+      throw new SettingsError(`${name} is not valid base64`);
+    }
+  } else {
+    markup = raw;
+  }
+  if (!/<svg[\s>]/i.test(markup)) throw new SettingsError(`${name} must be an SVG`);
+  const bytes = new TextEncoder().encode(markup);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return SVG_DATA_URL + btoa(binary);
+}
+
+/** Refuse an icon past the deployment's `max_icon_bytes`, counted as SVG bytes. */
+export function checkIconSize(icon: string, max: number, name: string): void {
+  const size = atob(icon.slice(SVG_DATA_URL.length)).length;
+  if (size > max) throw new SettingsError(`${name} icon is ${size} bytes; the most is ${max}`);
 }

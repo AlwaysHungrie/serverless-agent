@@ -59,6 +59,8 @@ import { mcpServerReady, withMcpAuth } from "./capabilities";
 import { clerkEmail } from "./clerk";
 import {
   SETTINGS_FIELDS,
+  checkIconSize,
+  svgIcon,
   SettingsIncompleteError,
   deploymentSettings,
   missingSettings,
@@ -1353,7 +1355,11 @@ function validateMeta(
     }
     if (body.mcp.catalog !== undefined) {
       if (!Array.isArray(body.mcp.catalog)) throw new Error("mcp.catalog must be an array");
-      meta.mcp.catalog = body.mcp.catalog.map((entry) => validateCatalogEntry(entry));
+      meta.mcp.catalog = body.mcp.catalog.map((entry) => {
+        const valid = validateCatalogEntry(entry);
+        if (valid.icon) checkIconSize(valid.icon, settings.max_icon_bytes, `MCP template ${valid.id}`);
+        return valid;
+      });
     }
     if (body.mcp.user_servers !== undefined) {
       meta.mcp.user_servers = !!body.mcp.user_servers;
@@ -1422,6 +1428,7 @@ function validateCatalogEntry(entry: unknown): McpCatalogEntry {
     name: text("name"),
     url,
     auth,
+    icon: raw.icon === undefined ? undefined : svgIcon(raw.icon, `MCP template ${text("id")} icon`),
     letter: optional("letter"),
     color: optional("color"),
   };

@@ -233,14 +233,19 @@ export type MetaSettings = {
  * One provider on the capabilities page's strip — from the deployment's `mcp_catalog`,
  * or from whoever provisioned the agent.
  *
- * No logo: a mark drawn from `letter` and `color` needs no asset shipped, and an SVG
- * from outside would be markup this Worker has no business rendering.
+ * The logo is an optional SVG `icon`; without one, a mark is drawn from `letter` and
+ * `color`, which needs no asset at all.
  */
 export type McpCatalogEntry = {
   id: string;
   name: string;
   url: string;
   auth: McpAuth;
+  /**
+   * The provider's logo, as an SVG data URL. Drawn with `<img>`, so no script inside it
+   * runs. Without one the tile is a letter mark instead.
+   */
+  icon?: string;
   /** Placeholder mark: this letter on this colour. Both optional — the name's first letter does. */
   letter?: string;
   color?: string;
