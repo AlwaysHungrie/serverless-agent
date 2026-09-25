@@ -334,7 +334,7 @@ export default async function WhatsappGuide({
             Here <Mono>{agent}</Mono> is your agent ID. Verify it is the same
             agent ID you see when you are talking to your agent on the web{" "}
             <Mono>
-              https://serverless-agent-one.vercel.app/a/&lt;find-agent-id-here&gt;
+              https://salts-agent-app.vercel.app/a/&lt;find-agent-id-here&gt;
             </Mono>
           </p>
         ) : (
@@ -342,7 +342,7 @@ export default async function WhatsappGuide({
             Find your agent ID in the URL when you are talking to your agent on
             the web{" "}
             <Mono>
-              https://serverless-agent-one.vercel.app/a/&lt;find-agent-id-here&gt;
+              https://salts-agent-app.vercel.app/a/&lt;find-agent-id-here&gt;
             </Mono>
           </p>
         )}

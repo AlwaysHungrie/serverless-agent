@@ -10,3 +10,7 @@ out/
 !.dev.vars.example
 .wrangler/
 .cf.env
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
