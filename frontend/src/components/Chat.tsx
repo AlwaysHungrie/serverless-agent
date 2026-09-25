@@ -39,6 +39,10 @@ import {
   type TranscriptPage,
   type TurnStep,
   type UsageData,
+  DEFAULT_CLIENT_LIMITS,
+  imageTarget,
+  recordingSeconds,
+  type ClientLimits,
 } from "@/lib/agent";
 import { formatMs, formatUsd } from "@/lib/format";
 import { fitImage } from "@/lib/image";
@@ -46,8 +50,10 @@ import { pdfThumbnail } from "@/lib/pdf";
 import { startRecording, type Recorder } from "@/lib/recorder";
 import { apiFetch, identityHeaders, useAuthedUrl } from "@/lib/identity";
 
-/** Kept in step with the Worker's own ceiling, which is what actually enforces it. */
-const MAX_FILES_PER_MESSAGE = 4;
+// The three ceilings the composer enforces — files per message, the size an image is
+// re-encoded to, and how long a take may run — come from the deployment's settings over
+// `/config`, with `DEFAULT_CLIENT_LIMITS` standing in until it answers. See
+// `ClientLimits` in `lib/agent.ts` for how the derived two are worked out.
 
 /** How a tool call reads while it runs, once it is done, and when it fails. */
 const TOOL_LABELS: Record<
@@ -246,20 +252,6 @@ const FADE = "linear-gradient(to bottom, #000 55%, transparent 100%)";
 function isAudio(a: Attachment) {
   return a.mime.startsWith("audio/") || a.mime.startsWith("video/");
 }
-
-/**
- * How long one take may run. 16 kHz mono PCM is 32 kB a second, so ten minutes is
- * about 19 MB — inside the Worker's audio ceiling. The take is stopped and kept at
- * the cap rather than split: a transcript cut across two requests loses the sentence
- * that straddles them.
- */
-const MAX_RECORDING_SECONDS = 600;
-
-/**
- * The Worker's image ceiling, less a margin for the multipart envelope. An image over
- * this is re-encoded in the browser rather than refused: see `fitImage`.
- */
-const MAX_IMAGE_BYTES = 9_500_000;
 
 /** m:ss, for player positions and durations. */
 function clock(seconds: number) {
@@ -1088,6 +1080,8 @@ export function Chat({
   >([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [ready, setReady] = useState<Set<string>>(new Set());
+  /** The deployment's composer ceilings, replaced by the real ones on the first `/config`. */
+  const [limits, setLimits] = useState<ClientLimits>(DEFAULT_CLIENT_LIMITS);
   // A message streamed in this session has no stored timestamp yet, so the arrival
   // time is recorded once, when the message first appears. It lives in a plain map
   // rather than in state: writing it must not itself cause a render.
@@ -1121,8 +1115,12 @@ export function Chat({
       const payload = (await res.json().catch(() => null)) as {
         config: Config;
         capabilities: Capability[];
+        limits?: ClientLimits;
       } | null;
       if (!payload?.config) return;
+      // A deployment on an older Worker sends no limits at all, so the shipped values
+      // stay rather than being replaced with undefined.
+      if (payload.limits) setLimits(payload.limits);
       setReady(
         new Set(
           payload.capabilities
@@ -1260,10 +1258,11 @@ export function Chat({
 
     // The Worker enforces this too; catching it here means the files that do fit are
     // still picked up, rather than the whole drop failing on the one that does not.
-    const room = MAX_FILES_PER_MESSAGE - (attachments.length + ghosts.length);
+    const perMessage = limits.max_files_per_message;
+    const room = perMessage - (attachments.length + ghosts.length);
     if (picked.length > room) {
       setUploadError(
-        `A message can carry ${MAX_FILES_PER_MESSAGE} files. Send the rest with the next message.`,
+        `A message can carry ${perMessage} files. Send the rest with the next message.`,
       );
       picked = picked.slice(0, Math.max(room, 0));
       if (picked.length === 0) {
@@ -1321,7 +1320,7 @@ export function Chat({
       // sending the user away to resize it. Anything that cannot be shrunk is sent
       // as it is, so the Worker's own message is what they see.
       const file = isImage
-        ? ((await fitImage(original, MAX_IMAGE_BYTES)) ?? original)
+        ? ((await fitImage(original, imageTarget(limits))) ?? original)
         : original;
 
       const form = new FormData();
@@ -1504,7 +1503,7 @@ export function Chat({
     if (!recording) return;
     const id = setInterval(() => {
       setRecordedFor((s) => (s ?? 0) + 1);
-      if ((recordedFor ?? 0) + 1 >= MAX_RECORDING_SECONDS) {
+      if ((recordedFor ?? 0) + 1 >= recordingSeconds(limits)) {
         void finishRecording(true);
       }
     }, 1000);
@@ -1754,8 +1753,8 @@ export function Chat({
                   {clock(recordedFor ?? 0)}
                 </span>
                 <span className="text-faint flex-1 text-[13px]">
-                  {MAX_RECORDING_SECONDS - (recordedFor ?? 0) <= 30
-                    ? `Stopping in ${MAX_RECORDING_SECONDS - (recordedFor ?? 0)}s`
+                  {recordingSeconds(limits) - (recordedFor ?? 0) <= 30
+                    ? `Stopping in ${recordingSeconds(limits) - (recordedFor ?? 0)}s`
                     : "Recording…"}
                 </span>
                 <button

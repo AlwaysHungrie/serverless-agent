@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 // Interactive CLI dashboard for the salt-agent deployment.
 //
-// Two screens and nothing else: the deployment's three counts, and the queue of
-// accounts asking for a higher agent limit. Arrow keys move, Enter opens a request,
-// and the detail screen is where it is approved or rejected.
+// Three screens: the deployment's three counts with the queue of accounts asking for a
+// higher agent limit, the detail screen where a request is approved or rejected, and
+// the settings screen — every ceiling this deployment enforces and every value an agent
+// starts out holding, editable in place.
+//
+// The settings screen holds no copy of what the settings are. The field list, the
+// ranges it refuses and the prose beside each row all come from `/api/admin/settings`,
+// so a field added to the Worker's `settings.ts` shows up here with no edit at all.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -89,7 +94,92 @@ const state = {
   choice: 0, // 0 approve, 1 reject
   top: 0, // first visible row, moved only when the selection would leave the window
   status: "",
+
+  /** "requests" or "settings". The detail screen is a mode of the first. */
+  screen: "requests",
+  /** The document in force, the subset this deployment decided, and the field list. */
+  settings: null,
+  overrides: {},
+  fields: [],
+  settingsSelected: 0,
+  settingsTop: 0,
+  /** Non-null while a value is being typed: `{ key, buffer }`. */
+  editing: null,
 };
+
+/** Fetch the settings document and the field descriptors that describe it. */
+async function loadSettings() {
+  state.loading = true;
+  render();
+  try {
+    const doc = await call("/api/admin/settings");
+    state.settings = doc.settings;
+    state.overrides = doc.overrides ?? {};
+    state.fields = doc.fields ?? [];
+  } catch (err) {
+    state.status = `could not load settings — ${err.message}`;
+  }
+  state.loading = false;
+  render();
+}
+
+/**
+ * Send one field.
+ *
+ * `null` is not "set it to zero": the Worker reads it as "stop deciding this one",
+ * which puts the field back on the shipped value and keeps it there as that value
+ * moves. That is what `r` on a row does.
+ */
+async function saveSetting(key, value) {
+  state.status = `saving ${key}…`;
+  render();
+  try {
+    const doc = await call("/api/admin/settings", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ [key]: value }),
+    });
+    state.settings = doc.settings;
+    state.overrides = doc.overrides ?? {};
+    state.status = value === null ? `${key} back to the shipped value` : `${key} saved`;
+  } catch (err) {
+    state.status = err.message.replace(/^\d+ [^:]*: /, "");
+  }
+  render();
+}
+
+/** How a value is shown on a row, and what `enter` starts editing. */
+function showValue(value) {
+  if (value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  return JSON.stringify(value);
+}
+
+/**
+ * Read a typed value back for its field.
+ *
+ * An empty line on a string field is a real empty string — several of these use blank
+ * to mean "fall through to what the Worker ships" — so it is not treated as a cancel.
+ * Anything the Worker will not take comes back as its own error message, which is the
+ * only validation this CLI needs to know about.
+ */
+function parseValue(field, text) {
+  const raw = text.trim();
+  if (field.kind === "int" || field.kind === "number") {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) throw new Error(`${field.key} wants a number`);
+    return n;
+  }
+  if (field.kind === "json") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new Error(`${field.key} wants JSON — e.g. {"pdf": 16000000}`);
+    }
+  }
+  return text;
+}
 
 /** Fetch the next page, appending it. Called on startup and as the cursor nears the end. */
 async function loadMore() {
@@ -136,6 +226,12 @@ function render() {
   );
   out.push("");
 
+  if (state.screen === "settings") {
+    renderSettings(out);
+    process.stdout.write(`\x1b[2J\x1b[H${out.join("\n")}\n`);
+    return;
+  }
+
   if (state.detail >= 0) {
     const r = state.requests[state.detail];
     out.push(`${BOLD}limit increase request${OFF} ${DIM}${r.id}${OFF}`);
@@ -177,11 +273,71 @@ function render() {
       else if (state.hasMore) out.push(`${DIM}scroll for more${OFF}`);
     }
     out.push("");
-    out.push(`${DIM}↑/↓ move   enter open   q quit${OFF}`);
+    out.push(`${DIM}↑/↓ move   enter open   s settings   q quit${OFF}`);
     if (state.status) out.push(`${DIM}${state.status}${OFF}`);
   }
 
   process.stdout.write(`\x1b[2J\x1b[H${out.join("\n")}\n`);
+}
+
+/**
+ * Every ceiling and default, one per row.
+ *
+ * A row marked `·` is on the value the Worker ships; a row marked `*` is one this
+ * deployment has decided for itself. The distinction matters more than the number: a
+ * shipped value follows the code forward, an override does not.
+ */
+function renderSettings(out) {
+  out.push(`${BOLD}deployment settings${OFF}   ${DIM}* set here   · as shipped${OFF}`);
+  out.push("");
+  if (!state.fields.length) {
+    out.push(state.loading ? `${DIM}loading…${OFF}` : `${DIM}none available.${OFF}`);
+    out.push("");
+    out.push(`${DIM}esc back   q quit${OFF}`);
+    if (state.status) out.push(`${DIM}${state.status}${OFF}`);
+    return;
+  }
+
+  const size = Math.max(3, (process.stdout.rows ?? 24) - 12);
+  if (state.settingsSelected < state.settingsTop) state.settingsTop = state.settingsSelected;
+  if (state.settingsSelected > state.settingsTop + size - 1) {
+    state.settingsTop = state.settingsSelected - size + 1;
+  }
+  state.settingsTop = Math.max(
+    0,
+    Math.min(state.settingsTop, Math.max(0, state.fields.length - size))
+  );
+  const rows = state.fields.slice(state.settingsTop, state.settingsTop + size);
+
+  out.push(`${DIM}  ${pad("setting", 22)} ${pad("value", 44)}${OFF}`);
+  rows.forEach((field, i) => {
+    const idx = state.settingsTop + i;
+    const own = state.overrides[field.key] !== undefined;
+    const value = showValue(state.settings?.[field.key]);
+    const line = `${own ? "*" : "·"} ${pad(field.key, 22)} ${pad(value, 44)}`;
+    out.push(idx === state.settingsSelected ? `${INV}${line}${OFF}` : line);
+  });
+
+  const current = state.fields[state.settingsSelected];
+  out.push("");
+  if (current) {
+    const range =
+      current.min !== undefined && current.max !== undefined
+        ? `  ${DIM}(${current.min}–${current.max})${OFF}`
+        : "";
+    out.push(`  ${DIM}${current.doc}${range}${OFF}`);
+  }
+  out.push("");
+  if (state.editing) {
+    // The cursor is drawn rather than moved: the screen is repainted whole on every
+    // keypress, so a real cursor position would be lost on the next paint.
+    out.push(`  ${BOLD}${state.editing.key}${OFF} ${state.editing.buffer}${INV} ${OFF}`);
+    out.push("");
+    out.push(`${DIM}enter save   esc cancel${OFF}`);
+  } else {
+    out.push(`${DIM}↑/↓ move   enter edit   r shipped value   R reset all   esc back   q quit${OFF}`);
+  }
+  if (state.status) out.push(`${DIM}${state.status}${OFF}`);
 }
 
 /** Act on the open request, then drop it from the list — resolved either way. */
@@ -230,6 +386,81 @@ function keys(chunk) {
   return out;
 }
 
+/**
+ * The settings screen's keys, including the line editor.
+ *
+ * The editor is deliberately minimal — printable characters, backspace, enter, esc —
+ * because every value here is short and the one that is not (a JSON list) is pasted
+ * rather than typed, and a paste arrives as a run of printable characters that this
+ * handles already.
+ */
+async function onSettingsKey(key) {
+  if (state.editing) {
+    if (key === "\x1b") {
+      state.editing = null;
+      state.status = "";
+      return render();
+    }
+    if (key === "\r" || key === "\n") {
+      const field = state.fields.find((f) => f.key === state.editing.key);
+      const typed = state.editing.buffer;
+      state.editing = null;
+      try {
+        await saveSetting(field.key, parseValue(field, typed));
+      } catch (err) {
+        state.status = err.message;
+        render();
+      }
+      return;
+    }
+    if (key === "\x7f" || key === "\b") {
+      state.editing.buffer = state.editing.buffer.slice(0, -1);
+      return render();
+    }
+    // Escape sequences (arrows, function keys) are not text; everything else is.
+    if (key.length === 1 && key >= " ") state.editing.buffer += key;
+    return render();
+  }
+
+  if (key === "\x1b") {
+    state.screen = "requests";
+    state.status = "";
+    return render();
+  }
+  if (key === "\x1b[A" || key === "k") {
+    state.settingsSelected = Math.max(0, state.settingsSelected - 1);
+    return render();
+  }
+  if (key === "\x1b[B" || key === "j") {
+    state.settingsSelected = Math.min(state.fields.length - 1, state.settingsSelected + 1);
+    return render();
+  }
+  const field = state.fields[state.settingsSelected];
+  if (!field) return render();
+
+  if (key === "\r" || key === "\n") {
+    // Opens on the value in force, so an edit is a correction rather than a re-entry.
+    state.editing = { key: field.key, buffer: showValue(state.settings?.[field.key]) };
+    state.status = "";
+    return render();
+  }
+  if (key === "r") return await saveSetting(field.key, null);
+  if (key === "R") {
+    state.status = "resetting every setting…";
+    render();
+    try {
+      const doc = await call("/api/admin/settings", { method: "DELETE" });
+      state.settings = doc.settings;
+      state.overrides = doc.overrides ?? {};
+      state.status = "every setting back to the shipped values";
+    } catch (err) {
+      state.status = err.message;
+    }
+    return render();
+  }
+  return render();
+}
+
 function quit() {
   process.stdout.write("\x1b[2J\x1b[H\x1b[?25h");
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
@@ -237,7 +468,11 @@ function quit() {
 }
 
 async function onKey(key) {
-  if (key === "q" || key === "\u0003") quit();
+  // `q` types a letter while a value is being edited; everywhere else it quits.
+  if (!state.editing && (key === "q" || key === "\u0003")) quit();
+  if (key === "\u0003") quit();
+
+  if (state.screen === "settings") return await onSettingsKey(key);
 
   if (state.detail >= 0) {
     if (key === "\x1b[D" || key === "h") state.choice = 0;
@@ -252,7 +487,13 @@ async function onKey(key) {
   if (key === "\x1b[A" || key === "k") state.selected = Math.max(0, state.selected - 1);
   else if (key === "\x1b[B" || key === "j")
     state.selected = Math.min(state.requests.length - 1, state.selected + 1);
-  else if (key === "\r" || key === "\n") {
+  else if (key === "s") {
+    state.screen = "settings";
+    state.status = "";
+    render();
+    if (!state.fields.length) await loadSettings();
+    return;
+  } else if (key === "\r" || key === "\n") {
     if (state.requests.length) {
       state.detail = state.selected;
       state.choice = 0;

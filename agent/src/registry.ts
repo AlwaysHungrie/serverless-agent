@@ -1,6 +1,15 @@
 import { DurableObject } from "cloudflare:workers";
 import { McpTokenError, refreshToken, type McpAuth, type McpServerRow } from "./mcp";
 import { addColumnIfMissing, applyMigrations, type Migration } from "./schema";
+import {
+  effectiveSettings,
+  parseSettingsPatch,
+  validateSettingsPatch,
+  FACTORY_SETTINGS,
+  SettingsError,
+  type DeploymentSettings,
+  type SettingsPatch,
+} from "./settings";
 
 /**
  * One agent's settings, split in two:
@@ -514,22 +523,27 @@ function safeChatId(chatId: string): string {
 }
 
 /** Sessions per page when the caller does not ask for a size. */
-export const SESSION_PAGE = 30;
+export const SESSION_PAGE = FACTORY_SETTINGS.session_page;
 /** The largest page any caller may ask for, sessions or messages alike. */
 export const MAX_PAGE = 200;
 
 /**
- * How many sessions one agent may hold at once.
+ * How many sessions one agent may hold at once, as this Worker ships.
  *
- * Every path that makes a session goes through `create` below, so this is the one
- * number that decides it — the web button, a fork, `!new`, and a Telegram chat that
- * has never been seen before.
+ * The number actually enforced is `settings.max_sessions`, which starts here and is
+ * whatever the owner has since set it to. Every path that makes a session goes through
+ * `create` below and passes that number in — the web button, a fork, `!new`, and a
+ * Telegram chat that has never been seen before.
+ *
+ * Still exported because the factory value is a real thing to test against, and
+ * because a caller with no settings in hand is better off with this than with a
+ * literal. It is not the live limit; do not compare against it to decide anything.
  */
-export const MAX_SESSIONS = 256;
+export const MAX_SESSIONS = FACTORY_SETTINGS.max_sessions;
 
 /**
  * How many bytes of uploaded and generated files one agent may hold, across every
- * session it has.
+ * session it has, as this Worker ships. `settings.max_agent_bytes` is the live one.
  *
  * Per agent rather than per session, because a session is free to make: an agent
  * with a ceiling on each of its sessions has no ceiling at all. Counted as a running
@@ -537,21 +551,30 @@ export const MAX_SESSIONS = 256;
  * in R2, so totalling them on demand would mean opening every session to answer
  * every upload.
  */
-export const MAX_AGENT_BYTES = 50_000_000;
+export const MAX_AGENT_BYTES = FACTORY_SETTINGS.max_agent_bytes;
 
-/** What a refused upload says, wherever it was refused. */
-export function storageFullMessage(used: number, size: number): string {
+/**
+ * What a refused upload says, wherever it was refused.
+ *
+ * The ceiling is passed in rather than read from a constant, because the sentence
+ * quotes it: a message naming 50 MB on a deployment that has raised the limit to 500
+ * is worse than no message, since the reader has no way to know which number is real.
+ */
+export function storageFullMessage(used: number, size: number, limit: number): string {
   const mb = (n: number) => `${(n / 1_000_000).toFixed(1)} MB`;
   return (
-    `This agent is using ${mb(used)} of its ${mb(MAX_AGENT_BYTES)} file storage, ` +
+    `This agent is using ${mb(used)} of its ${mb(limit)} file storage, ` +
     `and this file is ${mb(size)}. Delete some files or a session to make room.`
   );
 }
 
 /** What every refusal says, so the wording does not drift between four callers. */
-export const SESSION_LIMIT_MESSAGE =
-  `This agent has reached its limit of ${MAX_SESSIONS} sessions. ` +
-  `Delete one to start another.`;
+export function sessionLimitMessage(maxSessions: number): string {
+  return (
+    `This agent has reached its limit of ${maxSessions} sessions. ` +
+    `Delete one to start another.`
+  );
+}
 
 /** One page of the session list, plus the cursor that continues it. */
 export type SessionPage = {
@@ -1018,18 +1041,26 @@ export class SessionRegistry extends DurableObject {
     );
   }
 
-  /** What the agent is holding, and the ceiling it is held against. */
-  storageState(): { bytes: number; limit: number } {
+  /**
+   * What the agent is holding, and the ceiling it is held against.
+   *
+   * The ceiling is passed in for the same reason `config` takes the default model: an
+   * agent's registry is not the object that decides deployment-wide numbers, and a
+   * cross-object read on every upload would be an RPC hop per file. Callers get it
+   * from `deploymentSettings(env)`, which caches it. Omitting it falls back to the
+   * factory value, which is what a test with no deployment settings wants.
+   */
+  storageState(limit = FACTORY_SETTINGS.max_agent_bytes): { bytes: number; limit: number } {
     this.ensureSchema();
     const row = this.ctx.storage.sql
       .exec(`SELECT bytes FROM storage WHERE id = 1 LIMIT 1`)
       .toArray()[0] as { bytes: number } | undefined;
-    return { bytes: Math.max(0, Number(row?.bytes ?? 0)), limit: MAX_AGENT_BYTES };
+    return { bytes: Math.max(0, Number(row?.bytes ?? 0)), limit };
   }
 
   /** How many more bytes this agent may take. Never negative. */
-  storageRoom(): number {
-    const { bytes, limit } = this.storageState();
+  storageRoom(limit = FACTORY_SETTINGS.max_agent_bytes): number {
+    const { bytes } = this.storageState(limit);
     return Math.max(0, limit - bytes);
   }
 
@@ -1116,20 +1147,27 @@ export class SessionRegistry extends DurableObject {
     return this.meta();
   }
 
-  /** Reads the settings row, seeding it from the Worker default on first use. */
-  config(defaultModel: string): Config {
+  /**
+   * Reads the settings row, seeding it from the deployment's defaults on first use.
+   *
+   * `seed` is the deployment's `config_defaults`, applied over the factory values and
+   * only ever on the first read — an agent that already has a row keeps what it has,
+   * because a default is where a setting starts, not what it is held to. Locking a
+   * setting so the agent cannot move it is what `MetaSettings.locked` is for.
+   */
+  config(defaultModel: string, seed: Partial<Config> = {}): Config {
     this.ensureSchema();
     const row = this.ctx.storage.sql
       .exec(`SELECT ${CONFIG_COLUMNS.join(", ")} FROM config WHERE id = 1`)
       .toArray()[0] as Config | undefined;
     if (row) return row;
-    const seeded: Config = { model: defaultModel, ...DEFAULT_CONFIG };
+    const seeded: Config = { model: defaultModel, ...DEFAULT_CONFIG, ...seed };
     this.write(seeded);
     return seeded;
   }
 
-  setConfig(patch: Partial<Config>, defaultModel: string): Config {
-    const next = { ...this.config(defaultModel), ...patch };
+  setConfig(patch: Partial<Config>, defaultModel: string, seed: Partial<Config> = {}): Config {
+    const next = { ...this.config(defaultModel, seed), ...patch };
     this.write(next);
     return next;
   }
@@ -1221,7 +1259,9 @@ export class SessionRegistry extends DurableObject {
       chat_type: "",
       chat_username: "",
       chat_thread_id: "",
-    }
+    },
+    /** The deployment's `max_sessions`, passed in by the caller. See `storageState`. */
+    maxSessions = FACTORY_SETTINGS.max_sessions
   ): SessionRow {
     this.ensureSchema();
     // The ceiling, enforced here because here is where every path meets: the web
@@ -1232,8 +1272,8 @@ export class SessionRegistry extends DurableObject {
     // A row that already exists is an update, not a new session, so it is let
     // through whatever the count is — otherwise renaming the oldest session would
     // start failing the moment the agent filled up.
-    if (this.countSessions() >= MAX_SESSIONS && !this.get(id)) {
-      throw new Error(SESSION_LIMIT_MESSAGE);
+    if (this.countSessions() >= maxSessions && !this.get(id)) {
+      throw new Error(sessionLimitMessage(maxSessions));
     }
     const now = Date.now();
     this.ctx.storage.sql.exec(
@@ -1482,10 +1522,10 @@ export type FleetRow = {
 };
 
 /** How many agents one page holds when the caller does not say. */
-export const AGENT_PAGE = 30;
+export const AGENT_PAGE = FACTORY_SETTINGS.agent_page;
 
 /** The largest page a caller may ask for. */
-export const MAX_AGENT_PAGE = 100;
+export const MAX_AGENT_PAGE = FACTORY_SETTINGS.max_agent_page;
 
 /**
  * Where a page stopped: the sort key of its last row, `<created_at>:<id>`.
@@ -1516,7 +1556,7 @@ function decodeCursor(cursor: string): { created_at: number; id: string } | null
  * past the cap is how someone adds a teammate, sees the save succeed, and finds out
  * weeks later that the teammate was never on the list.
  */
-export const MAX_MEMBERS = 200;
+export const MAX_MEMBERS = FACTORY_SETTINGS.max_members;
 
 /**
  * How many agents an ordinary account may administer — itself included.
@@ -1525,7 +1565,7 @@ export const MAX_MEMBERS = 200;
  * does not apply to, so raising a business account's ceiling is one row, not a
  * migration of everyone else's.
  */
-export const DEFAULT_AGENT_LIMIT = 1;
+export const DEFAULT_AGENT_LIMIT = FACTORY_SETTINGS.default_agent_limit;
 
 /** How stale an agent's "last used" date may get before `touch` writes again. */
 const TOUCH_INTERVAL = 5 * 60 * 1000;
@@ -1552,9 +1592,14 @@ export function splitEmails(stored: string): string[] {
 /**
  * The stored form of an access list: lowercased, de-duplicated, one per line.
  *
- * Throws when there are more than `MAX_MEMBERS` of them, so the caller can say so.
+ * Throws when there are more than `maxMembers` of them, so the caller can say so.
+ * The ceiling is passed in because it is the deployment's, not this function's; the
+ * factory value stands in for a caller that has no settings in hand.
  */
-export function normalizeEmails(input: string | string[]): string {
+export function normalizeEmails(
+  input: string | string[],
+  maxMembers = FACTORY_SETTINGS.max_members
+): string {
   const raw = Array.isArray(input) ? input : input.split(/[\n,;]/);
   const seen = new Set<string>();
   for (const entry of raw) {
@@ -1562,8 +1607,8 @@ export function normalizeEmails(input: string | string[]): string {
     // Enough of a shape check to keep typos and pasted prose out of the list.
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) seen.add(email);
   }
-  if (seen.size > MAX_MEMBERS) {
-    throw new Error(`an agent may have at most ${MAX_MEMBERS} addresses on its access list`);
+  if (seen.size > maxMembers) {
+    throw new Error(`an agent may have at most ${maxMembers} addresses on its access list`);
   }
   return [...seen].join("\n");
 }
@@ -1706,6 +1751,28 @@ const AGENT_DIRECTORY_MIGRATIONS: readonly Migration[] = [
          )`
       );
 
+    },
+  },
+  {
+    // The deployment's own knobs, in the one object there is exactly one of.
+    //
+    // Here rather than in a `wrangler` var because the point is to change a ceiling
+    // without a deploy, and here rather than in each agent's own registry because a
+    // ceiling is the deployment's answer, not an agent's — an agent that could raise
+    // its own `max_sessions` would not have a limit.
+    //
+    // One row holding a JSON patch: the document is nested, nothing queries a field
+    // of it, and it holds only what this deployment has decided for itself, so a
+    // column per setting would be a migration per setting for no lookup.
+    name: "deployment settings",
+    up: (sql) => {
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS deployment_settings (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           json TEXT NOT NULL DEFAULT '',
+           updated_at INTEGER NOT NULL DEFAULT 0
+         )`
+      );
     },
   },
 ];
@@ -1872,11 +1939,11 @@ export class AgentDirectory extends DurableObject {
    * you administer yourself and put your own address in: it shows up here as yours,
    * and again inside the fleet as one of its agents, because it is both.
    */
-  listPage(email: string, limit = AGENT_PAGE, cursor = ""): AgentPage {
+  listPage(email: string, limit = 0, cursor = ""): AgentPage {
     this.ensureSchema();
     const wanted = email.trim().toLowerCase();
     if (!wanted) return { agents: [], has_more: false, cursor: "" };
-    const size = Math.min(Math.max(1, limit), MAX_AGENT_PAGE);
+    const size = this.pageSize(limit);
     const after = decodeCursor(cursor);
     // One row more than asked for: whether there is another page is then a fact
     // about this query rather than a second count over the whole list.
@@ -1933,10 +2000,10 @@ export class AgentDirectory extends DurableObject {
   }
 
   /** One page of the agents inside a fleet, oldest first — the order they were made in. */
-  listFleetPage(fleetId: string, limit = AGENT_PAGE, cursor = ""): AgentPage {
+  listFleetPage(fleetId: string, limit = 0, cursor = ""): AgentPage {
     this.ensureSchema();
     if (!fleetId) return { agents: [], has_more: false, cursor: "" };
-    const size = Math.min(Math.max(1, limit), MAX_AGENT_PAGE);
+    const size = this.pageSize(limit);
     const after = decodeCursor(cursor);
     const rows = this.ctx.storage.sql
       .exec(
@@ -2105,14 +2172,94 @@ export class AgentDirectory extends DurableObject {
     this.ctx.storage.sql.exec(`UPDATE agents SET updated_at = ? WHERE id = ?`, now, id);
   }
 
-  /** How many agents `email` may administer — itself included. `DEFAULT_AGENT_LIMIT` unless the owner has raised it. */
+  /**
+   * One page of agents, as this deployment sizes them: the caller's ask, or
+   * `agent_page` when it did not ask, clamped to `max_agent_page` either way.
+   *
+   * Read off the settings here rather than taken as a parameter because this object is
+   * the one holding them — no hop, and no caller that could get it wrong.
+   */
+  private pageSize(limit: number): number {
+    const settings = this.settings();
+    const asked = Number.isFinite(limit) && limit > 0 ? limit : settings.agent_page;
+    return Math.min(Math.max(1, Math.trunc(asked)), settings.max_agent_page);
+  }
+
+  /**
+   * The deployment's own knobs: the factory values with this deployment's overrides
+   * merged on top. See `settings.ts` for why only the overrides are stored.
+   *
+   * Every other object reads this through `deploymentSettings` in `settings.ts`,
+   * which caches it per isolate — this method is one RPC hop and gets called on paths
+   * that run per turn.
+   */
+  settings(): DeploymentSettings {
+    this.ensureSchema();
+    return effectiveSettings(this.settingsPatch());
+  }
+
+  /** Just this deployment's overrides, for a dialog that has to show what is decided here. */
+  settingsPatch(): SettingsPatch {
+    this.ensureSchema();
+    const row = this.ctx.storage.sql
+      .exec(`SELECT json FROM deployment_settings WHERE id = 1`)
+      .toArray()[0] as { json: string } | undefined;
+    return parseSettingsPatch(String(row?.json ?? ""));
+  }
+
+  /**
+   * Merge a patch into the overrides and return the document now in force.
+   *
+   * Validation happens here rather than in the route so the stored document cannot be
+   * made invalid by any caller, and so the merge and the cross-field checks
+   * (`message_page` against `max_message_page`) see the same state.
+   *
+   * A rejection comes back as `{ error }` rather than as a throw. A thrown
+   * `SettingsError` crossing a Durable Object RPC boundary arrives at the Worker as a
+   * plain `Error`, so the route could not tell a value it should answer 400 for from a
+   * failure it should answer 500 for — and answering 500 to "that number is too big"
+   * is the difference between a dialog that can be corrected and one that looks broken.
+   */
+  setSettings(
+    patch: unknown
+  ): { settings: DeploymentSettings; overrides: SettingsPatch } | { error: string } {
+    this.ensureSchema();
+    let overrides: SettingsPatch;
+    try {
+      overrides = validateSettingsPatch(patch, this.settingsPatch());
+    } catch (err) {
+      if (err instanceof SettingsError) return { error: err.message };
+      throw err;
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO deployment_settings (id, json, updated_at) VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
+      JSON.stringify(overrides),
+      Date.now()
+    );
+    return { settings: effectiveSettings(overrides), overrides };
+  }
+
+  /** Drop every override, putting the deployment back on the factory values. */
+  resetSettings(): DeploymentSettings {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(`DELETE FROM deployment_settings WHERE id = 1`);
+    return effectiveSettings({});
+  }
+
+  /**
+   * How many agents `email` may administer — itself included.
+   *
+   * The deployment's `default_agent_limit` unless the owner has raised this one
+   * account, which is what `account_limits` holds: absence is the ordinary case.
+   */
   getAgentLimit(email: string): number {
     this.ensureSchema();
     const wanted = email.trim().toLowerCase();
     const row = this.ctx.storage.sql
       .exec(`SELECT agent_limit FROM account_limits WHERE email = ? LIMIT 1`, wanted)
       .toArray()[0] as { agent_limit: number } | undefined;
-    return row?.agent_limit ?? DEFAULT_AGENT_LIMIT;
+    return row?.agent_limit ?? this.settings().default_agent_limit;
   }
 
   /**

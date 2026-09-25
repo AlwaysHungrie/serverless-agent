@@ -5,7 +5,7 @@ import {
   sessionIdForChat,
   MAX_AGENT_BYTES,
   MAX_SESSIONS,
-  SESSION_LIMIT_MESSAGE,
+  sessionLimitMessage,
   thisMonth,
 } from "../src/registry";
 
@@ -279,7 +279,7 @@ describe("sessions", () => {
       () => null,
       (err: unknown) => (err instanceof Error ? err.message : String(err))
     );
-    expect(refusal).toBe(SESSION_LIMIT_MESSAGE);
+    expect(refusal).toBe(sessionLimitMessage(MAX_SESSIONS));
   });
 
   it("still allows updating an existing session at the ceiling", async () => {

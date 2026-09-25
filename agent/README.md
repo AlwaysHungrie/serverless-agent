@@ -18,6 +18,36 @@ of at the upload. With `MODELS` unset the catalogue is just the `MODEL` above.
 Meta settings may go further and name any OpenRouter id at all, with its own answer to
 the same question — see the model list in that dialog.
 
+## Deployment settings
+
+Every ceiling this Worker enforces and every value an agent starts out holding lives in
+one document the owner edits at runtime — no deploy, no release. Sessions per agent,
+file storage per agent, addresses per access list, agents per account, the per-kind
+upload ceilings, tool rounds per turn, page sizes, the voice-note length; and on the
+soft side the model catalogue, the model a new agent is seeded with, the line every
+agent is told first, the starting value of each tuning and capability column, the model
+menus the image, transcription and voice fields offer, and which MCP providers the
+capabilities page shows.
+
+Three of them are enforced in the browser rather than here — files per message, the size
+an image is re-encoded to, how long a take may run — so `/api/agents/:id/config` hands
+them to the composer instead of the page holding its own copy. A browser that refuses at
+its own number and a Worker that refuses at the deployment's are two limits that drift,
+and the browser's is the one the user meets first.
+
+It lives in `AgentDirectory`, is defined in `src/settings.ts`, and is reached over
+`/api/admin/settings` — or, in practice, from the `admin-cli` dashboard's settings
+screen (`s` on the list, `enter` to edit a row, `r` to put one back).
+
+Only the fields the deployment has actually changed are stored. A field nobody touched
+keeps tracking the value in `FACTORY_SETTINGS`, so raising a default in a release
+reaches every deployment that never overrode it. `r` on a row is not "set it to the
+shipped number" but "stop deciding this one", which is the difference that keeps it
+tracking.
+
+`MODELS` still works and still needs no settings document. The stored `models` list
+wins where it is set, and `MODELS` stands underneath it.
+
 ## Run locally
 
 ```bash
@@ -76,6 +106,9 @@ curl -X POST http://localhost:8787/agents/session-agent/my-session/chat \
 | `GET\|POST /api/agents/:agentId/sessions` | List / create that agent's sessions. GET takes `?limit` (default 30, max 200) and `?cursor`, and answers `{ sessions, has_more, cursor }` |
 | `PATCH\|DELETE /api/sessions/:sessionId` | Rename / delete a session |
 | `POST /telegram/webhook/:agentId` | One route per agent, because one bot per agent |
+| `GET /api/admin/settings` | The deployment's settings: `{ settings, overrides, fields }`. Owner only, via `API_SECRET` |
+| `PATCH /api/admin/settings` | Merge a patch: `{ <field>: value }`, or `{ <field>: null }` to stop overriding it. Owner only |
+| `DELETE /api/admin/settings` | Drop every override, back to the shipped values. Owner only |
 
 ## Agents
 

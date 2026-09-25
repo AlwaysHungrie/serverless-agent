@@ -26,14 +26,10 @@ import {
   emailAllowed,
   normalizeEmails,
   splitEmails,
-  AGENT_PAGE,
-  MAX_MEMBERS,
-  MAX_SESSIONS,
-  SESSION_LIMIT_MESSAGE,
+  sessionLimitMessage,
   sessionName,
   type AccessRow,
   MAX_PAGE,
-  SESSION_PAGE,
   type AgentRow,
   DEFAULT_META,
   type Config,
@@ -61,6 +57,12 @@ import {
 } from "./mcp";
 import { mcpServerReady, withMcpAuth } from "./capabilities";
 import { clerkEmail } from "./clerk";
+import {
+  SETTINGS_FIELDS,
+  deploymentSettings,
+  forgetCachedSettings,
+  type DeploymentSettings,
+} from "./settings";
 
 export { SessionAgent } from "./agent";
 export { AgentDirectory, SessionRegistry } from "./registry";
@@ -107,6 +109,29 @@ function registry(env: Env, agentId: string) {
 /** The index of which agents exist. A DO namespace cannot be enumerated. */
 function directory(env: Env) {
   return env.AgentDirectory.get(env.AgentDirectory.idFromName("root"));
+}
+
+/**
+ * An agent's config, seeded from the deployment's defaults if this is its first read.
+ *
+ * Every route that wants a config goes through here rather than calling
+ * `readConfig(env, reg)`, because the model a new agent starts on and the values its
+ * columns start at are both deployment settings now, and a route that passed only
+ * `env.MODEL` would quietly seed the agent from the factory values instead.
+ */
+async function readConfig(env: Env, reg: ReturnType<typeof registry>) {
+  const settings = await deploymentSettings(env);
+  return await reg.config(settings.default_model || env.MODEL, settings.config_defaults);
+}
+
+/** As `readConfig`, writing a patch over it. */
+async function writeConfig(
+  env: Env,
+  reg: ReturnType<typeof registry>,
+  patch: Parameters<ReturnType<typeof registry>["setConfig"]>[0]
+) {
+  const settings = await deploymentSettings(env);
+  return await reg.setConfig(patch, settings.default_model || env.MODEL, settings.config_defaults);
 }
 
 /**
@@ -863,6 +888,7 @@ async function handleMcp(
   if (request.method === "GET" && !id) {
     const servers = await reg.mcpServers();
     const { mcp } = await reg.meta();
+    const settings = await deploymentSettings(env);
     return withCors(
       Response.json({
         servers: servers.map(mcpView),
@@ -872,10 +898,16 @@ async function handleMcp(
         // strip offers, and whether the page may change the list at all. They come
         // back here rather than being read off `/meta`, which is the admin's route
         // and answers nobody else.
-        templates: mcp.templates,
+        //
+        // Three answers, nearest first: this agent's own admin decided it, or the
+        // deployment decided it, or the frontend's built-in strip stands. An agent's
+        // administrator is closer to the agent than the deployment's owner is, so their
+        // answer wins where they gave one — the deployment's is a default for every
+        // agent nobody has said anything about, which is most of them.
+        templates: mcp.templates.length ? mcp.templates : settings.mcp_templates,
         // Templates provisioned from outside this deployment. They replace the
         // built-in strip rather than filtering it — see `MetaSettings.mcp.catalog`.
-        catalog: mcp.catalog,
+        catalog: mcp.catalog.length ? mcp.catalog : settings.mcp_catalog,
         user_servers: mcp.user_servers,
       })
     );
@@ -973,7 +1005,7 @@ async function handleMcp(
         )
       );
     }
-    const config = await reg.config(env.MODEL);
+    const config = await readConfig(env, reg);
     if (!config.openrouter_api_key) {
       return withCors(
         Response.json(
@@ -1099,8 +1131,40 @@ function modelOptions(chosen: ModelChoice[], catalog: ModelOption[]): ModelOptio
  * widened in meta settings offers those instead. The label of a known choice is kept,
  * so a familiar model does not become a bare id just because the list was extended.
  */
-function capabilitiesFor(meta: MetaSettings): Capability[] {
-  const widened = Object.entries(meta.field_options).filter(([, v]) => v.length > 0);
+/**
+ * The capability list with the deployment's own upload ceilings written into the note
+ * the page shows.
+ *
+ * The note quotes two numbers, and a deployment that has raised either of them would
+ * otherwise tell every user the shipped figure — which is the one kind of wrong
+ * documentation nobody can correct, because it is generated.
+ */
+function notedCapabilities(list: Capability[], settings: DeploymentSettings): Capability[] {
+  const mb = (n: number) => `${Number((n / 1_000_000).toFixed(1))} MB`;
+  return list.map((capability) =>
+    capability.id === "file_ingest"
+      ? {
+          ...capability,
+          note:
+            `Markdown, CSV, JSON and code up to ${mb(settings.max_upload_bytes.text)}; ` +
+            `PDFs up to ${mb(settings.max_upload_bytes.pdf)}.`,
+        }
+      : capability
+  );
+}
+
+/**
+ * The capability list with the fixed-choice model menus widened.
+ *
+ * Two sources, nearest first: this agent's own meta document, then the deployment's.
+ * An agent's administrator is closer to the agent than the deployment's owner is, so a
+ * column they answered wins outright — the deployment's list is the menu for every
+ * agent nobody has said anything about.
+ */
+function capabilitiesFor(meta: MetaSettings, settings: DeploymentSettings): Capability[] {
+  const widened = Object.entries({ ...settings.field_options, ...meta.field_options }).filter(
+    ([, v]) => v.length > 0
+  );
   if (!widened.length) return CAPABILITIES;
   const options = new Map(widened);
   return CAPABILITIES.map((capability) => {
@@ -1149,7 +1213,7 @@ const CAPABILITY_FIELD_KEYS = new Set<string>(CAPABILITY_FIELDS.map((f) => Strin
 function validateMeta(
   body: Partial<MetaSettings>,
   previous: MetaSettings,
-  { creation }: { creation: boolean }
+  { creation, settings }: { creation: boolean; settings: DeploymentSettings }
 ): MetaSettings {
   const meta: MetaSettings = {
     models: [],
@@ -1181,8 +1245,8 @@ function validateMeta(
 
   if (body.member_limit !== undefined) {
     const members = Number(body.member_limit);
-    if (!Number.isInteger(members) || members < 0 || members > MAX_MEMBERS) {
-      throw new Error(`member_limit must be a whole number from 0 to ${MAX_MEMBERS}`);
+    if (!Number.isInteger(members) || members < 0 || members > settings.max_members) {
+      throw new Error(`member_limit must be a whole number from 0 to ${settings.max_members}`);
     }
     meta.member_limit = members;
   }
@@ -1414,7 +1478,7 @@ async function applyMeta(
     }
   }
 
-  const config = await reg.setConfig(validateConfig(patch), env.MODEL);
+  const config = await writeConfig(env, reg, validateConfig(patch));
 
   const existing = await reg.mcpServers();
   const taken = new Set(existing.map((s) => s.name.toLowerCase()));
@@ -1456,7 +1520,7 @@ async function applyMeta(
 async function deleteAgent(env: Env, origin: string, agentId: string): Promise<void> {
   const reg = registry(env, agentId);
 
-  const config = await reg.config(env.MODEL);
+  const config = await readConfig(env, reg);
   if (config.telegram_bot_token) {
     try {
       await new Telegram(config.telegram_bot_token, env.TELEGRAM_API_BASE).deleteWebhook();
@@ -1538,7 +1602,7 @@ async function handleFleets(
           fleet,
           meta: redactMeta(await stored()),
           // The catalogues the dialog picks from; it keeps no copy of its own.
-          models: modelCatalog(env),
+          models: modelCatalog(env, await deploymentSettings(env)),
           capabilities: CAPABILITIES,
         })
       );
@@ -1567,7 +1631,10 @@ async function handleFleets(
       let meta: MetaSettings;
       try {
         meta = first
-          ? validateMeta(body, await stored(), { creation: true })
+          ? validateMeta(body, await stored(), {
+              creation: true,
+              settings: await deploymentSettings(env),
+            })
           : await stored();
       } catch (err) {
         return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
@@ -1713,7 +1780,7 @@ async function provisionAgent(
   // first enable seeds them: empty lists would let all of Telegram talk to the bot
   // the moment a token is pasted.
   const reg = registry(env, row.id);
-  await reg.setConfig({ agent_name: row.name, ...TELEGRAM_WHITELIST_DEFAULTS }, env.MODEL);
+  await writeConfig(env, reg, { agent_name: row.name, ...TELEGRAM_WHITELIST_DEFAULTS });
   // The defaults are applied straight away: an agent made through the dialog is meant
   // to open already looking the way the settings step described it.
   if (agent.meta) {
@@ -1722,7 +1789,7 @@ async function provisionAgent(
   }
   // Already written by `applyMeta` when it came from the settings step; this is for
   // the caller that still sends it at the top level.
-  if (agent.key) await reg.setConfig({ openrouter_api_key: agent.key }, env.MODEL);
+  if (agent.key) await writeConfig(env, reg, { openrouter_api_key: agent.key });
   return row;
 }
 
@@ -1741,7 +1808,8 @@ async function handleAgents(
       // Only what the caller may open. An address that names nobody filters to
       // nothing, which is the right answer for a call that proved no identity.
       const email = await callerEmail(request, env);
-      const limit = Number(url.searchParams.get("limit")) || AGENT_PAGE;
+      // 0 lets the directory apply its own `agent_page`, which is the deployment's.
+      const limit = Number(url.searchParams.get("limit")) || 0;
       const cursor = url.searchParams.get("cursor") ?? "";
       const fleetId = url.searchParams.get("fleet") ?? "";
 
@@ -1842,7 +1910,10 @@ async function handleAgents(
       let meta: MetaSettings | undefined;
       if (body.meta) {
         try {
-          meta = validateMeta(body.meta, DEFAULT_META, { creation: true });
+          meta = validateMeta(body.meta, DEFAULT_META, {
+            creation: true,
+            settings: await deploymentSettings(env),
+          });
         } catch (err) {
           return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
         }
@@ -1868,7 +1939,8 @@ async function handleAgents(
         allowed = normalizeEmails(
           Array.isArray(body.allowed_emails)
             ? body.allowed_emails
-            : (body.allowed_emails ?? "").split(/[\n,;]/)
+            : (body.allowed_emails ?? "").split(/[\n,;]/),
+          (await deploymentSettings(env)).max_members
         );
       } catch (err) {
         return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
@@ -1976,7 +2048,13 @@ async function handleAgents(
   // agent to hang them off. Nothing here belongs to anyone, so nothing is checked
   // beyond the gate every /api route is already behind.
   if (agentId === "catalog" && request.method === "GET") {
-    return withCors(Response.json({ models: modelCatalog(env), capabilities: CAPABILITIES }));
+    const settings = await deploymentSettings(env);
+    return withCors(
+      Response.json({
+        models: modelCatalog(env, settings),
+        capabilities: notedCapabilities(capabilitiesFor(DEFAULT_META, settings), settings),
+      })
+    );
   }
 
   // The directory row is what the response bodies below are built from: the name and
@@ -2047,7 +2125,7 @@ async function handleAgents(
         await dir.rename(agentId, cleaned);
         // The settings row keeps its own copy: it is what the system prompt tells the
         // model it is called, and the session object never reads the directory.
-        await registry(env, agentId).setConfig({ agent_name: cleaned }, env.MODEL);
+        await writeConfig(env, registry(env, agentId), { agent_name: cleaned });
         next = { ...next, name: cleaned };
       }
 
@@ -2058,12 +2136,15 @@ async function handleAgents(
         const caller = await callerEmail(request, env);
         let allowed: string;
         try {
-          allowed = normalizeEmails([
-            ...(caller ? [caller] : []),
-            ...(Array.isArray(body.allowed_emails)
-              ? body.allowed_emails
-              : body.allowed_emails.split(/[\n,;]/)),
-          ]);
+          allowed = normalizeEmails(
+            [
+              ...(caller ? [caller] : []),
+              ...(Array.isArray(body.allowed_emails)
+                ? body.allowed_emails
+                : body.allowed_emails.split(/[\n,;]/)),
+            ],
+            (await deploymentSettings(env)).max_members
+          );
         } catch (err) {
           return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
         }
@@ -2130,7 +2211,7 @@ async function handleAgents(
       return withCors(
         Response.json({
           agent: agentFor(agent, email),
-          config: redact(await reg.config(env.MODEL)),
+          config: redact(await readConfig(env, reg)),
           // What the agent has spent this month against the ceiling its
           // administrator set. Read-only here: the settings page is the user's, and
           // this is the one number on it that is not theirs to move. Sent to
@@ -2141,12 +2222,26 @@ async function handleAgents(
           // page shows it beside the list; the Worker is what actually refuses a
           // list that goes over.
           member_limit: meta.member_limit,
-          models: modelOptions(meta.models, modelCatalog(env)),
-          capabilities: capabilitiesFor(meta),
+          models: modelOptions(meta.models, modelCatalog(env, await deploymentSettings(env))),
+          capabilities: notedCapabilities(
+            capabilitiesFor(meta, await deploymentSettings(env)),
+            await deploymentSettings(env)
+          ),
           // What the agent's own pages may not show or change. They are decided in
           // the meta dialog, so a page that drew them would be offering an edit that
           // the PATCH below drops on the floor.
           locked: meta.locked,
+          // The ceilings the composer has to know before it sends anything: how many
+          // files one message may carry, and how large each kind may be.
+          //
+          // Sent rather than compiled into the page, because a browser that refuses at
+          // its own number and a Worker that refuses at the deployment's are two limits
+          // that drift — and the one the user meets first is the browser's, so it is the
+          // one that has to be right.
+          limits: {
+            max_files_per_message: (await deploymentSettings(env)).max_files_per_message,
+            max_upload_bytes: (await deploymentSettings(env)).max_upload_bytes,
+          },
         })
       );
     }
@@ -2181,7 +2276,7 @@ async function handleAgents(
       // talk to the bot, so the first enable seeds them with entries that match
       // nothing. Only on the way on, and only over lists nobody has filled in.
       if (patch.cap_telegram === 1) {
-        const current = await reg.config(env.MODEL);
+        const current = await readConfig(env, reg);
         if (!current.cap_telegram) {
           for (const [key, value] of Object.entries(TELEGRAM_WHITELIST_DEFAULTS)) {
             const field = key as keyof typeof TELEGRAM_WHITELIST_DEFAULTS;
@@ -2191,7 +2286,7 @@ async function handleAgents(
           }
         }
       }
-      const config = await reg.setConfig(patch, env.MODEL);
+      const config = await writeConfig(env, reg, patch);
       // Saving the token is the whole setup: the bot is pointed at this Worker here
       // rather than through a curl the user has to run by hand.
       const telegram = await syncWebhook(config, url.origin, agentId, env.TELEGRAM_API_BASE);
@@ -2227,10 +2322,10 @@ async function handleAgents(
           // The agent's own settings, which the dialog edits beside the locks. They
           // come from here rather than from `/config`, because that route belongs to
           // the agent's users and an admin need not be one.
-          config: redact(await reg.config(env.MODEL)),
+          config: redact(await readConfig(env, reg)),
           // The catalogues the dialog picks from: it never keeps its own copy of
           // what models exist or what a capability's fields are.
-          models: modelCatalog(env),
+          models: modelCatalog(env, await deploymentSettings(env)),
           capabilities: CAPABILITIES,
           // What the agent has spent this month, so the ceiling beside it is set
           // against a number rather than a guess.
@@ -2250,7 +2345,10 @@ async function handleAgents(
       };
       let meta: MetaSettings;
       try {
-        meta = validateMeta(body, await reg.meta(), { creation: false });
+        meta = validateMeta(body, await reg.meta(), {
+          creation: false,
+          settings: await deploymentSettings(env),
+        });
       } catch (err) {
         return withCors(Response.json({ error: (err as Error).message }, { status: 400 }));
       }
@@ -2275,7 +2373,7 @@ async function handleAgents(
         }
         // Deliberately not filtered by `lockedColumns`: a lock says the agent's own
         // pages may not touch a setting, and this is the page that decides the lock.
-        config = await reg.setConfig(patch, env.MODEL);
+        config = await writeConfig(env, reg, patch);
         await syncWebhook(config, url.origin, agentId, env.TELEGRAM_API_BASE);
         await syncWhatsappSubscription(config, env.WHATSAPP_API_BASE);
       }
@@ -2307,8 +2405,12 @@ async function handleAgents(
     if (request.method === "GET") {
       // Paged: the sidebar asks for a screenful and follows the cursor as it scrolls,
       // so an agent with thousands of sessions costs the same first load as a new one.
-      const limit = Number(url.searchParams.get("limit") ?? SESSION_PAGE);
-      const size = Number.isFinite(limit) ? limit : SESSION_PAGE;
+      const settings = await deploymentSettings(env);
+      const asked = Number(url.searchParams.get("limit") ?? settings.session_page);
+      const size = Math.min(
+        Math.max(1, Number.isFinite(asked) ? asked : settings.session_page),
+        settings.max_session_page
+      );
       return withCors(
         Response.json(await reg.list(size, url.searchParams.get("cursor") ?? ""))
       );
@@ -2326,7 +2428,13 @@ async function handleAgents(
       // answer the page can show rather than a 500 it cannot.
       let created;
       try {
-        created = await reg.create(sessionId, title ?? "New session", objectId);
+        created = await reg.create(
+          sessionId,
+          title ?? "New session",
+          objectId,
+          undefined,
+          (await deploymentSettings(env)).max_sessions
+        );
       } catch (err) {
         return withCors(Response.json({ error: (err as Error).message }, { status: 409 }));
       }
@@ -2338,7 +2446,7 @@ async function handleAgents(
 
   // "Why is the bot not answering?" — asked of Telegram itself.
   if (section === "telegram" && segments[4] === "status" && request.method === "GET") {
-    const config = await reg.config(env.MODEL);
+    const config = await readConfig(env, reg);
     if (!config.telegram_bot_token) {
       return withCors(Response.json({ error: "no bot token saved" }, { status: 400 }));
     }
@@ -2390,8 +2498,11 @@ async function handleSession(
     };
     // Checked before the source is read: exporting a long conversation is real work
     // to throw away, and the answer would be the same after it.
-    if ((await reg.countSessions()) >= MAX_SESSIONS) {
-      return withCors(Response.json({ error: SESSION_LIMIT_MESSAGE }, { status: 409 }));
+    const { max_sessions } = await deploymentSettings(env);
+    if ((await reg.countSessions()) >= max_sessions) {
+      return withCors(
+        Response.json({ error: sessionLimitMessage(max_sessions) }, { status: 409 })
+      );
     }
     const exported = await routeAgentRequest(
       new Request(
@@ -2411,7 +2522,13 @@ async function handleSession(
     const source = await reg.get(id);
     let row;
     try {
-      row = await reg.create(forkId, title ?? `${source?.title ?? "Session"} (fork)`, objectId);
+      row = await reg.create(
+        forkId,
+        title ?? `${source?.title ?? "Session"} (fork)`,
+        objectId,
+        undefined,
+        max_sessions
+      );
     } catch (err) {
       return withCors(Response.json({ error: (err as Error).message }, { status: 409 }));
     }
@@ -2500,7 +2617,7 @@ async function handleWebhook(
   agentId: string
 ): Promise<Response> {
   const reg = registry(env, agentId);
-  const config = await reg.config(env.MODEL);
+  const config = await readConfig(env, reg);
   if (!config.cap_telegram || !config.telegram_bot_token) {
     return new Response("telegram is off", { status: 404 });
   }
@@ -2541,25 +2658,37 @@ async function handleWebhook(
     // A chat the agent has never spoken to needs a session of its own, and a full
     // agent has none to give. Said in the chat rather than swallowed: to whoever is
     // typing, an agent that answers nothing is a broken one.
-    if ((await reg.countSessions()) >= MAX_SESSIONS) {
-      const config = await reg.config(env.MODEL);
+    const { max_sessions: telegramSessionCap } = await deploymentSettings(env);
+    if ((await reg.countSessions()) >= telegramSessionCap) {
+      const config = await readConfig(env, reg);
       if (config.telegram_bot_token) {
         await new Telegram(config.telegram_bot_token, env.TELEGRAM_API_BASE)
-          .send(chatId, SESSION_LIMIT_MESSAGE, message.message_id, Number(threadId) || undefined)
+          .send(
+            chatId,
+            sessionLimitMessage(telegramSessionCap),
+            message.message_id,
+            Number(threadId) || undefined
+          )
           .catch(() => {
             // Nothing to do about a chat that cannot be reached.
           });
       }
       return new Response("ok");
     }
-    await reg.create(sessionId, chatTitle(message), env.SessionAgent.idFromName(sessionId).toString(), {
-      source: "telegram",
-      chat_id: chatId,
-      chat_type: message.chat.type,
-      // A public group links by handle; a private one links by its internal id.
-      chat_username: message.chat.type === "private" ? "" : (message.chat.username ?? ""),
-      chat_thread_id: threadId,
-    });
+    await reg.create(
+      sessionId,
+      chatTitle(message),
+      env.SessionAgent.idFromName(sessionId).toString(),
+      {
+        source: "telegram",
+        chat_id: chatId,
+        chat_type: message.chat.type,
+        // A public group links by handle; a private one links by its internal id.
+        chat_username: message.chat.type === "private" ? "" : (message.chat.username ?? ""),
+        chat_thread_id: threadId,
+      },
+      telegramSessionCap
+    );
     await syncSessionCount(env, agentId);
   }
   await reg.touch(sessionId);
@@ -2620,7 +2749,7 @@ async function handleWhatsappWebhook(
   agentId: string
 ): Promise<Response> {
   const reg = registry(env, agentId);
-  const config = await reg.config(env.MODEL);
+  const config = await readConfig(env, reg);
   // Every field is required, so `enabled` is also the answer to "is this agent's
   // WhatsApp set up". A half-filled one answers the handshake and then fails to
   // verify a signature, which looks like Meta's fault.
@@ -2665,7 +2794,8 @@ async function handleWhatsappWebhook(
   const existing = await reg.forChat(chatId);
   const sessionId = existing?.id ?? (await reg.freeChatSessionId(agentId, inbound.from, "", "wa"));
   if (!existing) {
-    if ((await reg.countSessions()) >= MAX_SESSIONS) {
+    const { max_sessions: whatsappSessionCap } = await deploymentSettings(env);
+    if ((await reg.countSessions()) >= whatsappSessionCap) {
       // Said in the chat rather than swallowed, for the same reason as Telegram: to
       // whoever is typing, an agent that answers nothing is a broken one.
       await new WhatsApp(
@@ -2673,7 +2803,7 @@ async function handleWhatsappWebhook(
         config.whatsapp_phone_number_id,
         env.WHATSAPP_API_BASE
       )
-        .send(inbound.from, SESSION_LIMIT_MESSAGE, inbound.message.id)
+        .send(inbound.from, sessionLimitMessage(whatsappSessionCap), inbound.message.id)
         .catch(() => {
           // Nothing to do about a chat that cannot be reached.
         });
@@ -2694,7 +2824,8 @@ async function handleWhatsappWebhook(
         // Cloud API group messaging needs an Official Business Account, so every
         // conversation here is one person.
         chat_thread_id: "",
-      }
+      },
+      whatsappSessionCap
     );
     await syncSessionCount(env, agentId);
   }
@@ -2770,6 +2901,55 @@ export default {
       }
       await directory(env).setAgentLimit(email, limit);
       return withCors(Response.json({ email, agent_limit: limit }));
+    }
+
+    // The deployment's own knobs: every ceiling this Worker enforces and every value
+    // an agent starts out holding, read and written by the owner alone.
+    //
+    // Same gate and same position as the business-account route above, and for the
+    // same reason: the deployment's owner is the one caller here with no Clerk session
+    // of their own, and none of this is any account's own data.
+    //
+    // GET returns three things, because the admin CLI needs all three and should not
+    // hold a copy of any of them: the document in force, the subset of it this
+    // deployment has actually decided (so a dialog can show what is default and what
+    // is not), and the field descriptors — key, kind, range, one line of prose — so a
+    // field added to `settings.ts` appears in the CLI without a second edit.
+    //
+    // PATCH merges. A key set to null stops being an override, which puts that field
+    // back on the factory value and keeps it there as the factory value moves. DELETE
+    // does that for every field at once.
+    if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "settings") {
+      if (!trustedCaller(request, env)) {
+        return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
+      }
+      const dir = directory(env);
+      if (request.method === "GET") {
+        return withCors(
+          Response.json({
+            settings: await dir.settings(),
+            overrides: await dir.settingsPatch(),
+            fields: SETTINGS_FIELDS,
+          })
+        );
+      }
+      if (request.method === "PATCH" || request.method === "POST") {
+        const body = await request.json().catch(() => undefined);
+        const saved = await dir.setSettings(body);
+        if ("error" in saved) {
+          return withCors(Response.json({ error: saved.error }, { status: 400 }));
+        }
+        // The owner who just changed a ceiling is the one caller who must not be served
+        // the cached copy, and it costs one read.
+        forgetCachedSettings();
+        return withCors(Response.json({ ...saved, fields: SETTINGS_FIELDS }));
+      }
+      if (request.method === "DELETE") {
+        const settings = await dir.resetSettings();
+        forgetCachedSettings();
+        return withCors(Response.json({ settings, overrides: {}, fields: SETTINGS_FIELDS }));
+      }
+      return withCors(Response.json({ error: "method not allowed" }, { status: 405 }));
     }
 
     // A signed-in account asking the owner to raise its own ceiling. Anyone can file
@@ -2967,6 +3147,8 @@ export default {
             telegram: "POST /telegram/webhook/:agentId",
             whatsapp: "GET|POST /whatsapp/webhook/:agentId  -> GET verifies the subscription, POST delivers a message",
             admin: "POST /api/admin/business-account { email, agent_limit }, GET /api/admin/stats  -> owner only, via API_SECRET",
+            settings:
+              "GET /api/admin/settings -> { settings, overrides, fields }; PATCH /api/admin/settings { <field>: value | null }; DELETE /api/admin/settings -> owner only, via API_SECRET",
             business_requests: "POST /api/business-requests { increase } -> signed-in caller; GET /api/admin/business-requests, POST .../:id/approve, DELETE .../:id -> owner only, via API_SECRET",
           },
           note: "A session id is `<agentId>~<local>`; every /agents/session-agent route takes that whole id.",

@@ -302,16 +302,35 @@ export const SCHEDULED_PROMPT = "the standup digest";
 export const SPOKEN_TEXT = "Here is the answer, out loud.";
 
 /**
- * The audio the speaking model returns: an Ogg page header and an `OpusHead` payload,
- * which is exactly what the agent checks before uploading anything to Meta. Not a
- * playable file — nothing in a test plays it — but the right kind of file.
+ * How many samples a mocked voice note is spoken in: a quarter-second at 24 kHz, which
+ * is what the real model returns the rate of. Two chunks rather than one, because the
+ * samples arrive split across deltas and the agent has to join them.
  */
-const OGG_OPUS = "OggS" + "\u0000".repeat(24) + "OpusHead" + "mock voice note";
+const SPOKEN_SAMPLES = 6000;
+const SPOKEN_CHUNKS = 2;
+
+/**
+ * The samples the speaking model returns: a quiet tone, because an Opus encoder has to
+ * be handed something and silence encodes to nothing recognisable. Not words — nothing
+ * in a test listens — but the right rate, the right depth, and the right container once
+ * the agent has packed it.
+ */
+function spokenPcm(offset: number, samples: number): string {
+  const pcm = new Int16Array(samples);
+  for (let i = 0; i < samples; i++) {
+    pcm[i] = Math.round(8000 * Math.sin((2 * Math.PI * 220 * (offset + i)) / 24000));
+  }
+  const bytes = new Uint8Array(pcm.buffer);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
 
 type ChatBody = {
   model?: string;
   stream?: boolean;
   modalities?: string[];
+  audio?: { voice?: string; format?: string };
   messages?: { role: string; content?: unknown }[];
 };
 
@@ -398,22 +417,53 @@ function drawn() {
   });
 }
 
-/** A completion carrying spoken audio, which is how a voice model answers. */
-function spoken() {
-  return json({
+/**
+ * How a voice model answers: a stream of sample chunks.
+ *
+ * The two refusals above it are the real ones, quoted from OpenRouter, and they are
+ * mocked because the agent was once written against neither. Audio output is served
+ * only on a stream, and a stream carries no container — `pcm16` is the only format its
+ * providers accept, so anything that plays as a voice note is packed by the Worker.
+ */
+function spoken(body: ChatBody) {
+  if (!body.stream) {
+    return json({ error: { message: "Audio output requires stream: true", code: 400 } }, 400);
+  }
+  if (body.audio?.format !== "pcm16") {
+    return json(
+      {
+        error: {
+          message: `Provider returned error`,
+          code: 400,
+          metadata: {
+            raw: `Unsupported value: 'audio.format' does not support '${body.audio?.format}' when stream=true. Supported values are: 'pcm16'.`,
+          },
+        },
+      },
+      400
+    );
+  }
+  const per = SPOKEN_SAMPLES / SPOKEN_CHUNKS;
+  const chunks = Array.from({ length: SPOKEN_CHUNKS }, (_, i) => ({
     id: "chatcmpl-mock",
-    object: "chat.completion",
+    object: "chat.completion.chunk",
     created: 1,
     model: "mock/voice",
     choices: [
-      {
-        index: 0,
-        message: { role: "assistant", content: "", audio: { data: btoa(OGG_OPUS) } },
-        finish_reason: "stop",
-      },
+      { index: 0, delta: { role: "assistant", audio: { data: spokenPcm(i * per, per) } }, finish_reason: null },
     ],
-    usage: usage(),
-  });
+  }));
+  return stream([
+    ...chunks,
+    {
+      id: "chatcmpl-mock",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "mock/voice",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: usage(),
+    },
+  ]);
 }
 
 /**
@@ -617,9 +667,9 @@ export async function openrouterMock(request: Request): Promise<Response> {
     return json({ error: { message: "No auth credentials found" } }, 401);
   }
 
-  // The speaking call, which is not streamed either — so it is answered before the
-  // title call below, which would otherwise hand a voice note the word "Mock Title".
-  if (body.modalities?.includes("audio")) return spoken();
+  // The speaking call. Answered before the title call below, which would otherwise
+  // hand a voice note the words "Mock Title".
+  if (body.modalities?.includes("audio")) return spoken(body);
   if (body.modalities?.includes("image")) return drawn();
 
   // Choosing which of a server's tools to keep. Not streamed either, so it has to be

@@ -18,14 +18,17 @@ import { parseCommand, type Command, type CommandResult } from "./commands";
 import type { McpServerRow } from "./mcp";
 import { applyMigrations, type Migration } from "./schema";
 import {
+  deploymentSettings,
+  FACTORY_SETTINGS,
+  type DeploymentSettings,
+} from "./settings";
+import {
   DEFAULT_CONFIG,
   agentIdOf,
   type AgentDirectory,
   type Config,
   type Memory,
-  MAX_AGENT_BYTES,
-  MAX_SESSIONS,
-  SESSION_LIMIT_MESSAGE,
+  sessionLimitMessage,
   storageFullMessage,
   type SessionRegistry,
   type SessionRow,
@@ -170,10 +173,13 @@ export type TranscriptPage = {
   total: number;
 };
 
-/** Messages per page when the caller does not ask for a size. */
-export const MESSAGE_PAGE = 30;
-/** The largest transcript page any caller may ask for. */
-export const MAX_MESSAGE_PAGE = 200;
+/**
+ * Messages per page when the caller does not ask for a size, as this Worker ships.
+ * `settings.message_page` is the live one; this is the fallback it starts from.
+ */
+export const MESSAGE_PAGE = FACTORY_SETTINGS.message_page;
+/** The largest transcript page any caller may ask for, as shipped. See `settings.max_message_page`. */
+export const MAX_MESSAGE_PAGE = FACTORY_SETTINGS.max_message_page;
 
 /** A model the settings page may offer: what it is called, and whether it sees images. */
 export type ModelOption = { id: string; label: string; vision: boolean };
@@ -187,8 +193,15 @@ export type ModelOption = { id: string; label: string; vision: boolean };
  * ever since. That model is assumed to see images for the same reason a custom id is:
  * see `modelSeesImages`.
  */
-export function modelCatalog(env: Env): ModelOption[] {
-  const fallback = [{ id: env.MODEL, label: env.MODEL, vision: true }];
+export function modelCatalog(env: Env, settings?: DeploymentSettings): ModelOption[] {
+  // The deployment's own list wins when it has one, because it is the one an owner can
+  // change without a deploy. `MODELS` stays underneath it rather than being replaced:
+  // a deployment that already names its catalogue in `wrangler.jsonc` keeps working
+  // untouched, and only starts reading this once somebody sets it.
+  if (settings?.models.length) return settings.models.map((m) => ({ ...m }));
+  const fallback = [
+    { id: settings?.default_model || env.MODEL, label: settings?.default_model || env.MODEL, vision: true },
+  ];
   const raw = env.MODELS;
   if (!raw) return fallback;
   let parsed: unknown = raw;
@@ -218,14 +231,21 @@ const MODEL_FALLBACK_PRICE: Record<string, { prompt: number; completion: number 
   "deepseek/deepseek-v4-flash": { prompt: 0.000000088606, completion: 0.000000177212 },
 };
 
+/**
+ * What every agent is told before its own `system_prompt`, as this Worker ships.
+ * A deployment that wants to say something else sets `settings.system_prompt`.
+ */
 const SYSTEM_PROMPT = "You are a concise assistant running inside a Cloudflare Durable Object.";
 
 /** Asked once, on the first turn, to turn the opening exchange into a sidebar title. */
 const TITLE_PROMPT =
   "Name this conversation in at most four words. Reply with the title only: no quotes, no punctuation at the end, no preamble.";
 
-/** How many times a single turn may call tools before it must answer. */
-const MAX_TOOL_ROUNDS = 6;
+/**
+ * How many times a single turn may call tools before it must answer, as shipped.
+ * The live number is `settings.max_tool_rounds`, read into `maxSteps` per turn.
+ */
+const MAX_TOOL_ROUNDS = FACTORY_SETTINGS.max_tool_rounds;
 
 /**
  * What a scheduled task's user message is prefixed with. It is the only durable trace
@@ -244,15 +264,10 @@ export type TaskHandover = { when: string; prompt: string };
  * Attachment ceilings, per kind. Bytes spill to R2, so the limits are about what each
  * kind costs downstream rather than what SQLite will hold.
  */
-const MAX_UPLOAD_BYTES = {
-  text: 1_000_000,
-  pdf: 8_000_000,
-  image: 10_000_000,
-  audio: 25_000_000,
-} as const;
+const MAX_UPLOAD_BYTES = FACTORY_SETTINGS.max_upload_bytes;
 
 /** A first-page render at card width. Anything larger is not a thumbnail. */
-const MAX_THUMBNAIL_BYTES = 2_000_000;
+const MAX_THUMBNAIL_BYTES = FACTORY_SETTINGS.max_thumbnail_bytes;
 
 const TEXT_EXTENSIONS =
   /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|log|html?|xml|css|jsx?|tsx?|py|rb|go|rs|java|kt|c|h|cpp|sh|sql)$/i;
@@ -379,11 +394,18 @@ export class SessionAgent extends Think<Env> {
     name: () => this.name,
   });
 
-  /** Six rounds of tools per turn, as before Think owned the loop. */
+  /**
+   * Tool rounds per turn. Starts at the shipped number and is re-read from the
+   * deployment's settings on every turn, in `loadConfig` — same reasoning as the
+   * config itself: an object can live for days between messages, and a ceiling that
+   * was raised yesterday should apply to today's turn.
+   */
   override maxSteps = MAX_TOOL_ROUNDS;
 
   private schemaReady = false;
   private currentConfig: Config | undefined;
+  /** The deployment's ceilings and defaults, re-read per turn beside the config. */
+  private currentSettings: DeploymentSettings | undefined;
   private memories: Memory[] = [];
   /** The external MCP servers, reloaded per turn so a connection made mid-session works. */
   private mcpServers: McpServerRow[] = [];
@@ -611,7 +633,12 @@ export class SessionAgent extends Think<Env> {
    * between messages, and a stale temperature is a confusing thing to debug.
    */
   private async loadConfig() {
-    this.currentConfig = await this.registry().config(this.env.MODEL);
+    this.currentSettings = await deploymentSettings(this.env);
+    this.maxSteps = this.currentSettings.max_tool_rounds;
+    this.currentConfig = await this.registry().config(
+      this.currentSettings.default_model || this.env.MODEL,
+      this.currentSettings.config_defaults
+    );
     this.memories = enabled(this.currentConfig, "memory")
       ? await this.registry().recall("", 50)
       : [];
@@ -634,12 +661,43 @@ export class SessionAgent extends Think<Env> {
   private async modelSeesImages(model: string): Promise<boolean> {
     const chosen = (await this.registry().meta()).models.find((m) => m.id === model);
     if (chosen) return chosen.vision;
-    const known = modelCatalog(this.env).find((m) => m.id === model);
+    const known = modelCatalog(this.env, this.settings()).find((m) => m.id === model);
     return known ? known.vision : true;
   }
 
   private config(): Config {
-    return this.currentConfig ?? { model: this.env.MODEL, ...DEFAULT_CONFIG };
+    const settings = this.settings();
+    return (
+      this.currentConfig ?? {
+        model: settings.default_model || this.env.MODEL,
+        ...DEFAULT_CONFIG,
+        ...settings.config_defaults,
+      }
+    );
+  }
+
+  /**
+   * The deployment's ceilings and defaults.
+   *
+   * The shipped values stand in until the first `loadConfig`, which is the same shape
+   * `config()` has: a path that runs before a turn is loaded gets something coherent
+   * rather than nothing. Every path that enforces a ceiling runs inside a turn or
+   * inside a request that awaits `settingsNow()` first, so the fallback is a floor,
+   * not the usual case.
+   */
+  private settings(): DeploymentSettings {
+    return this.currentSettings ?? FACTORY_SETTINGS;
+  }
+
+  /**
+   * The settings, fetched if this object has not read them this turn.
+   *
+   * For the request paths that are not turns — an upload, a transcript page, a fork —
+   * which enforce a ceiling without having loaded a config first.
+   */
+  private async settingsNow(): Promise<DeploymentSettings> {
+    this.currentSettings = await deploymentSettings(this.env);
+    return this.currentSettings;
   }
 
   /**
@@ -729,7 +787,10 @@ export class SessionAgent extends Think<Env> {
   }
 
   private systemPrompt(): string {
-    const parts = [SYSTEM_PROMPT];
+    // The deployment's line if it set one, the shipped line otherwise. Blank is
+    // "nothing decided here", not "say nothing": an agent with no framing at all is a
+    // worse default than a generic one.
+    const parts = [this.settings().system_prompt.trim() || SYSTEM_PROMPT];
     // The name leads the custom instructions rather than living inside them: it is
     // set by renaming the agent, so it stays right when the name changes and cannot
     // be deleted by editing the instructions box.
@@ -1065,6 +1126,7 @@ export class SessionAgent extends Think<Env> {
   private toolContext(config: Config): ToolContext {
     return {
       config,
+      settings: this.settings(),
       sessionId: this.name,
       openrouterKey: this.openrouterKey(),
       registry: this.registry(),
@@ -1090,7 +1152,7 @@ export class SessionAgent extends Think<Env> {
         return `/agents/session-agent/${encodeURIComponent(this.name)}/files/${id}`;
       },
       transcribeAttachment: (id) => this.transcribeAttachment(id),
-      sendVoiceNote: (base64) => this.sendVoiceNote(base64),
+      sendVoiceNote: (bytes) => this.sendVoiceNote(bytes),
       schedule: async (when, prompt) => {
         const task = await this.scheduleTask(when, prompt);
         this.scheduledInTurn = true;
@@ -1225,7 +1287,7 @@ export class SessionAgent extends Think<Env> {
    * answered, so a note asked for by a scheduled task goes where an ordinary reply
    * would.
    */
-  private async sendVoiceNote(base64: string): Promise<string> {
+  private async sendVoiceNote(bytes: Uint8Array): Promise<string> {
     const row = await this.registry().get(this.sessionId());
     if (!row?.chat_id) throw new Error("this session is not tied to a chat, so a voice note has nowhere to go");
     const opened = openChannel(row.source, this.config(), this.env);
@@ -1235,7 +1297,12 @@ export class SessionAgent extends Think<Env> {
     if (!target) throw new Error(`this session's chat id (${row.chat_id}) names no conversation`);
     if (!channel.sendVoice) throw new Error(`${channel.id} cannot carry a voice note`);
 
-    await channel.sendVoice(target, base64ToBytes(base64));
+    // `sendVoice` takes the whole buffer, so a view over part of a larger one is
+    // copied out first rather than sent with its neighbours attached.
+    await channel.sendVoice(
+      target,
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+    );
     console.log(`${channel.id} voice note sent for session ${this.name} to ${target.to}`);
     return "Voice note sent. Say so in your reply rather than repeating the words you spoke.";
   }
@@ -1349,9 +1416,10 @@ export class SessionAgent extends Think<Env> {
       } else if (request.method === "DELETE" && path === "tasks" && route[1]) {
         body = { ok: await this.cancelTask(route[1]) };
       } else if (request.method === "GET" && path === "messages") {
-        const asked = Number(url.searchParams.get("limit") ?? MESSAGE_PAGE);
+        const paging = await this.settingsNow();
+        const asked = Number(url.searchParams.get("limit") ?? paging.message_page);
         body = await this.transcript(
-          Number.isFinite(asked) ? asked : MESSAGE_PAGE,
+          Number.isFinite(asked) ? asked : paging.message_page,
           url.searchParams.get("before") ?? ""
         );
       } else if (request.method === "GET" && path === "export") {
@@ -1536,13 +1604,14 @@ export class SessionAgent extends Think<Env> {
     const id = crypto.randomUUID().slice(0, 12);
     const path = uploadPath(id, file.name);
 
+    const settings = await this.settingsNow();
     const limit = isPdf(mime, file.name)
-      ? MAX_UPLOAD_BYTES.pdf
+      ? settings.max_upload_bytes.pdf
       : mime.startsWith("image/")
-        ? MAX_UPLOAD_BYTES.image
+        ? settings.max_upload_bytes.image
         : mime.startsWith("audio/") || mime.startsWith("video/")
-          ? MAX_UPLOAD_BYTES.audio
-          : MAX_UPLOAD_BYTES.text;
+          ? settings.max_upload_bytes.audio
+          : settings.max_upload_bytes.text;
     if (file.size > limit) {
       return {
         body: {
@@ -1554,10 +1623,13 @@ export class SessionAgent extends Think<Env> {
 
     // The agent-wide ceiling, on top of the per-kind one. Asked before the bytes are
     // read off the request: a file that cannot be kept should not be uploaded first.
-    const room = await this.registry().storageRoom();
+    const room = await this.registry().storageRoom(settings.max_agent_bytes);
     if (file.size > room) {
-      const { bytes } = await this.registry().storageState();
-      return { body: { error: storageFullMessage(bytes, file.size) }, status: 413 };
+      const { bytes } = await this.registry().storageState(settings.max_agent_bytes);
+      return {
+        body: { error: storageFullMessage(bytes, file.size, settings.max_agent_bytes) },
+        status: 413,
+      };
     }
 
     if (isPdf(mime, file.name)) {
@@ -1663,7 +1735,7 @@ export class SessionAgent extends Think<Env> {
   private async putThumbnail(id: string, thumbnail: unknown): Promise<string> {
     const file = thumbnail as File | null;
     if (!file || typeof file === "string" || file.size === 0) return "";
-    if (file.size > MAX_THUMBNAIL_BYTES) return "";
+    if (file.size > this.settings().max_thumbnail_bytes) return "";
     const path = `uploads/${id}/thumb.png`;
     await this.workspace.writeFileBytes(path, await file.arrayBuffer(), "image/png");
     return path;
@@ -2100,9 +2172,10 @@ export class SessionAgent extends Think<Env> {
       // The agent's ceiling applies to what arrives over a chat channel too. The file
       // is dropped and the turn goes on with the text: the alternative is an agent
       // that stops answering because somebody sent it a video.
-      if (bytes.byteLength > (await this.registry().storageRoom())) {
+      const maxAgentBytes = this.settings().max_agent_bytes;
+      if (bytes.byteLength > (await this.registry().storageRoom(maxAgentBytes))) {
         console.warn(
-          `file dropped in session ${this.name}: agent is at its ${MAX_AGENT_BYTES} byte storage limit`
+          `file dropped in session ${this.name}: agent is at its ${maxAgentBytes} byte storage limit`
         );
         continue;
       }
@@ -2117,7 +2190,9 @@ export class SessionAgent extends Think<Env> {
         kind: isImage ? "image" : pdf ? "pdf" : "text",
         name: file.name,
         mime: file.mime,
-        text: textual ? new TextDecoder().decode(bytes).slice(0, MAX_UPLOAD_BYTES.text) : "",
+        text: textual
+          ? new TextDecoder().decode(bytes).slice(0, this.settings().max_upload_bytes.text)
+          : "",
         path,
         thumb_path: "",
         bytes: bytes.byteLength,
@@ -2166,6 +2241,7 @@ export class SessionAgent extends Think<Env> {
    * open. `before` walks backwards from the oldest message the client holds.
    */
   private async transcript(limit = MESSAGE_PAGE, before = ""): Promise<TranscriptPage> {
+    const { max_message_page } = this.settings();
     const visible = (await this.getMessages()).filter(
       (m) => m.role === "user" || m.role === "assistant"
     );
@@ -2175,7 +2251,7 @@ export class SessionAgent extends Think<Env> {
     // under a stale scroll — falls back to the newest page rather than erroring.
     const end = before ? visible.findIndex((m) => m.id === before) : -1;
     const upTo = end === -1 ? visible.length : end;
-    const size = Math.max(1, Math.min(limit, MAX_MESSAGE_PAGE));
+    const size = Math.max(1, Math.min(limit, max_message_page));
     const start = Math.max(0, upTo - size);
     const page = visible.slice(start, upTo);
 
@@ -2300,9 +2376,10 @@ export class SessionAgent extends Think<Env> {
     // deleted without taking the other's files — so it is charged for them like any
     // other upload, and refused the same way when there is no room.
     const incoming = [...carried, ...pending].reduce((sum, [a]) => sum + (a.bytes ?? 0), 0);
-    if (incoming > 0 && incoming > (await this.registry().storageRoom())) {
-      const { bytes } = await this.registry().storageState();
-      throw new Error(storageFullMessage(bytes, incoming));
+    const { max_agent_bytes } = await this.settingsNow();
+    if (incoming > 0 && incoming > (await this.registry().storageRoom(max_agent_bytes))) {
+      const { bytes } = await this.registry().storageState(max_agent_bytes);
+      throw new Error(storageFullMessage(bytes, incoming, max_agent_bytes));
     }
 
     for (const [a, used] of [...carried, ...pending]) {
@@ -2480,8 +2557,9 @@ export class SessionAgent extends Think<Env> {
     // otherwise leave the chat belonging to nothing, and the next message would only
     // meet the same ceiling with the conversation already cut loose. `!clear` frees a
     // slot as it goes, so the ceiling cannot stop it.
-    if (!discard && (await this.registry().countSessions()) >= MAX_SESSIONS) {
-      return { text: SESSION_LIMIT_MESSAGE, destroy: false };
+    const { max_sessions } = await this.settingsNow();
+    if (!discard && (await this.registry().countSessions()) >= max_sessions) {
+      return { text: sessionLimitMessage(max_sessions), destroy: false };
     }
     const tasks = this.taskHandover();
     // Named before this session's row goes, and only then dropped. The successor is a
@@ -2509,7 +2587,8 @@ export class SessionAgent extends Think<Env> {
           chat_type: row.chat_type,
           chat_username: row.chat_username,
           chat_thread_id: row.chat_thread_id,
-        }
+        },
+        max_sessions
       );
     } catch (err) {
       // Only reachable if the agent filled up between the check above and here. The

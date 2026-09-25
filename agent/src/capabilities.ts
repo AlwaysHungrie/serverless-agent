@@ -1,4 +1,5 @@
 import type { Config, Memory, SessionRegistry } from "./registry";
+import { FACTORY_SETTINGS, type DeploymentSettings } from "./settings";
 import {
   McpClient,
   McpUnauthorized,
@@ -8,6 +9,7 @@ import {
   qualifiedName,
   type McpServerRow,
 } from "./mcp";
+import { VOICE_SAMPLE_RATE, pcm16ToOggOpus } from "./opus";
 
 /**
  * A capability is something the agent can *do* beyond producing text: reach the web,
@@ -414,6 +416,8 @@ export type ScheduledTask = { id: string; prompt: string; when: string };
  */
 export type ToolContext = {
   config: Config;
+  /** The deployment's ceilings, for the tools that enforce one. */
+  settings: DeploymentSettings;
   sessionId: string;
   /** The Worker's OpenRouter key, for tools that call a model of their own. */
   openrouterKey: string;
@@ -423,11 +427,11 @@ export type ToolContext = {
   /** Transcribes a stored audio attachment by id, caching the words on its row. */
   transcribeAttachment: (id: string) => Promise<string>;
   /**
-   * Speaks base64 Ogg Opus into the chat this session belongs to, as a voice note.
-   * Throws with a reason the model can act on when the chat is not on WhatsApp, which
-   * is the only channel that has them.
+   * Sends an Ogg Opus file into the chat this session belongs to, as a voice note.
+   * Throws with a reason the model can act on when the session's channel cannot carry
+   * one — a browser session, or a channel whose credentials are missing.
    */
-  sendVoiceNote: (base64: string) => Promise<string>;
+  sendVoiceNote: (bytes: Uint8Array) => Promise<string>;
   schedule: (when: string, prompt: string) => Promise<ScheduledTask>;
   listTasks: () => ScheduledTask[];
   cancelTask: (id: string) => Promise<boolean>;
@@ -443,15 +447,88 @@ export type ToolSpec = {
 const str = (v: unknown, fallback = "") => (typeof v === "string" ? v : fallback);
 
 /**
- * How much text one voice note may carry. A spoken minute is about 150 words, so this
- * is roughly two minutes — past which a note stops being a note, and every character
- * is billed as audio on the way out.
+ * How much text one voice note may carry, as this Worker ships. A spoken minute is
+ * about 150 words, so this is roughly two minutes — past which a note stops being a
+ * note, and every character is billed as audio on the way out.
+ *
+ * The number enforced is `ctx.settings.voice_note_limit`, which starts here.
  */
-const VOICE_NOTE_LIMIT = 1500;
+const VOICE_NOTE_LIMIT = FACTORY_SETTINGS.voice_note_limit;
 
 /** What the speaking model is told, so it reads the words instead of replying to them. */
 const SPEAK_PROMPT =
   "You are a text-to-speech voice. Read the user's message aloud exactly as written, in its own language. Do not answer it, introduce it, or add a word of your own.";
+
+/**
+ * The samples a spoken answer arrives in.
+ *
+ * Audio is only ever streamed, so the whole note is a run of `delta.audio.data` chunks
+ * — each its own base64 string, each a slice of 16-bit little-endian samples — and it is
+ * complete only once the stream ends. They are collected rather than played as they
+ * arrive because a voice note is one file: nothing can be sent until the last frame is
+ * known.
+ *
+ * An error can also arrive mid-stream, after the 200 that opened it. That is thrown
+ * here rather than swallowed, so the model is told why there is no note instead of
+ * being handed silence.
+ */
+async function spokenSamples(res: Response): Promise<Int16Array> {
+  const body = res.body;
+  if (!body) throw new Error("the voice model sent no stream");
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: Uint8Array[] = [];
+  let buffered = "";
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    buffered += done ? "" : decoder.decode(value, { stream: true });
+    // Only whole lines can be parsed; whatever follows the last newline is the start
+    // of one and waits for the rest of it.
+    const lines = buffered.split("\n");
+    buffered = done ? "" : (lines.pop() ?? "");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (payload === "" || payload === "[DONE]") continue;
+      let event: {
+        error?: { message?: string };
+        choices?: { delta?: { audio?: { data?: string } } }[];
+      };
+      try {
+        event = JSON.parse(payload);
+      } catch {
+        // OpenRouter sends keep-alive comments and the odd non-JSON line; neither is
+        // audio and neither is a failure.
+        continue;
+      }
+      if (event.error) throw new Error(event.error.message ?? "the voice model failed mid-stream");
+      const data = event.choices?.[0]?.delta?.audio?.data;
+      if (!data) continue;
+      const decoded = base64Bytes(data);
+      bytes += decoded.length;
+      chunks.push(decoded);
+    }
+    if (done) break;
+  }
+  const pcm = new Uint8Array(bytes);
+  let at = 0;
+  for (const chunk of chunks) {
+    pcm.set(chunk, at);
+    at += chunk.length;
+  }
+  // An odd trailing byte is half a sample and belongs to nothing; `Int16Array` cannot
+  // hold it either.
+  return new Int16Array(pcm.buffer, 0, Math.floor(bytes / 2));
+}
+
+function base64Bytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
 
 /** Rough HTML-to-text: enough for a model to read a page, cheap enough for a Worker. */
 function htmlToText(html: string): string {
@@ -641,9 +718,10 @@ export const TOOLS: ToolSpec[] = [
     async run(args, ctx) {
       const text = str(args.text).trim();
       if (!text) throw new Error("text was empty");
-      if (text.length > VOICE_NOTE_LIMIT) {
+      const spokenLimit = ctx.settings.voice_note_limit;
+      if (text.length > spokenLimit) {
         throw new Error(
-          `that is ${text.length} characters to say aloud; keep a voice note under ${VOICE_NOTE_LIMIT}`
+          `that is ${text.length} characters to say aloud; keep a voice note under ${spokenLimit}`
         );
       }
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -654,9 +732,13 @@ export const TOOLS: ToolSpec[] = [
         },
         body: JSON.stringify({
           model: ctx.config.voice_model,
+          // Both of these are OpenRouter's rules rather than choices. Audio output is
+          // refused outright without `stream`, and on a stream the providers accept no
+          // format but `pcm16` — so the note comes back as raw samples and is packed
+          // into the Ogg Opus a chat app plays by `pcm16ToOggOpus`.
+          stream: true,
           modalities: ["text", "audio"],
-          // Opus because that is the one container WhatsApp plays as a voice note.
-          audio: { voice: "alloy", format: "opus" },
+          audio: { voice: "alloy", format: "pcm16" },
           // These models answer a message rather than read it, so the instruction is
           // what keeps the note from being the speaker's reply to the words it was
           // handed.
@@ -667,12 +749,9 @@ export const TOOLS: ToolSpec[] = [
         }),
       });
       if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-      const json = (await res.json()) as {
-        choices?: { message?: { audio?: { data?: string } } }[];
-      };
-      const base64 = json.choices?.[0]?.message?.audio?.data;
-      if (!base64) return "The voice model returned no audio. Try a different voice model.";
-      return await ctx.sendVoiceNote(base64);
+      const pcm = await spokenSamples(res);
+      if (pcm.length === 0) return "The voice model returned no audio. Try a different voice model.";
+      return await ctx.sendVoiceNote(pcm16ToOggOpus(pcm, VOICE_SAMPLE_RATE));
     },
   },
   {

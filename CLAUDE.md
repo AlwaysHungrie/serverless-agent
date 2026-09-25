@@ -6,6 +6,18 @@
 - No extra features or content beyond the ask.
 - Do not use Playwright.
 
+# Admin: deployment settings
+
+- Every hard limit (sessions, file storage, access-list size, agents per account, upload
+  ceilings, tool rounds, page sizes, voice-note length) and every soft default (model
+  catalogue, seeded model, system prompt, per-column starting values, MCP templates and
+  catalogue) is one runtime document — no deploy needed.
+- Defined in `agent/src/settings.ts`, stored in `AgentDirectory`, edited from the
+  `admin-cli` settings screen (`s` on the list screen).
+- Routes: `GET|PATCH|DELETE /api/admin/settings`, same `x-api-secret` gate as below.
+- Only overrides are stored: a field nobody set keeps tracking `FACTORY_SETTINGS`, and
+  `null` on a field removes the override rather than pinning the current number.
+
 # Admin: business account limits
 
 - Owner (dhairyashah98@gmail.com) can set any account's agent limit directly, no separate approval needed.

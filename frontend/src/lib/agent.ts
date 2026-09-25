@@ -458,6 +458,51 @@ export const EMPTY_META: MetaSettings = {
 };
 
 /** What an agent has spent this calendar month, against the ceiling it was given. */
+/**
+ * The deployment's ceilings the composer has to know before it sends anything, as the
+ * `/config` route hands them over.
+ *
+ * The constants below them are the shipped values, kept only as the fallback for the
+ * moment before the route has answered. Every check uses what came back, because the
+ * browser's number and the Worker's have to be the same number — and the browser's is
+ * the one the user meets first.
+ */
+export type ClientLimits = {
+  max_files_per_message: number;
+  max_upload_bytes: { text: number; pdf: number; image: number; audio: number };
+};
+
+/** What the Worker ships with. Replaced by the deployment's own on the first `/config`. */
+export const DEFAULT_CLIENT_LIMITS: ClientLimits = {
+  max_files_per_message: 4,
+  max_upload_bytes: {
+    text: 1_000_000,
+    pdf: 8_000_000,
+    image: 10_000_000,
+    audio: 25_000_000,
+  },
+};
+
+/**
+ * Bytes a re-encoded image is aimed at: the deployment's image ceiling less a margin
+ * for the multipart envelope. An image over this is shrunk in the browser, not refused.
+ */
+export function imageTarget(limits: ClientLimits): number {
+  return Math.max(1, Math.floor(limits.max_upload_bytes.image * 0.95));
+}
+
+/**
+ * How long one take may run, from the audio ceiling.
+ *
+ * 16 kHz mono PCM is 32 kB a second, so the clip's length is the ceiling divided by
+ * that. Capped at ten minutes whatever the ceiling allows: past that a take stops
+ * being a voice note, and a transcript cut across two requests loses the sentence that
+ * straddles them.
+ */
+export function recordingSeconds(limits: ClientLimits): number {
+  return Math.max(5, Math.min(600, Math.floor(limits.max_upload_bytes.audio / 32_000)));
+}
+
 export type SpendState = { usd: number; limit: number; month: string };
 
 /** A file the user attached, or an image the agent drew, minus the bytes. */

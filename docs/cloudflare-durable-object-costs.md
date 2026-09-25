@@ -13,7 +13,7 @@ For a short exchange (~25 tokens in, ~130 out, ~4 seconds of streaming):
 | ----------------------------------------------------- | --------------- | ---------- |
 | **LLM tokens** (OpenRouter, DeepSeek V4 Flash)        | ~$0.000040      | ~78%       |
 | **DO duration** (~4s awake × 128 MB = 0.5 GB-s)       | ~$0.0000063     | ~12%       |
-| **SQLite rows written** (~4 rows)                     | ~$0.0000040     | ~8%        |
+| **SQLite rows written** (~4 rows — but see below)     | ~$0.0000040     | ~8%        |
 | **Requests** (~3 calls, billed by both Worker and DO) | ~$0.0000014     | ~3%        |
 | **SQLite rows read** (~20 rows)                       | ~$0.00000002    | negligible |
 | **Storage** (~48 KB, charged monthly not per message) | ~$0.00001/month | negligible |
@@ -63,8 +63,12 @@ the seconds your object spends waiting for it.
 
 ### 3. SQLite rows written — $1.00 per million
 
-Every row inserted or updated. **A thousand times more expensive than reads**, which
-makes write-heavy patterns the thing to watch.
+Every row inserted, updated **or deleted**, and every index entry those statements touch.
+An insert into a table with one index bills two rows, and deleting that row later bills
+two more — so a row that is written and then swept costs four. **A thousand times more
+expensive than reads**, which makes write-heavy patterns the thing to watch, and indexes
+on high-churn tables the first place to look when the number is higher than expected.
+See [Where rows written actually come from](#where-rows-written-actually-come-from).
 
 ### 4. SQLite rows read — $0.001 per million
 
@@ -269,6 +273,102 @@ Durable Objects run on the Free plan too.
 ### 9. Query windows are capped
 
 The API refuses ranges wider than **4 weeks 4 days**.
+
+---
+
+## Where rows written actually come from
+
+Measured 2026-09-25 against three days of real traffic. The `~4 rows per message` in the
+summary above was the figure before resumable streaming landed; **the real rate is closer
+to 16 rows written per turn**, and almost none of them are written by this project's own
+code.
+
+### This project's own writes are small
+
+`SessionAgent` declares five tables and **no indexes** (`agent/src/agent.ts`,
+`SESSION_AGENT_MIGRATIONS`): `attachments`, `message_files`, `message_text`, `usage`,
+`file_cache`. A turn touches a handful of rows across them. `SessionRegistry` has more
+tables and three indexes, but it is written to once per session, not once per turn.
+
+### The stream buffer is the write-heavy part
+
+The `agents` SDK persists every model reply to SQLite as it streams, so a dropped
+connection or an evicted object can replay it. In
+`node_modules/agents/dist/chat/index.js`:
+
+- Each SSE delta from the model is pushed onto an in-memory array, `_chunkBuffer`.
+- The buffer flushes to `cf_ai_chat_stream_chunks` on whichever comes first: 10 buffered
+  chunks (`CHUNK_BUFFER_SIZE`), 100 chunks (`CHUNK_BUFFER_MAX_SIZE`), a segment that
+  would exceed 512 KB (`SEGMENT_MAX_BYTES`), or a lifecycle call — `start`, `complete`,
+  `markError`, replay.
+- One flush writes **one** row whose body is a JSON array of the buffered deltas. That
+  collapse is deliberate and is the reason the rate is 16 rows a turn rather than several
+  hundred.
+- `cf_ai_chat_stream_chunks` carries an index, so each flush bills two rows.
+- `cf_ai_chat_stream_metadata` takes an insert, one or more updates, and a delete per
+  stream.
+- A sweep alarm deletes finished chunk rows. Those deletes bill as writes, so every
+  flushed segment is paid for twice.
+
+`@cloudflare/think` adds six more tables of its own with six indexes
+(`cf_think_action_ledger`, `cf_think_submissions`, `cf_think_scheduled_tasks` and so on),
+which carry the same index multiplier on anything they record.
+
+### What the numbers looked like
+
+Staging (`salt-agent-staging`), per UTC day, from `scripts/cost.sh`:
+
+| Day (UTC)        | Worker req | DO req | Rows read | Rows written | DO GB-s |
+| ---------------- | ---------- | ------ | --------- | ------------ | ------- |
+| 2026-09-22       | 0          | 0      | 0         | 0            | 0       |
+| 2026-09-23       | 186        | 939    | 16,024    | 2,850        | 23.6    |
+| 2026-09-24       | 1,192      | 4,905  | 95,165    | 8,437        | 112.3   |
+| 2026-09-25 (02h) | 227        | 854    | 25,681    | 1,658        | 19.6    |
+
+On the busiest of those days the per-object table attributes ~469 requests and ~7,446
+rows written to session objects, the remainder to the agent-root and registry singletons.
+That is the ~16 rows per turn figure. Staging carried essentially all of it — production
+served 3 requests the same day.
+
+Against the Free plan's daily caps, rows written is the tightest axis and still has an
+order of magnitude of headroom:
+
+| Cap               | Used (09-24) | Limit     | Share    |
+| ----------------- | ------------ | --------- | -------- |
+| Rows written      | 8,437        | 100,000   | **8.4%** |
+| DO requests       | 4,905        | 100,000   | 4.9%     |
+| Rows read         | 95,165       | 5,000,000 | 1.9%     |
+| Worker requests   | 1,192        | 100,000   | 1.2%     |
+| DO duration       | 112 GB-s     | 13,000    | 0.9%     |
+
+At paid rates the whole day was $0.011, of which rows written was $0.008 — the largest
+single line item, and still under a cent.
+
+### The lever, and why not to pull it
+
+Raising `CHUNK_BUFFER_SIZE` buffers more deltas per row and cuts rows written roughly in
+proportion. The cost is what happens when the object is evicted mid-generation.
+
+The buffer is plain memory; SQLite survives hibernation and eviction, memory does not.
+Three cases:
+
+- **Normal turn.** Nothing at risk. `complete()` flushes before marking the stream
+  completed, so the buffer always drains.
+- **Client reconnects mid-stream.** Nothing lost. The reader is still alive, so replay
+  sends the flushed rows and live deltas continue from memory.
+- **Object evicted mid-generation.** The buffer is gone, and the upstream request to
+  OpenRouter dies with it, so the turn is truncated. On the next open the stream is
+  orphaned: the SDK replays the chunk rows it finds and sends `done`. The reply the user
+  keeps is whatever had been flushed. The unflushed tail is gone for good.
+
+Only that third case is affected. At the default of 10 the loss is at most 9 deltas, a
+few words. At 50 it would be at most 49, a sentence or two off a reply that was being
+truncated anyway.
+
+Not worth changing at present usage. The constant lives in `node_modules`, so it would
+mean patching or forking `agents` — a dependency-pinning burden in exchange for
+eight-tenths of a cent a day. Revisit if rows written passes roughly half the 100,000
+daily cap.
 
 ---
 
