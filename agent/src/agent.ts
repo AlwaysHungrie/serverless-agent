@@ -20,6 +20,7 @@ import type { McpServerRow } from "./mcp";
 import { applyMigrations, type Migration } from "./schema";
 import { deploymentSettings, type DeploymentSettings } from "./settings";
 import {
+  AGENT_SEPARATOR,
   DEFAULT_CONFIG,
   agentIdOf,
   type AgentDirectory,
@@ -651,7 +652,8 @@ export class SessionAgent extends Think<Env> {
       apiKey: key,
       baseURL: "https://openrouter.ai/api/v1",
       async fetch(input, init) {
-        const request = prepareOpenRouterRequest(init as RequestInit);
+        // Meta's terms bar WhatsApp content from reaching providers that train on it.
+        const request = prepareOpenRouterRequest(init as RequestInit, session.includes(`${AGENT_SEPARATOR}wa-`));
         const res = await fetch(input as RequestInfo, request as RequestInit);
         if (res.ok) {
           return stripUnsupportedAnnotations(
@@ -2887,6 +2889,7 @@ type ContentPart = { type?: string; text?: string; cache_control?: { type: strin
 type ChatRequestBody = {
   model?: string;
   usage?: { include?: boolean };
+  provider?: { data_collection?: "allow" | "deny" };
   messages?: { role?: string; content?: string | ContentPart[] }[];
 };
 
@@ -2898,14 +2901,18 @@ const CACHE_CONTROL = { type: "ephemeral" } as const;
  * block carrying what the call actually cost, and — on Anthropic — the breakpoint
  * saying where the cacheable prefix ends.
  */
-export function prepareOpenRouterRequest(init: RequestInit | undefined): RequestInit | undefined {
+export function prepareOpenRouterRequest(
+  init: RequestInit | undefined,
+  noTrain = false
+): RequestInit | undefined {
   if (!init || typeof init.body !== "string") return init;
   try {
     const body = JSON.parse(init.body) as ChatRequestBody;
     const reported = body.usage?.include === true;
     const marked = markCacheablePrefix(body);
-    if (reported && !marked) return init;
+    if (reported && !marked && !noTrain) return init;
     body.usage = { ...body.usage, include: true };
+    if (noTrain) body.provider = { ...body.provider, data_collection: "deny" };
     return { ...init, body: JSON.stringify(body) };
   } catch {
     return init;
