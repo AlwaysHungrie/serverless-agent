@@ -9,12 +9,20 @@
 
 // TEMP — `oom` is a probe for the 128 MB isolate limit, not a feature. Remove it, and
 // its branch in `runCommand`, once the behaviour it exposes has been seen.
-export type Command = "unstick" | "delete" | "new" | "clear" | "stop" | "oom" | McpCommand;
+export type Command =
+  | "unstick"
+  | "delete"
+  | "new"
+  | "clear"
+  | "stop"
+  | "compact"
+  | "oom"
+  | McpCommand;
 
 /** `!enable-mcp <name>` / `!disable-mcp <name>`: the one command that takes an argument. */
 export type McpCommand = { mcp: "enable" | "disable"; server: string };
 
-const COMMANDS = ["unstick", "delete", "new", "clear", "stop", "oom"] as const;
+const COMMANDS = ["unstick", "delete", "new", "clear", "stop", "compact", "oom"] as const;
 
 /**
  * What running a command produced: the line to say, and whether the session it ran in
